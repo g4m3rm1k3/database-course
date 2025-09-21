@@ -18,7 +18,7 @@
         <h1
           class="text-3xl sm:text-4xl font-bold text-center text-blue-800 dark:text-gold-500"
         >
-          Mastercam Source File Tracker
+          Mastercam GitLab Interface
         </h1>
         <p class="text-center text-gray-600 dark:text-gray-400 mt-2">
           Collaborative CAM file management
@@ -233,100 +233,7 @@
     </div>
 
     <input type="file" id="fileUpload" class="hidden" accept=".mcam" />
-    <input type="file" id="newFileSelect" class="hidden" accept=".mcam" />
-
-    <div
-      id="newFileModal"
-      class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-[100] hidden"
-    >
-      <div
-        class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg text-gray-900 dark:text-gray-100"
-      >
-        <h3 class="text-xl font-semibold mb-4 text-gold-500">
-          Upload New File
-        </h3>
-        <form id="newFileUploadForm">
-          <div class="mb-4">
-            <label
-              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-              >File</label
-            >
-            <input
-              type="file"
-              id="newFileSelect"
-              required
-              accept=".mcam"
-              class="mt-1 block w-full text-sm text-gray-500 dark:text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-gray-100 file:dark:bg-gray-700 file:text-gray-700 file:dark:text-gray-200 hover:file:bg-gray-200 hover:file:dark:bg-gray-600"
-            />
-          </div>
-          <div class="mb-4">
-            <label
-              for="initialRev"
-              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-              >Initial Revision</label
-            >
-            <input
-              type="text"
-              id="initialRev"
-              value="1.0"
-              required
-              class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-300 dark:focus:border-gold-500 focus:ring focus:ring-indigo-200 dark:focus:ring-gold-500 focus:ring-opacity-50 dark:focus:ring-opacity-30 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-            />
-          </div>
-          <div class="flex justify-end space-x-2">
-            <button
-              type="button"
-              class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-200 dark:bg-gray-700 rounded-md hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
-              onclick="closeModal('newFileModal')"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              class="px-4 py-2 text-sm font-medium text-white bg-gold-500 rounded-md hover:bg-gold-600 transition-colors"
-            >
-              Upload
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-
-    <div
-      id="checkinModal"
-      class="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-[100] hidden"
-    >
-      <div
-        class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm text-gray-900 dark:text-gray-100"
-      >
-        <h3 class="text-xl font-semibold mb-4 text-gold-500">
-          Check In
-          <span
-            id="checkinFileName"
-            class="text-gray-800 dark:text-gray-200"
-          ></span>
-        </h3>
-        <p class="mb-4 text-sm text-gray-600 dark:text-gray-400">
-          Current Version: <span id="currentFileVersion"></span>
-        </p>
-        <div class="space-y-3">
-          <button
-            class="w-full flex items-center space-x-3 px-4 py-3 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
-            onclick="performCheckin('major')"
-          >
-            <i class="fa-solid fa-cloud-arrow-up"></i>
-            <span>Major Revision (e.g., v1.2 → v2.0)</span>
-          </button>
-          <button
-            class="w-full flex items-center space-x-3 px-4 py-3 bg-gray-300 text-gray-800 dark:bg-gray-700 dark:text-gray-200 rounded-md hover:bg-gray-400 dark:hover:bg-gray-600 transition-colors"
-            onclick="performCheckin('minor')"
-          >
-            <i class="fa-solid fa-cloud-arrow-up"></i>
-            <span>Minor Revision (e.g., v1.2 → v1.3)</span>
-          </button>
-        </div>
-      </div>
-    </div>
+    <input type="file" id="newFileUpload" class="hidden" accept=".mcam" />
 
     <script src="/static/js/script.js"></script>
   </body>
