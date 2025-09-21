@@ -1,0 +1,15 @@
+{
+    "local": {
+        "repo_path": "C:\\Users\\g4m3r\\mastercam-repo",
+        "temp_path": "C:\\Users\\g4m3r\\mastercam-temp",
+        "backup_path": "C:\\Users\\g4m3r\\mastercam-backups",
+        "max_file_size_mb": 100,
+        "auto_backup": true
+    },
+    "gitlab": {
+        "base_url": null,
+        "project_id": null,
+        "username": null,
+        "token": null
+    }
+}

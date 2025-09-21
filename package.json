@@ -1,0 +1,24 @@
+{
+  "name": "database-course",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/g4m3rm1k3/database-course.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/g4m3rm1k3/database-course/issues"
+  },
+  "homepage": "https://github.com/g4m3rm1k3/database-course#readme",
+  "devDependencies": {
+    "tailwindcss": "^4.1.13"
+  }
+}

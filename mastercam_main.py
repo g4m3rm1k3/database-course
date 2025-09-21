@@ -14,6 +14,7 @@ import logging
 import tempfile
 import json
 import git
+from git import Actor  # Add this import
 import requests
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -44,7 +45,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# --- Data Models (Pydantic V2-compatible) ---
+# Data models
 class FileInfo(BaseModel):
     filename: str
     path: str
@@ -127,7 +128,6 @@ class AppConfig(BaseModel):
     def get_default_temp_path() -> Path:
         return Path(tempfile.gettempdir()) / 'mastercam_git_interface'
 
-# --- Service Classes ---
 class EncryptionManager:
     def __init__(self, config_dir: Path):
         self.config_dir = Path(config_dir)
@@ -339,9 +339,13 @@ class GitRepository:
                 logger.info(f"Cloning repository from {self.remote_url} to {self.repo_path}")
                 self.repo = git.Repo.clone_from(self._get_credential_url(), self.repo_path)
             else:
-                logger.info(f"Pulling latest changes from repository at {self.repo_path}")
-                self.repo = git.Repo(self.repo_path)
-                self.repo.remotes.origin.pull()
+                try:
+                    self.repo = git.Repo(self.repo_path)
+                    logger.info(f"Pulling latest changes from repository at {self.repo_path}")
+                    self.repo.remotes.origin.pull()
+                except git.exc.InvalidGitRepositoryError:
+                    logger.warning(f"Local path exists but is not a Git repository. Cloning fresh...")
+                    self.repo = git.Repo.clone_from(self._get_credential_url(), self.repo_path)
             return True
         except git.GitCommandError as e:
             logger.error(f"Git operation failed: {e}")
@@ -394,7 +398,7 @@ class GitRepository:
         
         try:
             self.repo.index.add([file_path])
-            self.repo.index.commit(message, author=f"{author_name} <{author_email}>")
+            self.repo.index.commit(message, author=git.Actor(author_name, author_email))
             
             logger.info("Pushing changes to remote repository...")
             self.repo.git.push(self._get_credential_url(), f"main:{self.repo.active_branch}")
@@ -423,6 +427,8 @@ class GitRepository:
             return history
         except git.exc.GitCommandError:
             return []
+
+
 
 class MetadataManager:
     def __init__(self, metadata_path: Path):
@@ -790,7 +796,7 @@ async def new_upload(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error uploading new file '{file.filename}': {str(e)}")
+        logger.error(f"Error uploading new file '{filename}': {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to upload new file")
 
 @app.get("/files", response_model=List[FileInfo])
@@ -800,7 +806,6 @@ async def get_files():
         if app_state.get('git_repo') and app_state['initialized']:
             repo_files = app_state['git_repo'].list_files("*.mcam")
             for file_data in repo_files:
-                print("Here")
                 file_info = FileInfo(
                     filename=file_data['name'],
                     path=file_data['path'],
