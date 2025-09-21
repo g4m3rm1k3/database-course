@@ -9,6 +9,20 @@ let ws = null;
 let groupedFiles = {}; // Use one variable to store the grouped file object
 let currentConfig = null;
 
+// In script.js
+
+function saveExpandedState() {
+  const openGroups = [];
+  // Find all <details> elements that are currently open
+  document.querySelectorAll(".file-group[open]").forEach((detailsEl) => {
+    // Read the group name from the data attribute we'll add
+    if (detailsEl.dataset.groupName) {
+      openGroups.push(detailsEl.dataset.groupName);
+    }
+  });
+  localStorage.setItem("expandedGroups", JSON.stringify(openGroups));
+}
+
 // -- WebSocket Management --
 function connectWebSocket() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -88,9 +102,16 @@ async function loadFiles() {
   }
 }
 
+// In script.js
+
 function renderFiles() {
   const fileListEl = document.getElementById("fileList");
   const searchTerm = document.getElementById("searchInput").value.toLowerCase();
+
+  // 1. READ STATE: Get the list of expanded groups from localStorage
+  const expandedGroups =
+    JSON.parse(localStorage.getItem("expandedGroups")) || [];
+
   fileListEl.innerHTML = "";
   let totalFilesFound = 0;
 
@@ -131,6 +152,19 @@ function renderFiles() {
     detailsEl.className =
       "file-group group border-t border-gray-200 dark:border-gray-600";
 
+    // Add a data attribute to easily identify the group
+    detailsEl.dataset.groupName = groupName;
+
+    // 2. APPLY STATE: If this group was previously expanded, open it.
+    if (expandedGroups.includes(groupName)) {
+      detailsEl.open = true;
+    }
+
+    // 3. SAVE STATE: Listen for clicks and save the new state.
+    detailsEl.addEventListener("toggle", () => {
+      saveExpandedState();
+    });
+
     const summaryEl = document.createElement("summary");
     summaryEl.className =
       "list-none py-3 px-4 bg-gray-50 dark:bg-gray-800 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 flex justify-between items-center transition-colors";
@@ -161,6 +195,7 @@ function renderFiles() {
     detailsEl.appendChild(summaryEl);
 
     const filesContainer = document.createElement("div");
+    // ... the rest of your file rendering logic (forEach file in filteredFiles) is unchanged ...
     filteredFiles.forEach((file) => {
       const fileEl = document.createElement("div");
       let statusClass = "",
@@ -186,38 +221,38 @@ function renderFiles() {
       fileEl.className =
         "py-6 px-4 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors duration-200 border-b border-gray-200 dark:border-gray-600";
       fileEl.innerHTML = `
-        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
-            <div class="flex items-center space-x-4">
-                <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">${
-                  file.filename
-                }</h3>
-                <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
+                <div class="flex items-center space-x-4">
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">${
+                      file.filename
+                    }</h3>
+                    <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
+                </div>
+                <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
             </div>
-            <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
-        </div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-gray-600 dark:text-gray-300 text-sm">
-            <div class="flex items-center space-x-2"><i class="fa-solid fa-file text-gray-500 dark:text-gray-400"></i><span>Path: ${
-              file.path
-            }</span></div>
-            <div class="flex items-center space-x-2"><i class="fa-solid fa-hard-drive text-gray-500 dark:text-gray-400"></i><span>Size: ${formatBytes(
-              file.size
-            )}</span></div>
-            <div class="flex items-center space-x-2"><i class="fa-solid fa-clock text-gray-500 dark:text-gray-400"></i><span>Modified: ${formatDate(
-              file.modified_at
-            )}</span></div>
-            ${
-              file.version_info
-                ? `<div class="flex items-center space-x-2"><i class="fa-solid fa-code-commit text-gray-500 dark:text-gray-400"></i><span>Version: ${file.version_info.latest_commit} (${file.version_info.commit_count} commits)</span></div>`
-                : ""
-            }
-            ${
-              file.locked_by && file.status !== "checked_out_by_user"
-                ? `<div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1"><i class="fa-solid fa-lock text-gray-500 dark:text-gray-400"></i><span>Locked by: ${
-                    file.locked_by
-                  } at ${formatDate(file.locked_at)}</span></div>`
-                : ""
-            }
-        </div>`;
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-gray-600 dark:text-gray-300 text-sm">
+                <div class="flex items-center space-x-2"><i class="fa-solid fa-file text-gray-500 dark:text-gray-400"></i><span>Path: ${
+                  file.path
+                }</span></div>
+                <div class="flex items-center space-x-2"><i class="fa-solid fa-hard-drive text-gray-500 dark:text-gray-400"></i><span>Size: ${formatBytes(
+                  file.size
+                )}</span></div>
+                <div class="flex items-center space-x-2"><i class="fa-solid fa-clock text-gray-500 dark:text-gray-400"></i><span>Modified: ${formatDate(
+                  file.modified_at
+                )}</span></div>
+                ${
+                  file.version_info
+                    ? `<div class="flex items-center space-x-2"><i class="fa-solid fa-code-commit text-gray-500 dark:text-gray-400"></i><span>Version: ${file.version_info.latest_commit} (${file.version_info.commit_count} commits)</span></div>`
+                    : ""
+                }
+                ${
+                  file.locked_by && file.status !== "checked_out_by_user"
+                    ? `<div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1"><i class="fa-solid fa-lock text-gray-500 dark:text-gray-400"></i><span>Locked by: ${
+                        file.locked_by
+                      } at ${formatDate(file.locked_at)}</span></div>`
+                    : ""
+                }
+            </div>`;
       filesContainer.appendChild(fileEl);
     });
     detailsEl.appendChild(filesContainer);
