@@ -14,6 +14,7 @@ import logging
 import tempfile
 import json
 import git
+import re
 from git import Actor  # Add this import
 import requests
 from pathlib import Path
@@ -33,6 +34,90 @@ from pydantic import BaseModel, Field, ValidationError
 # Pydantic-friendly dataclasses
 from cryptography.fernet import Fernet
 import base64
+
+
+async def broadcast_file_list_update():
+    """Gets the latest file list and broadcasts it to all WebSocket clients."""
+    try:
+        # This is the same logic from your get_files endpoint
+        logger.info("Generating and broadcasting file list update...")
+        # Temporarily create instances of the necessary objects to get the file list
+        # Note: This assumes app_state is populated correctly.
+        git_repo = app_state.get('git_repo')
+        metadata_manager = app_state.get('metadata_manager')
+        
+        if not git_repo or not metadata_manager:
+            logger.warning("Cannot broadcast file list: repository not initialized.")
+            return
+
+        # Perform a pull to get the latest state
+        git_repo.repo.remotes.origin.pull()
+
+        repo_files = git_repo.list_files("*.mcam")
+        grouped_files_data = {}
+
+        for file_data in repo_files:
+            filename = file_data['name']
+            group_name = "Miscellaneous"
+            match = re.match(r"^(\d{7}).*\.mcam$", filename)
+            if match:
+                prefix = filename[:2]
+                group_name = f"{prefix}XXXXX"
+
+            if group_name not in grouped_files_data:
+                grouped_files_data[group_name] = []
+            
+            # Rebuild the FileInfo object to be sent as JSON
+            lock_info = metadata_manager.get_lock_info(file_data['path'])
+            status = "unlocked"
+            locked_by = None
+            locked_at = None
+
+            if lock_info:
+                status = "locked"
+                locked_by = lock_info.get('user')
+                locked_at = lock_info.get('timestamp')
+                if locked_by == app_state.get('current_user'): # Check against a dynamic user if possible
+                    status = "checked_out_by_user"
+
+            file_info_dict = {
+                "filename": file_data['name'],
+                "path": file_data['path'],
+                "status": status,
+                "locked_by": locked_by,
+                "locked_at": locked_at,
+                "size": file_data['size'],
+                "modified_at": file_data['modified_at'],
+                "version_info": None # Add version info logic here if needed
+            }
+            grouped_files_data[group_name].append(file_info_dict)
+
+        # Create the final message payload
+        message_payload = {
+            "type": "FILE_LIST_UPDATED",
+            "payload": grouped_files_data
+        }
+
+        await manager.broadcast(json.dumps(message_payload))
+        logger.info("Broadcast complete.")
+    except Exception as e:
+        logger.error(f"Failed to broadcast file list update: {e}")
+
+
+# NEW: Helper function to find bundled files
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
+
+# ... your FastAPI app setup ...
+
+
 
 # Configure logging
 logging.basicConfig(
@@ -933,11 +1018,6 @@ async def initialize_application():
             # If not initialized, set up a dummy metadata manager
             app_state['metadata_manager'] = MetadataManager(Path(tempfile.gettempdir()) / 'mastercam_git_interface' / '.locks')
         
-        # Cleanup stale locks
-        if app_state.get('metadata_manager'):
-            cleaned = app_state['metadata_manager'].cleanup_stale_locks()
-            if cleaned > 0:
-                logger.info(f"Cleaned up {cleaned} stale file locks")
         
         logger.info("Application initialization completed")
         
@@ -994,14 +1074,38 @@ async def new_upload(
         logger.error(f"Error uploading new file '{filename}': {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to upload new file")
 
-@app.get("/files", response_model=List[FileInfo])
+# In mastercam_main.py
+
+# In mastercam_main.py
+
+@app.get("/files", response_model=Dict[str, List[FileInfo]])
 async def get_files():
     try:
-        files = []
+        grouped_files: Dict[str, List[FileInfo]] = {}
+        repo_files = [] 
+        total_files = 0
+
         if app_state.get('git_repo') and app_state['initialized']:
             repo_files = app_state['git_repo'].list_files("*.mcam")
+            total_files = len(repo_files)
+
             for file_data in repo_files:
+                filename = file_data['name']
+                group_name = "Miscellaneous"
+
+                # CHANGED: Updated regex to match any 7-digit number at the start
+                match = re.match(r"^(\d{7}).*\.mcam$", filename)
+                if match:
+                    # Get the first two digits for the series prefix
+                    prefix = filename[:2]
+                    # CHANGED: Use 5 X's to match the 7-digit format (e.g., 12XXXXX)
+                    group_name = f"{prefix}XXXXX"
+
+                if group_name not in grouped_files:
+                    grouped_files[group_name] = []
+
                 file_info = FileInfo(
+                    # ... (rest of the file_info population logic is the same)
                     filename=file_data['name'],
                     path=file_data['path'],
                     status="unlocked",
@@ -1015,19 +1119,16 @@ async def get_files():
                     file_info.locked_at = lock_info['timestamp']
                     if lock_info['user'] == app_state['current_user']:
                         file_info.status = "checked_out_by_user"
-                if app_state['git_repo']:
-                    history = app_state['git_repo'].get_file_history(file_data['path'], limit=5)
-                    if history:
-                        file_info.version_info = {
-                            'latest_commit': history[0]['commit_hash'][:8],
-                            'latest_author': history[0]['author_name'],
-                            'commit_count': len(history)
-                        }
-                files.append(file_info)
+
+                grouped_files[group_name].append(file_info)
         else:
-            files = get_demo_files()
-        logger.info(f"Retrieved {len(files)} files")
-        return files
+            demo_list = get_demo_files()
+            grouped_files["Miscellaneous"] = demo_list
+            total_files = len(demo_list)
+
+        logger.info(f"Retrieved {total_files} files into {len(grouped_files)} groups")
+        return grouped_files
+        
     except Exception as e:
         logger.error(f"Error fetching files: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch files")
@@ -1278,6 +1379,9 @@ def main():
     except Exception as e:
         logger.error(f"Error starting server: {str(e)}")
         raise
+    # MODIFIED: Use the helper function for your static and template directories
+app.mount("/static", StaticFiles(directory=resource_path("static")), name="static")
+templates = Jinja2Templates(directory=resource_path("templates"))
 
 if __name__ == "__main__":
     main()
