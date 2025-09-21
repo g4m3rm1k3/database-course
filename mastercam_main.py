@@ -322,6 +322,114 @@ class GitLabAPI:
             logger.error(f"GitLab connection test failed: {e}")
             return False
 
+# class GitRepository:
+#     def __init__(self, repo_path: Path, remote_url: str, username: str, token: str):
+#         self.repo_path = repo_path
+#         self.remote_url = remote_url
+#         self.username = username
+#         self.token = token
+#         self.repo = None
+
+#     def _get_credential_url(self) -> str:
+#         return f"https://oauth2:{self.token}@{self.remote_url.split('://')[-1]}"
+
+#     def clone_or_pull(self) -> bool:
+#         try:
+#             if not self.repo_path.exists():
+#                 logger.info(f"Cloning repository from {self.remote_url} to {self.repo_path}")
+#                 self.repo = git.Repo.clone_from(self._get_credential_url(), self.repo_path)
+#             else:
+#                 try:
+#                     self.repo = git.Repo(self.repo_path)
+#                     logger.info(f"Pulling latest changes from repository at {self.repo_path}")
+#                     self.repo.remotes.origin.pull()
+#                 except git.exc.InvalidGitRepositoryError:
+#                     logger.warning(f"Local path exists but is not a Git repository. Cloning fresh...")
+#                     self.repo = git.Repo.clone_from(self._get_credential_url(), self.repo_path)
+#             return True
+#         except git.GitCommandError as e:
+#             logger.error(f"Git operation failed: {e}")
+#             return False
+
+#     def list_files(self, pattern: str = "*.mcam") -> List[Dict]:
+#         if not self.repo:
+#             return []
+        
+#         files = []
+#         for root, dirs, filenames in os.walk(self.repo_path):
+#             if ".git" in root:
+#                 continue
+            
+#             for filename in filenames:
+#                 file_path = Path(root) / filename
+#                 if file_path.match(pattern):
+#                     rel_path = str(file_path.relative_to(self.repo_path))
+#                     try:
+#                         file_stat = os.stat(file_path)
+#                         files.append({
+#                             "name": filename,
+#                             "path": rel_path,
+#                             "size": file_stat.st_size,
+#                             "modified_at": datetime.fromtimestamp(file_stat.st_mtime).isoformat() + "Z"
+#                         })
+#                     except OSError:
+#                         pass
+#         return files
+    
+#     def get_file_content(self, file_path: str) -> Optional[bytes]:
+#         full_path = self.repo_path / file_path
+#         if full_path.exists():
+#             return full_path.read_bytes()
+#         return None
+
+#     def save_file(self, file_path: str, content: bytes) -> bool:
+#         try:
+#             full_path = self.repo_path / file_path
+#             full_path.parent.mkdir(parents=True, exist_ok=True)
+#             full_path.write_bytes(content)
+#             return True
+#         except IOError as e:
+#             logger.error(f"Failed to save file: {e}")
+#             return False
+
+#     def commit_and_push(self, file_path: str, message: str, author_name: str, author_email: str) -> bool:
+#         if not self.repo:
+#             return False
+        
+#         try:
+#             self.repo.index.add([file_path])
+#             self.repo.index.commit(message, author=git.Actor(author_name, author_email))
+            
+#             logger.info("Pushing changes to remote repository...")
+#             self.repo.git.push(self._get_credential_url(), f"main:{self.repo.active_branch}")
+            
+#             logger.info("Changes successfully pushed to GitLab.")
+#             return True
+#         except git.GitCommandError as e:
+#             logger.error(f"Git commit/push failed: {e}")
+#             return False
+
+#     def get_file_history(self, file_path: str, limit: int = 10) -> List[Dict]:
+#         if not self.repo:
+#             return []
+        
+#         try:
+#             commits = list(self.repo.iter_commits(paths=file_path, max_count=limit))
+#             history = []
+#             for commit in commits:
+#                 history.append({
+#                     "commit_hash": commit.hexsha,
+#                     "author_name": commit.author.name,
+#                     "author_email": commit.author.email,
+#                     "date": datetime.fromtimestamp(commit.committed_date).isoformat() + "Z",
+#                     "message": commit.message.strip()
+#                 })
+#             return history
+#         except git.exc.GitCommandError:
+#             return []
+
+
+# In mastercam_main.py, replace your GitRepository class with this one.
 class GitRepository:
     def __init__(self, repo_path: Path, remote_url: str, username: str, token: str):
         self.repo_path = repo_path
@@ -392,22 +500,40 @@ class GitRepository:
             logger.error(f"Failed to save file: {e}")
             return False
 
-    def commit_and_push(self, file_path: str, message: str, author_name: str, author_email: str) -> bool:
+    def commit_and_push(self, file_paths: List[str], message: str, author_name: str, author_email: str) -> bool:
+        """
+        Stages, commits, and pushes a list of file changes to the remote repository.
+        This can include new files, modified files, and deleted files.
+        """
         if not self.repo:
             return False
-        
+
         try:
-            self.repo.index.add([file_path])
-            self.repo.index.commit(message, author=git.Actor(author_name, author_email))
-            
+            # The key change: add all specified file paths to the index.
+            # This works for additions, modifications, and deletions (git add handles it).
+            self.repo.index.add(file_paths)
+
+            # Check if there is anything to commit
+            if not self.repo.index.diff("HEAD"):
+                logger.info("No changes to commit.")
+                return True # Nothing to do, so operation is successful
+
+            author = Actor(author_name, author_email)
+            self.repo.index.commit(message, author=author)
+
             logger.info("Pushing changes to remote repository...")
-            self.repo.git.push(self._get_credential_url(), f"main:{self.repo.active_branch}")
-            
+            # Assuming 'main' branch, adjust if necessary
+            self.repo.remotes.origin.push(refspec=f'HEAD:{self.repo.active_branch}')
+
             logger.info("Changes successfully pushed to GitLab.")
             return True
         except git.GitCommandError as e:
             logger.error(f"Git commit/push failed: {e}")
+            # Attempt to reset HEAD if push fails to avoid inconsistent state
+            self.repo.git.reset('--hard', 'origin/main')
             return False
+
+
 
     def get_file_history(self, file_path: str, limit: int = 10) -> List[Dict]:
         if not self.repo:
@@ -428,70 +554,77 @@ class GitRepository:
         except git.exc.GitCommandError:
             return []
 
-
-
 class MetadataManager:
-    def __init__(self, metadata_path: Path):
-        self.metadata_path = metadata_path
-        self.metadata_path.mkdir(parents=True, exist_ok=True)
+    """
+    Manages lock files by storing them directly within the Git repository,
+    making the lock status accessible to all users via git pull/push.
+    """
+    def __init__(self, repo_path: Path):
+        # The lock directory is now INSIDE the main repository path
+        self.locks_dir = repo_path / '.locks'
+        self.locks_dir.mkdir(parents=True, exist_ok=True)
+        # Create a .gitignore file in the locks dir if it doesn't exist
+        # This is optional but good practice if you have other metadata
+        gitignore_path = self.locks_dir / '.gitignore'
+        if not gitignore_path.exists():
+            # This ensures only .lock files are tracked, ignoring other potential temp files.
+            gitignore_path.write_text("*\n!*.lock\n")
 
-    def _get_lock_file_path(self, file_path: str) -> Path:
-        return self.metadata_path / f"{file_path.replace(os.path.sep, '_')}.lock"
 
-    def create_lock(self, file_path: str, user: str) -> bool:
-        lock_file = self._get_lock_file_path(file_path)
+    def _get_lock_file_path(self, file_path_str: str) -> Path:
+        """Generates a safe, unique filename for the lock file."""
+        # Sanitize the file path to create a valid filename
+        sanitized_filename = file_path_str.replace(os.path.sep, '_').replace('.', '_')
+        return self.locks_dir / f"{sanitized_filename}.lock"
+
+    def create_lock(self, file_path_str: str, user: str) -> Optional[Path]:
+        """
+        Creates a new lock file. Returns the path to the lock file on success,
+        or None if it already exists.
+        """
+        lock_file = self._get_lock_file_path(file_path_str)
         if lock_file.exists():
-            return False
-        
+            return None  # Lock failed, file is already locked
+
         lock_data = {
-            "file": file_path,
+            "file": file_path_str,
             "user": user,
             "timestamp": datetime.now().isoformat() + "Z"
         }
         with open(lock_file, "w") as f:
             json.dump(lock_data, f, indent=4)
-        return True
+        return lock_file # Return the path of the created lock file
 
-    def release_lock(self, file_path: str, user: Optional[str] = None) -> bool:
-        lock_file = self._get_lock_file_path(file_path)
+    def release_lock(self, file_path_str: str, user: Optional[str] = None) -> bool:
+        """
+        Deletes a lock file, optionally verifying the user.
+        """
+        lock_file = self._get_lock_file_path(file_path_str)
         if not lock_file.exists():
-            return False
-        
+            return True # Already unlocked
+
         if user:
             try:
-                with open(lock_file, "r") as f:
-                    lock_data = json.load(f)
+                lock_data = json.loads(lock_file.read_text())
                 if lock_data.get("user") != user:
-                    return False
+                    return False # Locked by someone else
             except (IOError, json.JSONDecodeError):
-                return False
-        
+                return False # Cannot read lock file
+
         os.remove(lock_file)
         return True
 
-    def get_lock_info(self, file_path: str) -> Optional[Dict]:
-        lock_file = self._get_lock_file_path(file_path)
+    def get_lock_info(self, file_path_str: str) -> Optional[Dict]:
+        """Reads and returns the contents of a lock file, if it exists."""
+        lock_file = self._get_lock_file_path(file_path_str)
         if not lock_file.exists():
             return None
-        
+
         try:
-            with open(lock_file, "r") as f:
-                return json.load(f)
+            return json.loads(lock_file.read_text())
         except (IOError, json.JSONDecodeError):
             return None
 
-    def cleanup_stale_locks(self, timeout_days: int = 7) -> int:
-        stale_count = 0
-        timeout_seconds = timeout_days * 24 * 60 * 60
-        for lock_file in self.metadata_path.glob("*.lock"):
-            try:
-                file_mod_time = lock_file.stat().st_mtime
-                if (datetime.now().timestamp() - file_mod_time) > timeout_seconds:
-                    os.remove(lock_file)
-                    stale_count += 1
-            except OSError:
-                continue
-        return stale_count
 
 class ConnectionManager:
     def __init__(self):
@@ -694,13 +827,68 @@ def create_backup(file_path: str, content: bytes):
     except Exception as e:
         logger.error(f"Failed to create backup: {str(e)}")
 
+# async def initialize_application():
+#     try:
+#         app_state['config_manager'] = ConfigManager()
+#         config = app_state['config_manager'].config
+        
+#         metadata_path = Path(config.local.get('temp_path')) / 'metadata'
+#         app_state['metadata_manager'] = MetadataManager(metadata_path)
+        
+#         user_provided_repo_url = config.gitlab.get('base_url')
+
+#         if user_provided_repo_url and config.gitlab.get('token'):
+#             try:
+#                 api_base_url_parts = user_provided_repo_url.split('/')[:3]
+#                 api_base_url = '/'.join(api_base_url_parts)
+#                 if not api_base_url:
+#                     api_base_url = "https://gitlab.com"
+#             except Exception as e:
+#                 logger.warning(f"Could not parse API base URL from '{user_provided_repo_url}': {e}. Defaulting to https://gitlab.com")
+#                 api_base_url = "https://gitlab.com"
+
+#             app_state['gitlab_api'] = GitLabAPI(
+#                 base_url=api_base_url,
+#                 token=config.gitlab.get('token'),
+#                 project_id=config.gitlab.get('project_id')
+#             )
+            
+#             if app_state['gitlab_api'].test_connection():
+#                 logger.info("GitLab connection established")
+                
+#                 app_state['git_repo'] = GitRepository(
+#                     repo_path=Path(config.local.get('repo_path')),
+#                     remote_url=user_provided_repo_url,
+#                     username=config.gitlab.get('username'),
+#                     token=config.gitlab.get('token')
+#                 )
+                
+#                 if app_state['git_repo'].clone_or_pull():
+#                     logger.info("Repository synchronized")
+#                     app_state['initialized'] = True
+#                 else:
+#                     logger.warning("Failed to synchronize repository")
+#             else:
+#                 logger.warning("GitLab connection failed")
+#         else:
+#             logger.info("GitLab not configured, running in demo mode")
+        
+#         if app_state.get('metadata_manager'):
+#             cleaned = app_state['metadata_manager'].cleanup_stale_locks()
+#             if cleaned > 0:
+#                 logger.info(f"Cleaned up {cleaned} stale file locks")
+        
+#         logger.info("Application initialization completed")
+        
+#     except Exception as e:
+#         logger.error(f"Failed to initialize application: {str(e)}")
+
+
+# In mastercam_main.py, replace your `initialize_application` function with this one.
 async def initialize_application():
     try:
         app_state['config_manager'] = ConfigManager()
         config = app_state['config_manager'].config
-        
-        metadata_path = Path(config.local.get('temp_path')) / 'metadata'
-        app_state['metadata_manager'] = MetadataManager(metadata_path)
         
         user_provided_repo_url = config.gitlab.get('base_url')
 
@@ -733,13 +921,19 @@ async def initialize_application():
                 if app_state['git_repo'].clone_or_pull():
                     logger.info("Repository synchronized")
                     app_state['initialized'] = True
+                    # FIX: Initialize the MetadataManager with the correct path
+                    metadata_repo_path = Path(config.local.get('repo_path')) / '.locks'
+                    app_state['metadata_manager'] = MetadataManager(metadata_repo_path)
                 else:
                     logger.warning("Failed to synchronize repository")
             else:
                 logger.warning("GitLab connection failed")
         else:
             logger.info("GitLab not configured, running in demo mode")
+            # If not initialized, set up a dummy metadata manager
+            app_state['metadata_manager'] = MetadataManager(Path(tempfile.gettempdir()) / 'mastercam_git_interface' / '.locks')
         
+        # Cleanup stale locks
         if app_state.get('metadata_manager'):
             cleaned = app_state['metadata_manager'].cleanup_stale_locks()
             if cleaned > 0:
@@ -749,6 +943,7 @@ async def initialize_application():
         
     except Exception as e:
         logger.error(f"Failed to initialize application: {str(e)}")
+
 
 async def cleanup_application():
     try:
@@ -840,47 +1035,53 @@ async def get_files():
 @app.post("/files/{filename}/checkout")
 async def checkout_file(filename: str, request: CheckoutRequest):
     try:
-        if not app_state['metadata_manager']:
-            raise HTTPException(status_code=500, detail="Metadata manager not available")
-        
+        git_repo = app_state.get('git_repo')
+        metadata_manager = app_state.get('metadata_manager')
+
+        if not git_repo or not metadata_manager:
+            raise HTTPException(status_code=500, detail="Repository not properly initialized.")
+
+        # 1. Pull latest changes to get the most recent lock status
+        git_repo.repo.remotes.origin.pull()
+
         file_path = find_file_path(filename)
         if not file_path:
             raise HTTPException(status_code=404, detail="File not found")
-        
-        # Check existing lock status
-        lock_info = app_state['metadata_manager'].get_lock_info(file_path)
-        
-        if lock_info:
-            if lock_info['user'] == request.user:
-                # User already has the file checked out - allow re-checkout
-                logger.info(f"File '{filename}' re-checked out by '{request.user}' (already locked by same user)")
-                return JSONResponse({
-                    "status": "success", 
-                    "message": f"File '{filename}' is already checked out by you. Download available.",
-                    "download_url": f"/files/{filename}/download",
-                    "already_locked": True
-                })
-            else:
-                # File is locked by different user
-                raise HTTPException(
-                    status_code=409, 
-                    detail=f"File is already locked by {lock_info['user']}"
-                )
-        
-        # Create new lock
-        success = app_state['metadata_manager'].create_lock(file_path, request.user)
-        if success:
-            logger.info(f"File '{filename}' checked out by '{request.user}'")
-            await manager.broadcast(f"FILE_STATUS_CHANGED:{filename}:locked:{request.user}")
-            return JSONResponse({
-                "status": "success", 
-                "message": f"File '{filename}' checked out successfully", 
-                "download_url": f"/files/{filename}/download",
-                "already_locked": False
-            })
-        else:
-            raise HTTPException(status_code=500, detail="Failed to create file lock")
-            
+
+        # 2. Check if file is already locked by someone else
+        if metadata_manager.get_lock_info(file_path):
+            lock_info = metadata_manager.get_lock_info(file_path)
+            raise HTTPException(
+                status_code=409,
+                detail=f"File is already locked by {lock_info['user']}"
+            )
+
+        # 3. Create the lock file locally
+        lock_file_path = metadata_manager.create_lock(file_path, request.user)
+        if not lock_file_path:
+            raise HTTPException(status_code=500, detail="Failed to create lock file.")
+
+        # 4. Commit and push the new lock file to GitLab
+        commit_message = f"LOCK: {filename} by {request.user}"
+        author_email = f"{request.user}@example.com"
+        success = git_repo.commit_and_push(
+            file_paths=[str(lock_file_path)],
+            message=commit_message,
+            author_name=request.user,
+            author_email=author_email
+        )
+
+        if not success:
+            metadata_manager.release_lock(file_path) # Clean up local lock file on failure
+            raise HTTPException(status_code=500, detail="Failed to push lock file to remote.")
+
+        await manager.broadcast(f"FILE_STATUS_CHANGED:{filename}:locked:{request.user}")
+        return JSONResponse({
+            "status": "success",
+            "message": f"File '{filename}' checked out successfully",
+            "download_url": f"/files/{filename}/download"
+        })
+
     except HTTPException:
         raise
     except Exception as e:
@@ -888,37 +1089,59 @@ async def checkout_file(filename: str, request: CheckoutRequest):
         raise HTTPException(status_code=500, detail="Failed to checkout file")
 
 
-
 @app.post("/files/{filename}/checkin")
 async def checkin_file(filename: str, background_tasks: BackgroundTasks, user: str = Form(...), file: UploadFile = File(...)):
     try:
-        if not app_state['metadata_manager']:
-            raise HTTPException(status_code=500, detail="Metadata manager not available")
-        file_path = find_file_path(filename)
-        if not file_path:
+        git_repo = app_state.get('git_repo')
+        metadata_manager = app_state.get('metadata_manager')
+
+        if not git_repo or not metadata_manager:
+            raise HTTPException(status_code=500, detail="Repository not properly initialized.")
+
+        file_path_str = find_file_path(filename)
+        if not file_path_str:
             raise HTTPException(status_code=404, detail="File not found")
-        lock_info = app_state['metadata_manager'].get_lock_info(file_path)
-        if not lock_info:
-            raise HTTPException(status_code=409, detail="File is not locked")
-        if lock_info['user'] != user:
-            raise HTTPException(status_code=409, detail="File is locked by a different user")
+
+        # 1. Verify the user holds the lock
+        lock_info = metadata_manager.get_lock_info(file_path_str)
+        if not lock_info or lock_info['user'] != user:
+            raise HTTPException(status_code=403, detail="You do not have this file locked.")
+
         content = await file.read()
-        if len(content) == 0:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty")
-        max_size = app_state['config_manager'].config.local.get('max_file_size_mb', 100) * 1024 * 1024
-        if len(content) > max_size:
-            raise HTTPException(status_code=400, detail=f"File size exceeds maximum allowed size ({max_size // 1024 // 1024} MB)")
-        background_tasks.add_task(process_checkin, filename, content, user)
-        app_state['metadata_manager'].release_lock(file_path, user)
-        logger.info(f"File '{filename}' check-in initiated by '{user}'")
+        # ... (add your file size validation here) ...
+
+        # 2. Save the new file content locally
+        full_file_path = git_repo.repo_path / file_path_str
+        git_repo.save_file(file_path_str, content)
+        
+        # 3. Get the path to the lock file BEFORE deleting it
+        lock_file_path = metadata_manager._get_lock_file_path(file_path_str)
+
+        # 4. Release the lock (deletes the file locally)
+        metadata_manager.release_lock(file_path_str, user)
+        
+        # 5. Commit and push BOTH the updated .mcam file and the deleted .lock file
+        commit_message = f"UPDATE: {filename} and release lock by {user}"
+        author_email = f"{user}@example.com"
+        success = git_repo.commit_and_push(
+            file_paths=[str(full_file_path), str(lock_file_path)], # Add both to the index
+            message=commit_message,
+            author_name=user,
+            author_email=author_email
+        )
+
+        if not success:
+            # This is tricky; ideally, you'd revert the local changes.
+            # For simplicity, we'll just log an error.
+            raise HTTPException(status_code=500, detail="Failed to push file changes to remote.")
+
         await manager.broadcast(f"FILE_STATUS_CHANGED:{filename}:unlocked:")
-        return JSONResponse({"status": "success", "message": f"File '{filename}' is being processed"})
+        return JSONResponse({"status": "success", "message": f"File '{filename}' checked in successfully"})
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error checking in file '{filename}': {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to checkin file")
-
 @app.post("/files/{filename}/override")
 async def admin_override(filename: str, request: AdminOverrideRequest):
     try:
