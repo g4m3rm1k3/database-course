@@ -1,0 +1,11 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+websockets==12.0
+pydantic==2.5.0
+requests==2.31.0
+cryptography==41.0.7
+pyinstaller==6.2.0
+
+# Git LFS support (install separately)
+# git-lfs

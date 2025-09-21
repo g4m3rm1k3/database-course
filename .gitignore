@@ -1,0 +1,8 @@
+/.local
+/.replit
+/.venv
+/hr.db
+/mastercam_git_interface.log
+/poetry.lock
+/pyproject.toml
+/__pycache__
