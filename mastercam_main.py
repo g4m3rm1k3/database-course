@@ -842,22 +842,52 @@ async def checkout_file(filename: str, request: CheckoutRequest):
     try:
         if not app_state['metadata_manager']:
             raise HTTPException(status_code=500, detail="Metadata manager not available")
+        
         file_path = find_file_path(filename)
         if not file_path:
             raise HTTPException(status_code=404, detail="File not found")
+        
+        # Check existing lock status
+        lock_info = app_state['metadata_manager'].get_lock_info(file_path)
+        
+        if lock_info:
+            if lock_info['user'] == request.user:
+                # User already has the file checked out - allow re-checkout
+                logger.info(f"File '{filename}' re-checked out by '{request.user}' (already locked by same user)")
+                return JSONResponse({
+                    "status": "success", 
+                    "message": f"File '{filename}' is already checked out by you. Download available.",
+                    "download_url": f"/files/{filename}/download",
+                    "already_locked": True
+                })
+            else:
+                # File is locked by different user
+                raise HTTPException(
+                    status_code=409, 
+                    detail=f"File is already locked by {lock_info['user']}"
+                )
+        
+        # Create new lock
         success = app_state['metadata_manager'].create_lock(file_path, request.user)
-        if not success:
-            lock_info = app_state['metadata_manager'].get_lock_info(file_path)
-            if lock_info and lock_info['user'] != request.user:
-                raise HTTPException(status_code=409, detail=f"File is already locked by {lock_info['user']}")
-        logger.info(f"File '{filename}' checked out by '{request.user}'")
-        await manager.broadcast(f"FILE_STATUS_CHANGED:{filename}:locked:{request.user}")
-        return JSONResponse({"status": "success", "message": f"File '{filename}' checked out successfully", "download_url": f"/files/{filename}/download"})
+        if success:
+            logger.info(f"File '{filename}' checked out by '{request.user}'")
+            await manager.broadcast(f"FILE_STATUS_CHANGED:{filename}:locked:{request.user}")
+            return JSONResponse({
+                "status": "success", 
+                "message": f"File '{filename}' checked out successfully", 
+                "download_url": f"/files/{filename}/download",
+                "already_locked": False
+            })
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create file lock")
+            
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error checking out file '{filename}': {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to checkout file")
+
+
 
 @app.post("/files/{filename}/checkin")
 async def checkin_file(filename: str, background_tasks: BackgroundTasks, user: str = Form(...), file: UploadFile = File(...)):

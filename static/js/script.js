@@ -1,5 +1,3 @@
-// In your script.js file, replace the existing code with this corrected version.
-
 // Function declarations
 let currentUser = "demo_user";
 let ws = null;
@@ -92,6 +90,7 @@ async function loadFiles() {
     const response = await fetch("/files");
     const data = await response.json();
 
+    // FIX: Ensure the response is an array before assigning it
     if (Array.isArray(data)) {
       files = data;
     } else {
@@ -144,6 +143,7 @@ function renderFiles() {
   const fileListEl = document.getElementById("fileList");
   const searchTerm = document.getElementById("searchInput").value.toLowerCase();
 
+  // FIX: Check if `files` is an array and filter it, otherwise use an empty array.
   const filteredFiles = Array.isArray(files)
     ? files.filter(
         (file) =>
@@ -313,71 +313,23 @@ async function checkoutFile(filename) {
   }
 }
 
-// Function to open the check-in modal
-let checkinFilenameGlobal = "";
-
 function showCheckinDialog(filename) {
-  checkinFilenameGlobal = filename;
-  document.getElementById("checkinModal").classList.remove("hidden");
-  document.getElementById("checkinFileName").textContent = filename;
-
-  // TODO: Get current file version via an API call
-  // For now, let's just assume it's `1.0` or something.
-  document.getElementById("currentFileVersion").textContent = "v1.0";
-}
-
-function performCheckin(revisionType) {
-  const filename = checkinFilenameGlobal;
   const input = document.getElementById("fileUpload");
-
-  if (input.files.length === 0) {
-    showNotification("Please select a file to upload.", "error");
-    return;
-  }
-
-  const file = input.files[0];
-  checkinFile(filename, file, revisionType);
-  closeModal("checkinModal");
-}
-
-// Function to handle the form submission in the new file modal
-document
-  .getElementById("newFileUploadForm")
-  .addEventListener("submit", async function (e) {
-    e.preventDefault();
-
-    const fileInput = document.getElementById("newFileSelect");
-    const file = fileInput.files[0];
-    const initialRev = document.getElementById("initialRev").value;
-
-    if (!file) {
-      showNotification("Please select a file to upload.", "error");
-      return;
+  input.onchange = function (event) {
+    const file = event.target.files[0];
+    if (file) {
+      checkinFile(filename, file);
     }
-
-    uploadNewFile(file, initialRev);
-    closeModal("newFileModal");
-  });
-
-function showNewFileDialog() {
-  document.getElementById("newFileModal").classList.remove("hidden");
+  };
+  input.click();
 }
 
-function closeModal(modalId) {
-  document.getElementById(modalId).classList.add("hidden");
-}
-
-async function checkinFile(filename, file, revisionType) {
+async function checkinFile(filename, file) {
   try {
-    showNotification(
-      `Uploading '${filename}' (${revisionType} revision)...`,
-      "info"
-    );
+    showNotification(`Uploading ${filename}...`, "info");
     const formData = new FormData();
     formData.append("user", currentUser);
     formData.append("file", file);
-    formData.append("revision_type", revisionType);
-
     const response = await fetch(`/files/${filename}/checkin`, {
       method: "POST",
       body: formData,
@@ -392,37 +344,6 @@ async function checkinFile(filename, file, revisionType) {
   } catch (error) {
     console.error("Error checking in file:", error);
     showNotification("Error checking in file", "error");
-  }
-}
-
-async function uploadNewFile(file, initialRev) {
-  try {
-    showNotification(
-      `Adding new file '${file.name}' (rev ${initialRev})...`,
-      "info"
-    );
-
-    const formData = new FormData();
-    formData.append("user", currentUser);
-    formData.append("file", file);
-    formData.append("initial_revision", initialRev);
-
-    const response = await fetch(`/files/new_upload`, {
-      method: "POST",
-      body: formData,
-    });
-
-    const result = await response.json();
-
-    if (response.ok) {
-      showNotification(`New file '${file.name}' is being processed`, "success");
-      loadFiles();
-    } else {
-      showNotification(`Error: ${result.detail}`, "error");
-    }
-  } catch (error) {
-    console.error("Error uploading new file:", error);
-    showNotification("Error uploading new file", "error");
   }
 }
 
@@ -522,6 +443,44 @@ function showFileHistoryModal(historyData) {
       modal.remove();
     }
   });
+}
+
+function showNewFileDialog() {
+  const input = document.getElementById("newFileUpload");
+  input.onchange = function (event) {
+    const file = event.target.files[0];
+    if (file) {
+      uploadNewFile(file);
+    }
+  };
+  input.click();
+}
+
+async function uploadNewFile(file) {
+  try {
+    showNotification(`Adding new file '${file.name}'...`, "info");
+
+    const formData = new FormData();
+    formData.append("user", currentUser);
+    formData.append("file", file);
+
+    const response = await fetch(`/files/new_upload`, {
+      method: "POST",
+      body: formData,
+    });
+
+    const result = await response.json();
+
+    if (response.ok) {
+      showNotification(`New file '${file.name}' is being processed`, "success");
+      loadFiles();
+    } else {
+      showNotification(`Error: ${result.detail}`, "error");
+    }
+  } catch (error) {
+    console.error("Error uploading new file:", error);
+    showNotification("Error uploading new file", "error");
+  }
 }
 
 function toggleConfigPanel() {

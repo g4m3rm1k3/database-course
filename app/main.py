@@ -1,49 +1,38 @@
-#!/usr/bin/env python3
-"""
-Mastercam GitLab Interface - Main Application Entry Point
-Modified to work with current single-file structure
-"""
+# main.py
 
+import os
 import sys
-import threading
+import asyncio
 import webbrowser
+import threading
 import logging
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 
-# Import from your existing single file - replace 'mastercam_main' with your actual filename
-from mastercam_main import (
-    initialize_application, 
-    cleanup_application,
-    app_state
-)
+# Import custom modules
+from app.api import app_state, manager, router, initialize_application, cleanup_application
+from services.git_operations import GitRepository, MetadataManager, GitLabAPI
+from services.config_manager import ConfigManager
+from app.models import AppConfig
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('mastercam_git_interface.log'),
-        logging.StreamHandler()
-    ]
-)
 logger = logging.getLogger(__name__)
 
+# Lifespan event handler
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler."""
     logger.info("Starting Mastercam GitLab Interface...")
     await initialize_application()
     yield
     logger.info("Shutting down Mastercam GitLab Interface...")
     await cleanup_application()
 
-# Create FastAPI application
+# FastAPI setup
 app = FastAPI(
     title="Mastercam GitLab Interface",
     description="User-friendly interface for managing Mastercam files with GitLab",
@@ -51,7 +40,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -60,43 +48,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount static files and templates
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# Import and include your existing endpoints from the main file
-from mastercam_main import (
-    new_upload,
-    get_files,
-    checkout_file,
-    checkin_file,
-    admin_override,
-    download_file,
-    get_file_history,
-    get_config,
-    update_gitlab_config,
-    websocket_endpoint
-)
+# Mount the API router
+app.include_router(router)
 
-# Add your existing endpoints
-app.post("/files/new_upload")(new_upload)
-app.get("/files")(get_files)
-app.post("/files/{filename}/checkout")(checkout_file)
-app.post("/files/{filename}/checkin")(checkin_file)
-app.post("/files/{filename}/override")(admin_override)
-app.get("/files/{filename}/download")(download_file)
-app.get("/files/{filename}/history")(get_file_history)
-app.get("/config")(get_config)
-app.post("/config/gitlab")(update_gitlab_config)
-app.websocket("/ws")(websocket_endpoint)
-
-# Root endpoint
-@app.get("/")
+@app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 def open_browser(port: int = 8000):
-    """Open the application in the default web browser."""
     url = f"http://localhost:{port}"
     logger.info(f"Opening browser to {url}")
     try:
@@ -105,24 +67,18 @@ def open_browser(port: int = 8000):
         logger.warning(f"Could not open browser automatically: {e}")
 
 def main():
-    """Main application entry point."""
     logger.info("Starting Mastercam GitLab Interface...")
     if getattr(sys, 'frozen', False):
         logger.info("Running as PyInstaller executable")
     else:
         logger.info("Running as Python script")
-    
     port = 8000
-    
-    # Start browser in separate thread
     def delayed_browser_open():
         import time
         time.sleep(3)
         open_browser(port)
-    
     browser_thread = threading.Thread(target=delayed_browser_open, daemon=True)
     browser_thread.start()
-    
     try:
         uvicorn.run(
             app,
