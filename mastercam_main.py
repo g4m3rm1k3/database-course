@@ -75,15 +75,13 @@ class EncryptionManager:
         self._initialize_encryption()
     def _initialize_encryption(self):
         try:
-            if self.key_file.exists():
-                key = self.key_file.read_bytes()
+            if self.key_file.exists(): key = self.key_file.read_bytes()
             else:
                 key = Fernet.generate_key()
                 self.key_file.write_bytes(key)
                 if os.name != 'nt': os.chmod(self.key_file, 0o600)
             self._fernet = Fernet(key)
-        except Exception as e:
-            logger.error(f"Failed to initialize encryption: {e}")
+        except Exception as e: logger.error(f"Failed to initialize encryption: {e}")
     def encrypt(self, data: str) -> str:
         if self._fernet: return base64.b64encode(self._fernet.encrypt(data.encode())).decode()
         return data
@@ -95,20 +93,18 @@ class ConfigManager:
     def __init__(self, config_dir: Optional[Path] = None):
         if config_dir is None:
             config_dir = Path.home() / 'AppData' / 'Local' / 'MastercamGitInterface' if os.name == 'nt' else Path.home() / '.config' / 'mastercam_git_interface'
-        self.config_dir = config_dir
-        self.config_file = self.config_dir / 'config.json'
+        self.config_dir, self.config_file = config_dir, config_dir / 'config.json'
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.encryption = EncryptionManager(self.config_dir)
         self.config = self._load_config()
     def _load_config(self) -> AppConfig:
         try:
-            if self.config_file.exists():
+            if self.config_file.exists() and self.config_file.read_text():
                 data = json.loads(self.config_file.read_text())
-                if 'gitlab' in data and 'token' in data['gitlab'] and data['gitlab']['token']:
+                if 'gitlab' in data and data.get('gitlab', {}).get('token'):
                     data['gitlab']['token'] = self.encryption.decrypt(data['gitlab']['token'])
                 return AppConfig(**data)
-        except Exception as e:
-            logger.error(f"Failed to load config: {e}")
+        except Exception as e: logger.error(f"Failed to load config: {e}")
         return AppConfig()
     def save_config(self):
         try:
@@ -116,8 +112,7 @@ class ConfigManager:
             if data.get('gitlab', {}).get('token'):
                 data['gitlab']['token'] = self.encryption.encrypt(data['gitlab']['token'])
             self.config_file.write_text(json.dumps(data, indent=2))
-        except Exception as e:
-            logger.error(f"Failed to save config: {e}")
+        except Exception as e: logger.error(f"Failed to save config: {e}")
     def update_gitlab_config(self, **kwargs):
         gitlab_config = self.config.model_dump().get('gitlab', {})
         gitlab_config.update(kwargs)
@@ -181,13 +176,58 @@ class GitRepository:
     def save_file(self, file_path: str, content: bytes):
         (self.repo_path / file_path).parent.mkdir(parents=True, exist_ok=True)
         (self.repo_path / file_path).write_bytes(content)
+
+    def _normalize_commit_paths(self, file_paths: List[str]) -> List[str]:
+        # Ensure paths are relative to repo root and use forward slashes for git
+        normalized = []
+        for p in file_paths:
+            p_path = Path(p)
+            try:
+                rel = p_path.relative_to(self.repo_path)
+                normalized.append(str(rel).replace(os.sep, '/'))
+            except Exception:
+                # If it's already relative
+                normalized.append(str(Path(p).as_posix()))
+        return normalized
+
     def commit_and_push(self, file_paths: List[str], message: str, author_name: str, author_email: str) -> bool:
+        """
+        Commits and pushes provided file paths. Handles additions and deletions:
+        - If a path exists on disk, stage it via add.
+        - If a path does not exist (deleted), stage its removal via index.remove.
+        """
         if not self.repo: return False
         try:
-            self.repo.index.add(file_paths)
-            if not self.repo.index.diff("HEAD"):
+            normalized_paths = self._normalize_commit_paths(file_paths)
+            # Stage each path appropriately
+            for rel_path in normalized_paths:
+                abs_path = self.repo_path / rel_path
+                if abs_path.exists():
+                    # Add new/modified file
+                    try:
+                        self.repo.index.add([rel_path])
+                    except Exception as e_add:
+                        logger.error(f"Failed to add {rel_path} to index: {e_add}")
+                else:
+                    # If file has been removed, stage the deletion
+                    try:
+                        # ignore if file isn't tracked yet
+                        self.repo.index.remove([rel_path], working_tree=True, r=True)
+                    except Exception as e_remove:
+                        # removal may fail if file not tracked; log and continue
+                        logger.debug(f"Could not remove {rel_path} from index (may be untracked): {e_remove}")
+
+            # If there are no staged changes compared to HEAD, skip commit
+            try:
+                diff_index = self.repo.index.diff("HEAD")
+            except Exception:
+                # If HEAD doesn't exist (initial commit) treat index as changed
+                diff_index = True
+
+            if not diff_index:
                 logger.info("No changes to commit.")
                 return True
+
             author = Actor(author_name, author_email)
             self.repo.index.commit(message, author=author)
             self.repo.remotes.origin.push()
@@ -195,9 +235,13 @@ class GitRepository:
             return True
         except Exception as e:
             logger.error(f"Git commit/push failed: {e}")
-            try: self.repo.git.reset('--hard', f'origin/{self.repo.active_branch.name}')
-            except Exception as reset_e: logger.error(f"Failed to reset repo after push failure: {reset_e}")
+            try:
+                if self.repo and self.repo.active_branch:
+                    self.repo.git.reset('--hard', f'origin/{self.repo.active_branch.name}')
+            except Exception as reset_e:
+                logger.error(f"Failed to reset repo after push failure: {reset_e}")
             return False
+
     def get_file_history(self, file_path: str, limit: int = 10) -> List[Dict]:
         if not self.repo: return []
         try:
@@ -216,17 +260,39 @@ class MetadataManager:
     def _get_lock_file_path(self, file_path_str: str) -> Path:
         sanitized = file_path_str.replace(os.path.sep, '_').replace('.', '_')
         return self.locks_dir / f"{sanitized}.lock"
-    def create_lock(self, file_path: str, user: str) -> Optional[Path]:
+    def create_lock(self, file_path: str, user: str, force: bool = False) -> Optional[Path]:
         lock_file = self._get_lock_file_path(file_path)
-        if lock_file.exists(): return None
+        if lock_file.exists() and not force:
+            return None
         lock_data = {"file": file_path, "user": user, "timestamp": datetime.now().isoformat() + "Z"}
         lock_file.write_text(json.dumps(lock_data, indent=2))
         return lock_file
+    def refresh_lock(self, file_path: str, user: str) -> Optional[Path]:
+        """
+        If a lock exists and is owned by `user`, update its timestamp and return the path.
+        Otherwise returns None.
+        """
+        lock_file = self._get_lock_file_path(file_path)
+        if not lock_file.exists(): return None
+        try:
+            data = json.loads(lock_file.read_text())
+            if data.get('user') != user:
+                return None
+            data['timestamp'] = datetime.now().isoformat() + "Z"
+            lock_file.write_text(json.dumps(data, indent=2))
+            return lock_file
+        except Exception as e:
+            logger.error(f"Failed to refresh lock for {file_path}: {e}")
+            return None
     def release_lock(self, file_path: str):
         self._get_lock_file_path(file_path).unlink(missing_ok=True)
     def get_lock_info(self, file_path: str) -> Optional[Dict]:
         lock_file = self._get_lock_file_path(file_path)
-        if lock_file.exists(): return json.loads(lock_file.read_text())
+        if lock_file.exists():
+            try:
+                return json.loads(lock_file.read_text())
+            except Exception:
+                return None
         return None
 
 class ConnectionManager:
@@ -270,7 +336,6 @@ async def initialize_application():
         app_state['config_manager'] = ConfigManager()
         cfg = app_state['config_manager'].config.model_dump()
         gitlab_cfg = cfg.get('gitlab', {})
-        
         if all(gitlab_cfg.get(k) for k in ['base_url', 'token', 'project_id']):
             base_url = '/'.join(gitlab_cfg['base_url'].split('/')[:3])
             app_state['gitlab_api'] = GitLabAPI(base_url, gitlab_cfg['token'], gitlab_cfg['project_id'])
@@ -286,7 +351,6 @@ async def initialize_application():
         logger.error(f"Initialization failed: {e}")
     if not app_state.get('initialized'):
         logger.warning("Running in limited/demo mode. Check config if this is unexpected.")
-        # Setup a dummy manager for demo mode to prevent crashes
         app_state['metadata_manager'] = MetadataManager(Path(tempfile.gettempdir()) / 'mastercam_git_interface')
 
 # --- Helper Functions ---
@@ -306,40 +370,40 @@ def create_backup(file_path: str, content: bytes):
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_file = backup_dir / f"{Path(file_path).stem}_{datetime.now():%Y%m%d_%H%M%S}{Path(file_path).suffix}"
         backup_file.write_bytes(content)
-        logger.info(f"Backup created for {file_path}")
-    except Exception as e:
-        logger.error(f"Backup failed: {e}")
+    except Exception as e: logger.error(f"Backup failed: {e}")
 
-# --- Real-Time Update Function ---
-async def broadcast_file_list_update():
-    # ... This function logic is complex, keep it separate for clarity ...
-    try:
-        await asyncio.sleep(0.5) # Small delay to allow filesystem to settle
-        git_repo, metadata_manager = app_state.get('git_repo'), app_state.get('metadata_manager')
-        if not git_repo or not metadata_manager: return
+def _get_current_file_state() -> Dict[str, List[Dict]]:
+    """Pulls latest changes, lists all files, and groups them. This is the single source of truth."""
+    git_repo, metadata_manager = app_state.get('git_repo'), app_state.get('metadata_manager')
+    if not git_repo or not metadata_manager: return {"Miscellaneous": get_demo_files()}
+
+    git_repo.pull()
+    repo_files, grouped_files = git_repo.list_files("*.mcam"), {}
+    current_user = app_state.get('current_user', 'demo_user')
+    for file_data in repo_files:
+        filename = file_data['name'].strip()
+        group_name = "Miscellaneous"
+        if re.match(r"^\d{7}.*\.mcam$", filename): group_name = f"{filename[:2]}XXXXX"
+        if group_name not in grouped_files: grouped_files[group_name] = []
         
-        git_repo.pull()
-        repo_files = git_repo.list_files("*.mcam")
-        grouped_files_data = {}
-        current_user = app_state.get('current_user', 'demo_user')
+        lock_info = metadata_manager.get_lock_info(file_data['path'])
+        status, locked_by, locked_at = "unlocked", None, None
+        if lock_info:
+            status, locked_by, locked_at = "locked", lock_info.get('user'), lock_info.get('timestamp')
+            if locked_by == current_user: status = "checked_out_by_user"
+        
+        file_data['filename'] = file_data.pop('name')
+        file_data.update({"status": status, "locked_by": locked_by, "locked_at": locked_at})
+        grouped_files[group_name].append(file_data)
+    return grouped_files
 
-        for file_data in repo_files:
-            group_name = "Miscellaneous"
-            if re.match(r"^\d{7}.*\.mcam$", file_data['name']):
-                group_name = f"{file_data['name'][:2]}XXXXX"
-            if group_name not in grouped_files_data: grouped_files_data[group_name] = []
-            
-            lock_info = metadata_manager.get_lock_info(file_data['path'])
-            status, locked_by, locked_at = "unlocked", None, None
-            if lock_info:
-                status, locked_by, locked_at = "locked", lock_info.get('user'), lock_info.get('timestamp')
-                if locked_by == current_user: status = "checked_out_by_user"
-            
-            file_data['filename'] = file_data.pop('name')
-            file_info_dict = {**file_data, "status": status, "locked_by": locked_by, "locked_at": locked_at}
-            grouped_files_data[group_name].append(file_info_dict)
-
-        await manager.broadcast(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_files_data}))
+async def broadcast_file_list_update():
+    """Broadcasts the current file state to all WebSocket clients."""
+    try:
+        logger.info("Broadcasting file list update...")
+        grouped_data = _get_current_file_state()
+        await manager.broadcast(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
+        logger.info("Broadcast complete.")
     except Exception as e:
         logger.error(f"Failed to broadcast file list update: {e}")
 
@@ -349,8 +413,7 @@ async def root(request: Request): return templates.TemplateResponse("index.html"
 
 @app.get("/config")
 async def get_config():
-    if config_manager := app_state.get('config_manager'):
-        return config_manager.get_config_summary()
+    if config_manager := app_state.get('config_manager'): return config_manager.get_config_summary()
     raise HTTPException(status_code=503, detail="Application not fully initialized.")
 
 @app.post("/config/gitlab")
@@ -363,32 +426,12 @@ async def update_gitlab_config(request: ConfigUpdateRequest):
 
 @app.get("/files", response_model=Dict[str, List[FileInfo]])
 async def get_files():
-    git_repo, metadata_manager = app_state.get('git_repo'), app_state.get('metadata_manager')
-    if not git_repo or not metadata_manager:
-        return {"Miscellaneous": [FileInfo(**f) for f in get_demo_files()]}
     try:
-        git_repo.pull()
-        repo_files = git_repo.list_files("*.mcam")
-        grouped_files, current_user = {}, app_state.get('current_user', 'demo_user')
-        for file_data in repo_files:
-            group_name = "Miscellaneous"
-            if re.match(r"^\d{7}.*\.mcam$", file_data['name']):
-                group_name = f"{file_data['name'][:2]}XXXXX"
-            if group_name not in grouped_files: grouped_files[group_name] = []
-            
-            lock_info = metadata_manager.get_lock_info(file_data['path'])
-            status, locked_by, locked_at = "unlocked", None, None
-            if lock_info:
-                status, locked_by, locked_at = "locked", lock_info.get('user'), lock_info.get('timestamp')
-                if locked_by == current_user: status = "checked_out_by_user"
-            
-            file_data['filename'] = file_data.pop('name')
-            file_data.update({"status": status, "locked_by": locked_by, "locked_at": locked_at})
-            grouped_files[group_name].append(FileInfo(**file_data))
-        return grouped_files
+        grouped_data = _get_current_file_state()
+        return {group: [FileInfo(**file_data) for file_data in files] for group, files in grouped_data.items()}
     except Exception as e:
-        logger.error(f"Error fetching files: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch files")
+        logger.error(f"Error in get_files endpoint: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve file list.")
 
 @app.post("/files/new_upload")
 async def new_upload(user: str = Form(...), file: UploadFile = File(...)):
@@ -412,21 +455,43 @@ async def checkout_file(filename: str, request: CheckoutRequest):
     git_repo.pull()
     file_path = find_file_path(filename)
     if not file_path: raise HTTPException(status_code=404, detail="File not found")
-    if metadata_manager.get_lock_info(file_path): raise HTTPException(status_code=409, detail="File is already locked.")
 
+    existing_lock = metadata_manager.get_lock_info(file_path)
+    if existing_lock:
+        # If same user, refresh timestamp and commit updated lock
+        if existing_lock.get('user') == request.user:
+            refreshed = metadata_manager.refresh_lock(file_path, request.user)
+            if not refreshed:
+                raise HTTPException(status_code=500, detail="Failed to refresh existing lock.")
+            # Commit the refreshed lock file so timestamp is recorded
+            absolute_lock_path = refreshed
+            relative_lock_path_str = str(absolute_lock_path.relative_to(git_repo.repo_path)).replace(os.sep, '/')
+            commit_message = f"REFRESH LOCK: {filename} by {request.user}"
+            if git_repo.commit_and_push([relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com"):
+                asyncio.create_task(broadcast_file_list_update())
+                return JSONResponse({"status": "success", "message": "Lock refreshed."})
+            else:
+                raise HTTPException(status_code=500, detail="Failed to push refreshed lock.")
+        else:
+            raise HTTPException(status_code=409, detail="File is already locked by another user.")
+
+    # No existing lock -> create one
     lock_file_path = metadata_manager.create_lock(file_path, request.user)
     if not lock_file_path: raise HTTPException(status_code=500, detail="Failed to create lock file.")
 
+    # commit the new lock file
+    relative_lock_path_str = str(lock_file_path.relative_to(git_repo.repo_path)).replace(os.sep, '/')
     commit_message = f"LOCK: {filename} by {request.user}"
-    if git_repo.commit_and_push([str(lock_file_path)], commit_message, request.user, f"{request.user}@example.com"):
+    if git_repo.commit_and_push([relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com"):
         asyncio.create_task(broadcast_file_list_update())
         return JSONResponse({"status": "success"})
     
-    metadata_manager.release_lock(file_path) # Rollback
+    # rollback on failure
+    metadata_manager.release_lock(file_path)
     raise HTTPException(status_code=500, detail="Failed to push lock file.")
 
 @app.post("/files/{filename}/checkin")
-async def checkin_file(filename: str, user: str = Form(...), file: UploadFile = File(...)):
+async def checkin_file(filename: str, user: str = Form(...), commit_message: str = Form(...), file: UploadFile = File(...)):
     git_repo, metadata_manager = app_state.get('git_repo'), app_state.get('metadata_manager')
     if not git_repo or not metadata_manager: raise HTTPException(status_code=500, detail="Repository not initialized.")
     
@@ -437,16 +502,23 @@ async def checkin_file(filename: str, user: str = Form(...), file: UploadFile = 
     if not lock_info or lock_info['user'] != user: raise HTTPException(status_code=403, detail="You do not have this file locked.")
     
     content = await file.read()
-    if app_state['config_manager'].config.model_dump().get('local', {}).get('auto_backup'):
-        create_backup(file_path, content)
+    cfg = app_state['config_manager'].config.model_dump()
+    if cfg.get('local', {}).get('auto_backup'): create_backup(file_path, content)
     
+    # Save updated file content
     git_repo.save_file(file_path, content)
-    lock_file_path = metadata_manager._get_lock_file_path(file_path)
-    metadata_manager.release_lock(file_path)
+
+    # Prepare paths for commit - note: do NOT delete lock file before commit; stage deletion instead.
+    absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
+    relative_lock_path_str = str(absolute_lock_path.relative_to(git_repo.repo_path)).replace(os.sep, '/')
     
-    files_to_commit = [str(git_repo.repo_path / file_path), str(lock_file_path)]
-    commit_message = f"UPDATE: {filename} and release lock by {user}"
-    if git_repo.commit_and_push(files_to_commit, commit_message, user, f"{user}@example.com"):
+    # Stage the file update and the lock removal (commit_and_push handles deletions)
+    final_commit_message = f"{filename}: {commit_message}"
+    files_to_commit = [file_path, relative_lock_path_str]
+
+    if git_repo.commit_and_push(files_to_commit, final_commit_message, user, f"{user}@example.com"):
+        # Only remove lock file from disk AFTER successful commit/push
+        metadata_manager.release_lock(file_path)
         asyncio.create_task(broadcast_file_list_update())
         return JSONResponse({"status": "success"})
     raise HTTPException(status_code=500, detail="Failed to push changes.")
@@ -459,12 +531,16 @@ async def admin_override(filename: str, request: AdminOverrideRequest):
     file_path = find_file_path(filename)
     if not file_path: raise HTTPException(status_code=404, detail="File not found")
 
-    lock_file_path = metadata_manager._get_lock_file_path(file_path)
-    if not lock_file_path.exists(): return JSONResponse({"status": "success", "message": "File was already unlocked."})
+    absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
+    if not absolute_lock_path.exists(): return JSONResponse({"status": "success", "message": "File was already unlocked."})
     
-    metadata_manager.release_lock(file_path)
+    relative_lock_path_str = str(absolute_lock_path.relative_to(git_repo.repo_path)).replace(os.sep, '/')
+    # Stage a removal of the lock (commit_and_push will detect missing file and stage the removal)
+    # Do NOT delete the file before commit; commit_and_push will handle staging removals.
     commit_message = f"ADMIN OVERRIDE: Unlock {filename} by {request.admin_user}"
-    if git_repo.commit_and_push([str(lock_file_path)], commit_message, request.admin_user, f"{request.admin_user}@example.com"):
+    if git_repo.commit_and_push([relative_lock_path_str], commit_message, request.admin_user, f"{request.admin_user}@example.com"):
+        # After successful commit, remove local lock file
+        metadata_manager.release_lock(file_path)
         asyncio.create_task(broadcast_file_list_update())
         return JSONResponse({"status": "success"})
     raise HTTPException(status_code=500, detail="Failed to commit lock override.")
@@ -486,7 +562,7 @@ async def get_file_history(filename: str):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
     await manager.connect(websocket)
-    app_state['current_user'] = user # Set current user on new connection
+    app_state['current_user'] = user
     try:
         while True:
             data = await websocket.receive_text()

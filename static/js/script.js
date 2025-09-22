@@ -1,27 +1,13 @@
 // ==================================================================
 //               Mastercam GitLab Interface Script
-//               (Complete and Corrected Version)
+//                    (Final Corrected Version)
 // ==================================================================
 
 // -- Global Variables --
 let currentUser = "demo_user";
 let ws = null;
-let groupedFiles = {}; // Use one variable to store the grouped file object
+let groupedFiles = {};
 let currentConfig = null;
-
-// In script.js
-
-function saveExpandedState() {
-  const openGroups = [];
-  // Find all <details> elements that are currently open
-  document.querySelectorAll(".file-group[open]").forEach((detailsEl) => {
-    // Read the group name from the data attribute we'll add
-    if (detailsEl.dataset.groupName) {
-      openGroups.push(detailsEl.dataset.groupName);
-    }
-  });
-  localStorage.setItem("expandedGroups", JSON.stringify(openGroups));
-}
 
 // -- WebSocket Management --
 function connectWebSocket() {
@@ -31,7 +17,7 @@ function connectWebSocket() {
   }/ws?user=${encodeURIComponent(currentUser)}`;
   ws = new WebSocket(wsUrl);
 
-  ws.onopen = function (event) {
+  ws.onopen = function () {
     console.log("WebSocket connected");
     updateConnectionStatus(true);
     ws.send(`SET_USER:${currentUser}`);
@@ -42,10 +28,10 @@ function connectWebSocket() {
     handleWebSocketMessage(event.data);
   };
 
-  ws.onclose = function (event) {
+  ws.onclose = function () {
     console.log("WebSocket disconnected");
     updateConnectionStatus(false);
-    setTimeout(connectWebSocket, 3000); // Attempt to reconnect
+    setTimeout(connectWebSocket, 3000);
   };
 
   ws.onerror = function (error) {
@@ -53,31 +39,22 @@ function connectWebSocket() {
     updateConnectionStatus(false);
   };
 
-  // Keep-alive ping
   setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send("PING");
-    }
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send("PING");
   }, 30000);
 }
 
 function handleWebSocketMessage(message) {
-  const actions = {
-    FILE_STATUS_CHANGED: () => showNotification(`File status updated.`, "info"),
-    FILE_COMMITTED: (parts) =>
-      showNotification(`File ${parts[1]} committed successfully.`, "success"),
-    FILE_ADD_FAILED: (parts) =>
-      showNotification(`Failed to add new file ${parts[1]}.`, "error"),
-    FILE_COMMIT_FAILED: (parts) =>
-      showNotification(`Failed to commit file ${parts[1]}.`, "error"),
-    FILE_ADDED: (parts) =>
-      showNotification(`New file ${parts[1]} added successfully.`, "success"),
-  };
-
-  const [command, ...parts] = message.split(":");
-  if (actions[command]) {
-    actions[command](parts);
-    loadFiles(); // Refresh the file list for most actions
+  try {
+    const data = JSON.parse(message);
+    if (data.type === "FILE_LIST_UPDATED") {
+      console.log("Received real-time file list update.");
+      groupedFiles = data.payload;
+      renderFiles();
+      showNotification("File list updated automatically.", "info");
+    }
+  } catch (error) {
+    console.log("Received non-JSON WebSocket message:", message);
   }
 }
 
@@ -85,12 +62,13 @@ function handleWebSocketMessage(message) {
 async function loadFiles() {
   try {
     const response = await fetch("/files");
+    if (!response.ok)
+      throw new Error(`Server responded with ${response.status}`);
     const data = await response.json();
 
     if (typeof data === "object" && data !== null && !Array.isArray(data)) {
       groupedFiles = data;
     } else {
-      console.error("API did not return a grouped object:", data);
       groupedFiles = {};
     }
     renderFiles();
@@ -102,16 +80,11 @@ async function loadFiles() {
   }
 }
 
-// In script.js
-
 function renderFiles() {
   const fileListEl = document.getElementById("fileList");
   const searchTerm = document.getElementById("searchInput").value.toLowerCase();
-
-  // 1. READ STATE: Get the list of expanded groups from localStorage
   const expandedGroups =
     JSON.parse(localStorage.getItem("expandedGroups")) || [];
-
   fileListEl.innerHTML = "";
   let totalFilesFound = 0;
 
@@ -132,38 +105,22 @@ function renderFiles() {
 
   sortedGroupNames.forEach((groupName) => {
     const filesInGroup = groupedFiles[groupName];
-    if (!Array.isArray(filesInGroup)) {
-      console.warn(`Data for group "${groupName}" is not an array, skipping.`);
-      return;
-    }
+    if (!Array.isArray(filesInGroup)) return;
     const filteredFiles = filesInGroup.filter(
       (file) =>
         file.filename.toLowerCase().includes(searchTerm) ||
         file.path.toLowerCase().includes(searchTerm)
     );
 
-    if (filteredFiles.length === 0) {
-      return;
-    }
-
+    if (filteredFiles.length === 0) return;
     totalFilesFound += filteredFiles.length;
 
     const detailsEl = document.createElement("details");
     detailsEl.className =
       "file-group group border-t border-gray-200 dark:border-gray-600";
-
-    // Add a data attribute to easily identify the group
     detailsEl.dataset.groupName = groupName;
-
-    // 2. APPLY STATE: If this group was previously expanded, open it.
-    if (expandedGroups.includes(groupName)) {
-      detailsEl.open = true;
-    }
-
-    // 3. SAVE STATE: Listen for clicks and save the new state.
-    detailsEl.addEventListener("toggle", () => {
-      saveExpandedState();
-    });
+    if (expandedGroups.includes(groupName)) detailsEl.open = true;
+    detailsEl.addEventListener("toggle", saveExpandedState);
 
     const summaryEl = document.createElement("summary");
     summaryEl.className =
@@ -171,31 +128,25 @@ function renderFiles() {
 
     const summaryLeft = document.createElement("div");
     summaryLeft.className = "flex items-center space-x-3";
-
     const icon = document.createElement("i");
     icon.className =
       "fa-solid fa-chevron-right text-xs text-gray-500 dark:text-gray-400 transform transition-transform duration-200 group-open:rotate-90";
-
     const titleSpan = document.createElement("span");
     titleSpan.className = "font-semibold text-gray-700 dark:text-gray-200";
     titleSpan.textContent = groupName.endsWith("XXXXX")
       ? `${groupName} SERIES`
       : groupName;
-
-    summaryLeft.appendChild(icon);
-    summaryLeft.appendChild(titleSpan);
+    summaryLeft.append(icon, titleSpan);
 
     const countSpan = document.createElement("span");
     countSpan.className =
       "text-sm font-medium text-gray-500 dark:text-gray-400";
     countSpan.textContent = `(${filteredFiles.length} files)`;
 
-    summaryEl.appendChild(summaryLeft);
-    summaryEl.appendChild(countSpan);
+    summaryEl.append(summaryLeft, countSpan);
     detailsEl.appendChild(summaryEl);
 
     const filesContainer = document.createElement("div");
-    // ... the rest of your file rendering logic (forEach file in filteredFiles) is unchanged ...
     filteredFiles.forEach((file) => {
       const fileEl = document.createElement("div");
       let statusClass = "",
@@ -221,38 +172,30 @@ function renderFiles() {
       fileEl.className =
         "py-6 px-4 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors duration-200 border-b border-gray-200 dark:border-gray-600";
       fileEl.innerHTML = `
-            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
-                <div class="flex items-center space-x-4">
-                    <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">${
-                      file.filename
-                    }</h3>
-                    <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
-                </div>
-                <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-gray-600 dark:text-gray-300 text-sm">
-                <div class="flex items-center space-x-2"><i class="fa-solid fa-file text-gray-500 dark:text-gray-400"></i><span>Path: ${
-                  file.path
-                }</span></div>
-                <div class="flex items-center space-x-2"><i class="fa-solid fa-hard-drive text-gray-500 dark:text-gray-400"></i><span>Size: ${formatBytes(
-                  file.size
-                )}</span></div>
-                <div class="flex items-center space-x-2"><i class="fa-solid fa-clock text-gray-500 dark:text-gray-400"></i><span>Modified: ${formatDate(
-                  file.modified_at
-                )}</span></div>
-                ${
-                  file.version_info
-                    ? `<div class="flex items-center space-x-2"><i class="fa-solid fa-code-commit text-gray-500 dark:text-gray-400"></i><span>Version: ${file.version_info.latest_commit} (${file.version_info.commit_count} commits)</span></div>`
-                    : ""
-                }
-                ${
-                  file.locked_by && file.status !== "checked_out_by_user"
-                    ? `<div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1"><i class="fa-solid fa-lock text-gray-500 dark:text-gray-400"></i><span>Locked by: ${
-                        file.locked_by
-                      } at ${formatDate(file.locked_at)}</span></div>`
-                    : ""
-                }
-            </div>`;
+        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
+            <div class="flex items-center space-x-4"><h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">${
+              file.filename
+            }</h3><span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span></div>
+            <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-gray-600 dark:text-gray-300 text-sm">
+            <div class="flex items-center space-x-2"><i class="fa-solid fa-file text-gray-500 dark:text-gray-400"></i><span>Path: ${
+              file.path
+            }</span></div>
+            <div class="flex items-center space-x-2"><i class="fa-solid fa-hard-drive text-gray-500 dark:text-gray-400"></i><span>Size: ${formatBytes(
+              file.size
+            )}</span></div>
+            <div class="flex items-center space-x-2"><i class="fa-solid fa-clock text-gray-500 dark:text-gray-400"></i><span>Modified: ${formatDate(
+              file.modified_at
+            )}</span></div>
+            ${
+              file.locked_by && file.status !== "checked_out_by_user"
+                ? `<div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1"><i class="fa-solid fa-lock text-gray-500 dark:text-gray-400"></i><span>Locked by: ${
+                    file.locked_by
+                  } at ${formatDate(file.locked_at)}</span></div>`
+                : ""
+            }
+        </div>`;
       filesContainer.appendChild(fileEl);
     });
     detailsEl.appendChild(filesContainer);
@@ -260,13 +203,7 @@ function renderFiles() {
   });
 
   if (totalFilesFound === 0) {
-    fileListEl.innerHTML = `
-      <div class="flex flex-col items-center justify-center py-12 text-gray-500 dark:text-gray-400">
-        <i class="fa-solid fa-folder-open text-6xl mb-4"></i>
-        <h3 class="text-2xl font-semibold">No files found</h3>
-        <p class="mt-2 text-center">No Mastercam files match your search criteria.</p>
-      </div>
-    `;
+    fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-gray-500 dark:text-gray-400"><i class="fa-solid fa-folder-open text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No files found</h3><p class="mt-2 text-center">No Mastercam files match your search criteria.</p></div>`;
   }
 }
 
@@ -313,17 +250,18 @@ function updateConfigDisplay() {
 // -- Action Button and Event Handlers --
 function getActionButtons(file) {
   let buttons = "";
+  const btnClass =
+    "flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold";
   if (file.status === "unlocked") {
-    buttons += `<button class="flex items-center space-x-2 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors text-sm" onclick="checkoutFile('${file.filename}')"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
-  } else if (
-    file.status === "checked_out_by_user" ||
-    (file.status === "locked" && file.locked_by === currentUser)
-  ) {
-    buttons += `<button class="flex items-center space-x-2 px-4 py-2 bg-gold-500 text-black rounded-md hover:bg-gold-600 transition-colors text-sm" onclick="showCheckinDialog('${file.filename}')"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
+    buttons += `<button class="${btnClass} bg-blue-500 text-white hover:bg-blue-600" onclick="checkoutFile('${file.filename}')"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
+  } else if (file.status === "checked_out_by_user") {
+    buttons += `<button class="${btnClass} bg-gold-500 text-black hover:bg-gold-600" onclick="showCheckinDialog('${file.filename}')"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
+    buttons += `<a href="/files/${file.filename}/download" class="${btnClass} bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 hover:bg-gray-400 dark:hover:bg-gray-500"><i class="fa-solid fa-file-arrow-down"></i><span>Download</span></a>`;
   } else if (file.status === "locked" && file.locked_by !== currentUser) {
-    buttons += `<button class="flex items-center space-x-2 px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors text-sm" onclick="adminOverride('${file.filename}')"><i class="fa-solid fa-unlock"></i><span>Admin Override</span></button>`;
+    buttons += `<a href="/files/${file.filename}/download" class="${btnClass} bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 hover:bg-gray-400 dark:hover:bg-gray-500"><i class="fa-solid fa-eye"></i><span>View</span></a>`;
+    buttons += `<button class="${btnClass} bg-red-500 text-white hover:bg-red-600" onclick="adminOverride('${file.filename}')"><i class="fa-solid fa-unlock"></i><span>Admin Override</span></button>`;
   }
-  buttons += `<button class="flex items-center space-x-2 px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 rounded-md hover:bg-gray-400 dark:hover:bg-gray-500 transition-colors text-sm" onclick="viewFileHistory('${file.filename}')"><i class="fa-solid fa-history"></i><span>History</span></button>`;
+  buttons += `<button class="${btnClass} bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 hover:bg-gray-400 dark:hover:bg-gray-500" onclick="viewFileHistory('${file.filename}')"><i class="fa-solid fa-history"></i><span>History</span></button>`;
   return buttons;
 }
 
@@ -335,64 +273,45 @@ async function checkoutFile(filename) {
       body: JSON.stringify({ user: currentUser }),
     });
     const result = await response.json();
-    if (response.ok) {
-      showNotification(
-        `File '${filename}' checked out successfully!`,
-        "success"
-      );
-      loadFiles();
-      if (confirm("Would you like to download the file now?")) {
-        window.location.href = `/files/${filename}/download`;
-      }
-    } else {
-      showNotification(`Error: ${result.detail}`, "error");
-    }
+    if (!response.ok) throw new Error(result.detail);
+    showNotification(`File '${filename}' checked out successfully!`, "success");
   } catch (error) {
-    console.error("Error checking out file:", error);
-    showNotification("Error checking out file", "error");
+    showNotification(`Checkout Error: ${error.message}`, "error");
   }
 }
 
 function showCheckinDialog(filename) {
-  const input = document.getElementById("fileUpload");
-  input.onchange = function (event) {
-    const file = event.target.files[0];
-    if (file) {
-      checkinFile(filename, file);
-    }
-  };
-  input.click();
+  const modal = document.getElementById("checkinModal");
+  const form = document.getElementById("checkinForm");
+  const title = document.getElementById("checkinModalTitle");
+  title.textContent = `Check In: ${filename}`;
+  form.dataset.filename = filename;
+  form.reset();
+  modal.classList.remove("hidden");
 }
 
-async function checkinFile(filename, file) {
+async function checkinFile(filename, file, commitMessage) {
   try {
     showNotification(`Uploading ${filename}...`, "info");
     const formData = new FormData();
     formData.append("user", currentUser);
     formData.append("file", file);
+    formData.append("commit_message", commitMessage);
     const response = await fetch(`/files/${filename}/checkin`, {
       method: "POST",
       body: formData,
     });
     const result = await response.json();
-    if (response.ok) {
-      showNotification(`File '${filename}' is being processed`, "success");
-      loadFiles();
-    } else {
-      showNotification(`Error: ${result.detail}`, "error");
-    }
+    if (!response.ok) throw new Error(result.detail);
+    showNotification(`File '${filename}' checked in successfully!`, "success");
   } catch (error) {
-    console.error("Error checking in file:", error);
-    showNotification("Error checking in file", "error");
+    showNotification(`Check-in Error: ${error.message}`, "error");
   }
 }
 
 async function adminOverride(filename) {
-  if (
-    !confirm(`Are you sure you want to override the lock on '${filename}'?`)
-  ) {
+  if (!confirm(`Are you sure you want to override the lock on '${filename}'?`))
     return;
-  }
   try {
     const response = await fetch(`/files/${filename}/override`, {
       method: "POST",
@@ -400,15 +319,10 @@ async function adminOverride(filename) {
       body: JSON.stringify({ admin_user: currentUser }),
     });
     const result = await response.json();
-    if (response.ok) {
-      showNotification(`File '${filename}' unlocked successfully!`, "success");
-      loadFiles();
-    } else {
-      showNotification(`Error: ${result.detail}`, "error");
-    }
+    if (!response.ok) throw new Error(result.detail);
+    showNotification(`File '${filename}' lock overridden!`, "success");
   } catch (error) {
-    console.error("Error overriding file lock:", error);
-    showNotification("Error overriding file lock", "error");
+    showNotification(`Override Error: ${error.message}`, "error");
   }
 }
 
@@ -416,13 +330,9 @@ async function viewFileHistory(filename) {
   try {
     const response = await fetch(`/files/${filename}/history`);
     const result = await response.json();
-    if (response.ok) {
-      showFileHistoryModal(result);
-    } else {
-      showNotification("Error loading file history", "error");
-    }
+    if (response.ok) showFileHistoryModal(result);
+    else showNotification("Error loading file history", "error");
   } catch (error) {
-    console.error("Error loading file history:", error);
     showNotification("Error loading file history", "error");
   }
 }
@@ -431,33 +341,20 @@ function showFileHistoryModal(historyData) {
   const modal = document.createElement("div");
   modal.className =
     "fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-[100]";
-  let historyHtml = `
-    <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto text-gray-900 dark:text-gray-100">
-        <div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-200 dark:border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-800 dark:text-gold-500">Version History - ${historyData.filename}</h3>
-            <button class="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gold-500" onclick="this.closest('.fixed').remove()"><i class="fa-solid fa-xmark text-2xl"></i></button>
-        </div>`;
+  let historyHtml = `<div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto text-gray-900 dark:text-gray-100"><div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-200 dark:border-gray-700"><h3 class="text-xl font-semibold text-gray-800 dark:text-gold-500">Version History - ${historyData.filename}</h3><button class="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gold-500" onclick="this.closest('.fixed').remove()"><i class="fa-solid fa-xmark text-2xl"></i></button></div>`;
   if (historyData.history && historyData.history.length > 0) {
     historyHtml += '<div class="space-y-4">';
     historyData.history.forEach((commit) => {
-      historyHtml += `
-            <div class="p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600">
-                <div class="flex justify-between items-center text-sm mb-1">
-                    <span class="font-bold text-gray-800 dark:text-gold-500">${commit.commit_hash.substring(
-                      0,
-                      8
-                    )}</span>
-                    <span class="text-gray-500 dark:text-gray-400">${formatDate(
-                      commit.date
-                    )}</span>
-                </div>
-                <div class="text-gray-700 dark:text-gray-300 text-sm mb-1">${
-                  commit.message
-                }</div>
-                <div class="text-xs text-gray-500 dark:text-gray-400">Author: ${
-                  commit.author_name
-                }</div>
-            </div>`;
+      historyHtml += `<div class="p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600"><div class="flex justify-between items-center text-sm mb-1"><span class="font-bold text-gray-800 dark:text-gold-500">${commit.commit_hash.substring(
+        0,
+        8
+      )}</span><span class="text-gray-500 dark:text-gray-400">${formatDate(
+        commit.date
+      )}</span></div><div class="text-gray-700 dark:text-gray-300 text-sm mb-1">${
+        commit.message
+      }</div><div class="text-xs text-gray-500 dark:text-gray-400">Author: ${
+        commit.author_name
+      }</div></div>`;
     });
     historyHtml += "</div>";
   } else {
@@ -468,19 +365,14 @@ function showFileHistoryModal(historyData) {
   modal.innerHTML = historyHtml;
   document.body.appendChild(modal);
   modal.addEventListener("click", (e) => {
-    if (e.target === modal) {
-      modal.remove();
-    }
+    if (e.target === modal) modal.remove();
   });
 }
 
 function showNewFileDialog() {
   const input = document.getElementById("newFileUpload");
-  input.onchange = function (event) {
-    const file = event.target.files[0];
-    if (file) {
-      uploadNewFile(file);
-    }
+  input.onchange = () => {
+    if (input.files[0]) uploadNewFile(input.files[0]);
   };
   input.click();
 }
@@ -496,18 +388,14 @@ async function uploadNewFile(file) {
       body: formData,
     });
     const result = await response.json();
-    if (response.ok) {
-      showNotification(`New file '${file.name}' is being processed`, "success");
-      loadFiles();
-    } else {
-      showNotification(`Error: ${result.detail}`, "error");
-    }
+    if (!response.ok) throw new Error(result.detail);
+    showNotification(`New file '${file.name}' added!`, "success");
   } catch (error) {
-    console.error("Error uploading new file:", error);
-    showNotification("Error uploading new file", "error");
+    showNotification(`Upload Error: ${error.message}`, "error");
   }
 }
 
+// -- UI Toggles and Theme --
 function toggleConfigPanel() {
   document.getElementById("configPanel").classList.toggle("translate-x-full");
 }
@@ -574,45 +462,72 @@ function formatDate(dateString) {
   return new Date(dateString).toLocaleString();
 }
 
-// -- Initial Setup --
-document.getElementById("searchInput").addEventListener("input", renderFiles);
-
-document
-  .getElementById("configForm")
-  .addEventListener("submit", async function (e) {
-    e.preventDefault();
-    const formData = {
-      gitlab_url: document.getElementById("gitlabUrl").value,
-      project_id: document.getElementById("projectId").value,
-      username: document.getElementById("username").value,
-      token: document.getElementById("token").value,
-    };
-    try {
-      showNotification("Saving configuration...", "info");
-      const response = await fetch("/config/gitlab", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
-      });
-      const result = await response.json();
-      if (response.ok) {
-        showNotification("Configuration saved successfully!", "success");
-        loadConfig();
-        loadFiles();
-        toggleConfigPanel();
-      } else {
-        showNotification(`Error: ${result.detail}`, "error");
-      }
-    } catch (error) {
-      console.error("Error saving configuration:", error);
-      showNotification("Error saving configuration", "error");
-    }
+function saveExpandedState() {
+  const openGroups = [];
+  document.querySelectorAll(".file-group[open]").forEach((detailsEl) => {
+    if (detailsEl.dataset.groupName)
+      openGroups.push(detailsEl.dataset.groupName);
   });
+  localStorage.setItem("expandedGroups", JSON.stringify(openGroups));
+}
 
+// -- Initial Setup --
 document.addEventListener("DOMContentLoaded", function () {
   applyThemePreference();
   connectWebSocket();
   loadConfig();
-  loadFiles();
-  setInterval(loadFiles, 60000); // Auto-refresh every 60 seconds
+  loadFiles(); // Load files on initial page load
+
+  document.getElementById("searchInput").addEventListener("input", renderFiles);
+
+  const checkinModal = document.getElementById("checkinModal");
+  const checkinForm = document.getElementById("checkinForm");
+  const cancelCheckinBtn = document.getElementById("cancelCheckin");
+
+  checkinForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    const filename = e.target.dataset.filename;
+    const fileInput = document.getElementById("checkinFileUpload");
+    const messageInput = document.getElementById("commitMessage");
+    if (
+      filename &&
+      fileInput.files.length > 0 &&
+      messageInput.value.trim() !== ""
+    ) {
+      checkinFile(filename, fileInput.files[0], messageInput.value.trim());
+      checkinModal.classList.add("hidden");
+    } else {
+      showNotification("Please provide a file and a commit message.", "error");
+    }
+  });
+
+  cancelCheckinBtn.addEventListener("click", () => {
+    checkinModal.classList.add("hidden");
+  });
+
+  document
+    .getElementById("configForm")
+    .addEventListener("submit", async function (e) {
+      e.preventDefault();
+      const formData = {
+        gitlab_url: document.getElementById("gitlabUrl").value,
+        project_id: document.getElementById("projectId").value,
+        username: document.getElementById("username").value,
+        token: document.getElementById("token").value,
+      };
+      try {
+        showNotification("Saving configuration...", "info");
+        const response = await fetch("/config/gitlab", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(formData),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.detail);
+        showNotification("Configuration saved! Re-initializing...", "success");
+        toggleConfigPanel();
+      } catch (error) {
+        showNotification(`Config Error: ${error.message}`, "error");
+      }
+    });
 });
