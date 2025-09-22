@@ -137,32 +137,47 @@ class GitLabAPI:
             logger.error(f"GitLab connection test failed: {e}")
             return False
 
+# In mastercam_main.py
+
 class GitRepository:
     def __init__(self, repo_path: Path, remote_url: str, token: str):
         self.repo_path = repo_path
         self.remote_url_with_token = f"https://oauth2:{token}@{remote_url.split('://')[-1]}"
+        # This environment setting is now correctly defined here
+        self.git_env = {"GIT_SSL_NO_VERIFY": "true"}
         self.repo = self._init_repo()
+
     def _init_repo(self):
         try:
             if not self.repo_path.exists():
                 logger.info(f"Cloning repository to {self.repo_path}")
-                return git.Repo.clone_from(self.remote_url_with_token, self.repo_path)
+                return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
+            
             repo = git.Repo(self.repo_path)
             if not repo.remotes: raise git.exc.InvalidGitRepositoryError
+            
+            # Ensure existing repo also uses the SSL setting for future operations
+            with repo.git.custom_environment(**self.git_env):
+                pass
             return repo
         except (git.exc.InvalidGitRepositoryError, git.exc.NoSuchPathError):
             logger.warning(f"Invalid repo at {self.repo_path}, re-cloning.")
             if self.repo_path.exists():
                 import shutil
                 shutil.rmtree(self.repo_path)
-            return git.Repo.clone_from(self.remote_url_with_token, self.repo_path)
+            return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
         except Exception as e:
             logger.error(f"Failed to initialize repository: {e}")
             return None
+
     def pull(self):
         try:
-            if self.repo: self.repo.remotes.origin.pull()
-        except Exception as e: logger.error(f"Git pull failed: {e}")
+            if self.repo:
+                with self.repo.git.custom_environment(**self.git_env):
+                    self.repo.remotes.origin.pull()
+        except Exception as e:
+            logger.error(f"Git pull failed: {e}")
+
     def list_files(self, pattern: str = "*.mcam") -> List[Dict]:
         if not self.repo: return []
         files = []
@@ -170,73 +185,48 @@ class GitRepository:
             if item.type == 'blob' and Path(item.path).match(pattern):
                 try:
                     stat_result = os.stat(item.abspath)
-                    files.append({"name": item.name, "path": item.path, "size": stat_result.st_size, "modified_at": datetime.fromtimestamp(stat_result.st_mtime).isoformat() + "Z"})
-                except OSError: continue
+                    files.append({
+                        "name": item.name,
+                        "path": item.path,
+                        "size": stat_result.st_size,
+                        "modified_at": datetime.fromtimestamp(stat_result.st_mtime).isoformat() + "Z"
+                    })
+                except OSError:
+                    continue
         return files
+
     def save_file(self, file_path: str, content: bytes):
         (self.repo_path / file_path).parent.mkdir(parents=True, exist_ok=True)
         (self.repo_path / file_path).write_bytes(content)
 
-    def _normalize_commit_paths(self, file_paths: List[str]) -> List[str]:
-        # Ensure paths are relative to repo root and use forward slashes for git
-        normalized = []
-        for p in file_paths:
-            p_path = Path(p)
-            try:
-                rel = p_path.relative_to(self.repo_path)
-                normalized.append(str(rel).replace(os.sep, '/'))
-            except Exception:
-                # If it's already relative
-                normalized.append(str(Path(p).as_posix()))
-        return normalized
-
     def commit_and_push(self, file_paths: List[str], message: str, author_name: str, author_email: str) -> bool:
-        """
-        Commits and pushes provided file paths. Handles additions and deletions:
-        - If a path exists on disk, stage it via add.
-        - If a path does not exist (deleted), stage its removal via index.remove.
-        """
         if not self.repo: return False
         try:
-            normalized_paths = self._normalize_commit_paths(file_paths)
-            # Stage each path appropriately
-            for rel_path in normalized_paths:
-                abs_path = self.repo_path / rel_path
-                if abs_path.exists():
-                    # Add new/modified file
-                    try:
-                        self.repo.index.add([rel_path])
-                    except Exception as e_add:
-                        logger.error(f"Failed to add {rel_path} to index: {e_add}")
-                else:
-                    # If file has been removed, stage the deletion
-                    try:
-                        # ignore if file isn't tracked yet
-                        self.repo.index.remove([rel_path], working_tree=True, r=True)
-                    except Exception as e_remove:
-                        # removal may fail if file not tracked; log and continue
-                        logger.debug(f"Could not remove {rel_path} from index (may be untracked): {e_remove}")
+            with self.repo.git.custom_environment(**self.git_env):
+                to_add = [p for p in file_paths if (self.repo_path / p).exists()]
+                to_remove = [p for p in file_paths if not (self.repo_path / p).exists()]
 
-            # If there are no staged changes compared to HEAD, skip commit
-            try:
-                diff_index = self.repo.index.diff("HEAD")
-            except Exception:
-                # If HEAD doesn't exist (initial commit) treat index as changed
-                diff_index = True
+                if to_add:
+                    self.repo.index.add(to_add)
+                if to_remove:
+                    self.repo.index.remove(to_remove)
 
-            if not diff_index:
-                logger.info("No changes to commit.")
-                return True
-
-            author = Actor(author_name, author_email)
-            self.repo.index.commit(message, author=author)
-            self.repo.remotes.origin.push()
+                if not self.repo.index.diff("HEAD"):
+                    staged_deletions = any(change.change_type == 'D' for change in self.repo.index.diff(None))
+                    if not self.repo.untracked_files and not staged_deletions:
+                        logger.info("No changes to commit.")
+                        return True
+                
+                author = Actor(author_name, author_email)
+                self.repo.index.commit(message, author=author)
+                self.repo.remotes.origin.push()
+                
             logger.info("Changes pushed to GitLab.")
             return True
         except Exception as e:
             logger.error(f"Git commit/push failed: {e}")
             try:
-                if self.repo and self.repo.active_branch:
+                with self.repo.git.custom_environment(**self.git_env):
                     self.repo.git.reset('--hard', f'origin/{self.repo.active_branch.name}')
             except Exception as reset_e:
                 logger.error(f"Failed to reset repo after push failure: {reset_e}")
@@ -247,15 +237,16 @@ class GitRepository:
         try:
             commits = list(self.repo.iter_commits(paths=file_path, max_count=limit))
             return [{"commit_hash": c.hexsha, "author_name": c.author.name, "author_email": c.author.email, "date": datetime.fromtimestamp(c.committed_date).isoformat() + "Z", "message": c.message.strip()} for c in commits]
-        except git.exc.GitCommandError: return []
+        except git.exc.GitCommandError:
+            return []
+
     def get_file_content(self, file_path: str) -> Optional[bytes]:
         full_path = self.repo_path / file_path
         if full_path.exists(): return full_path.read_bytes()
         return None
+
     def get_file_content_at_commit(self, file_path: str, commit_hash: str) -> Optional[bytes]:
-        """Gets the raw content of a file from a specific commit hash."""
-        if not self.repo:
-            return None
+        if not self.repo: return None
         try:
             commit = self.repo.commit(commit_hash)
             blob = commit.tree / file_path
@@ -263,7 +254,6 @@ class GitRepository:
         except Exception as e:
             logger.error(f"Could not get file content at commit {commit_hash}: {e}")
             return None
-
 class MetadataManager:
     def __init__(self, repo_path: Path):
         self.locks_dir = repo_path / '.locks'
