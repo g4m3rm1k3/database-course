@@ -249,19 +249,19 @@ function updateConfigDisplay() {
 
 // -- Action Button and Event Handlers --
 function getActionButtons(file) {
-  let buttons = "";
   const btnClass =
     "flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold";
+  let buttons = "";
   if (file.status === "unlocked") {
-    buttons += `<button class="${btnClass} bg-blue-500 text-white hover:bg-blue-600" onclick="checkoutFile('${file.filename}')"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
+    buttons += `<button class="${btnClass} bg-blue-500 text-white hover:bg-blue-600 js-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
   } else if (file.status === "checked_out_by_user") {
-    buttons += `<button class="${btnClass} bg-gold-500 text-black hover:bg-gold-600" onclick="showCheckinDialog('${file.filename}')"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
+    buttons += `<button class="${btnClass} bg-gold-500 text-black hover:bg-gold-600 js-checkin-btn" data-filename="${file.filename}"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
     buttons += `<a href="/files/${file.filename}/download" class="${btnClass} bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 hover:bg-gray-400 dark:hover:bg-gray-500"><i class="fa-solid fa-file-arrow-down"></i><span>Download</span></a>`;
   } else if (file.status === "locked" && file.locked_by !== currentUser) {
     buttons += `<a href="/files/${file.filename}/download" class="${btnClass} bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 hover:bg-gray-400 dark:hover:bg-gray-500"><i class="fa-solid fa-eye"></i><span>View</span></a>`;
-    buttons += `<button class="${btnClass} bg-red-500 text-white hover:bg-red-600" onclick="adminOverride('${file.filename}')"><i class="fa-solid fa-unlock"></i><span>Admin Override</span></button>`;
+    buttons += `<button class="${btnClass} bg-red-500 text-white hover:bg-red-600 js-override-btn" data-filename="${file.filename}"><i class="fa-solid fa-unlock"></i><span>Admin Override</span></button>`;
   }
-  buttons += `<button class="${btnClass} bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 hover:bg-gray-400 dark:hover:bg-gray-500" onclick="viewFileHistory('${file.filename}')"><i class="fa-solid fa-history"></i><span>History</span></button>`;
+  buttons += `<button class="${btnClass} bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 hover:bg-gray-400 dark:hover:bg-gray-500 js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
   return buttons;
 }
 
@@ -273,7 +273,7 @@ async function checkoutFile(filename) {
       body: JSON.stringify({ user: currentUser }),
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.detail);
+    if (!response.ok) throw new Error(result.detail || "Unknown error");
     showNotification(`File '${filename}' checked out successfully!`, "success");
   } catch (error) {
     showNotification(`Checkout Error: ${error.message}`, "error");
@@ -302,7 +302,7 @@ async function checkinFile(filename, file, commitMessage) {
       body: formData,
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.detail);
+    if (!response.ok) throw new Error(result.detail || "Unknown error");
     showNotification(`File '${filename}' checked in successfully!`, "success");
   } catch (error) {
     showNotification(`Check-in Error: ${error.message}`, "error");
@@ -319,7 +319,7 @@ async function adminOverride(filename) {
       body: JSON.stringify({ admin_user: currentUser }),
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.detail);
+    if (!response.ok) throw new Error(result.detail || "Unknown error");
     showNotification(`File '${filename}' lock overridden!`, "success");
   } catch (error) {
     showNotification(`Override Error: ${error.message}`, "error");
@@ -341,26 +341,58 @@ function showFileHistoryModal(historyData) {
   const modal = document.createElement("div");
   modal.className =
     "fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-[100]";
-  let historyHtml = `<div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto text-gray-900 dark:text-gray-100"><div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-200 dark:border-gray-700"><h3 class="text-xl font-semibold text-gray-800 dark:text-gold-500">Version History - ${historyData.filename}</h3><button class="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gold-500" onclick="this.closest('.fixed').remove()"><i class="fa-solid fa-xmark text-2xl"></i></button></div>`;
+
+  let historyHtml = `
+      <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-200 dark:border-gray-700">
+          <h3 class="text-xl font-semibold text-gray-900 dark:text-gray-100">Version History - ${historyData.filename}</h3>
+          <button class="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white" onclick="this.closest('.fixed').remove()">
+            <i class="fa-solid fa-xmark text-2xl"></i>
+          </button>
+        </div>`;
+
   if (historyData.history && historyData.history.length > 0) {
     historyHtml += '<div class="space-y-4">';
+
     historyData.history.forEach((commit) => {
-      historyHtml += `<div class="p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600"><div class="flex justify-between items-center text-sm mb-1"><span class="font-bold text-gray-800 dark:text-gold-500">${commit.commit_hash.substring(
-        0,
-        8
-      )}</span><span class="text-gray-500 dark:text-gray-400">${formatDate(
-        commit.date
-      )}</span></div><div class="text-gray-700 dark:text-gray-300 text-sm mb-1">${
-        commit.message
-      }</div><div class="text-xs text-gray-500 dark:text-gray-400">Author: ${
-        commit.author_name
-      }</div></div>`;
+      historyHtml += `
+                <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg border border-gray-200 dark:border-gray-600">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <div class="flex items-center space-x-3 text-sm mb-1">
+                                <span class="font-mono font-bold text-indigo-600 dark:text-indigo-400">${commit.commit_hash.substring(
+                                  0,
+                                  8
+                                )}</span>
+                                <span class="text-gray-500 dark:text-gray-400">${formatDate(
+                                  commit.date
+                                )}</span>
+                            </div>
+                            <div class="text-gray-800 dark:text-gray-200 text-sm mb-1">${
+                              commit.message
+                            }</div>
+                            <div class="text-xs text-gray-500 dark:text-gray-400">Author: ${
+                              commit.author_name
+                            }</div>
+                        </div>
+                        <div class="flex-shrink-0 ml-4">
+                            <a href="/files/${historyData.filename}/versions/${
+        commit.commit_hash
+      }" class="flex items-center space-x-2 px-3 py-1.5 bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors text-sm font-semibold">
+                                <i class="fa-solid fa-file-arrow-down"></i>
+                                <span>Download</span>
+                            </a>
+                        </div>
+                    </div>
+                </div>`;
     });
+
     historyHtml += "</div>";
   } else {
     historyHtml +=
       '<p class="text-center text-gray-500 dark:text-gray-400">No version history available.</p>';
   }
+
   historyHtml += `</div>`;
   modal.innerHTML = historyHtml;
   document.body.appendChild(modal);
@@ -476,9 +508,27 @@ document.addEventListener("DOMContentLoaded", function () {
   applyThemePreference();
   connectWebSocket();
   loadConfig();
-  loadFiles(); // Load files on initial page load
+  loadFiles();
 
   document.getElementById("searchInput").addEventListener("input", renderFiles);
+
+  // Event Delegation for action buttons
+  document.getElementById("fileList").addEventListener("click", (e) => {
+    const button = e.target.closest("button, a");
+    if (!button) return;
+
+    const filename = button.dataset.filename;
+
+    if (button.classList.contains("js-checkout-btn")) {
+      checkoutFile(filename);
+    } else if (button.classList.contains("js-checkin-btn")) {
+      showCheckinDialog(filename);
+    } else if (button.classList.contains("js-override-btn")) {
+      adminOverride(filename);
+    } else if (button.classList.contains("js-history-btn")) {
+      viewFileHistory(filename);
+    }
+  });
 
   const checkinModal = document.getElementById("checkinModal");
   const checkinForm = document.getElementById("checkinForm");

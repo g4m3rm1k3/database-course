@@ -252,6 +252,17 @@ class GitRepository:
         full_path = self.repo_path / file_path
         if full_path.exists(): return full_path.read_bytes()
         return None
+    def get_file_content_at_commit(self, file_path: str, commit_hash: str) -> Optional[bytes]:
+        """Gets the raw content of a file from a specific commit hash."""
+        if not self.repo:
+            return None
+        try:
+            commit = self.repo.commit(commit_hash)
+            blob = commit.tree / file_path
+            return blob.data_stream.read()
+        except Exception as e:
+            logger.error(f"Could not get file content at commit {commit_hash}: {e}")
+            return None
 
 class MetadataManager:
     def __init__(self, repo_path: Path):
@@ -570,6 +581,33 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
                 app_state['current_user'] = data.split(":", 1)[1]
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+
+# In mastercam_main.py
+
+@app.get("/files/{filename}/versions/{commit_hash}")
+async def download_file_version(filename: str, commit_hash: str):
+    git_repo = app_state.get('git_repo')
+    if not git_repo:
+        raise HTTPException(status_code=500, detail="Repository not initialized.")
+    
+    file_path = find_file_path(filename)
+    if not file_path:
+        raise HTTPException(status_code=404, detail="File not found in current version.")
+
+    content = git_repo.get_file_content_at_commit(file_path, commit_hash)
+    if content is None:
+        raise HTTPException(status_code=404, detail=f"File '{filename}' not found in commit '{commit_hash[:7]}'.")
+
+    # Suggest a new filename for the download, e.g., "12345_rev_abc123.mcam"
+    base, ext = os.path.splitext(filename)
+    download_filename = f"{base}_rev_{commit_hash[:7]}{ext}"
+    
+    return Response(
+        content,
+        media_type='application/octet-stream',
+        headers={'Content-Disposition': f'attachment; filename="{download_filename}"'}
+    )
 
 def main():
     port = 8000
