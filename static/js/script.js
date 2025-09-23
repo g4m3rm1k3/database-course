@@ -1,6 +1,6 @@
 // ==================================================================
 //               Mastercam GitLab Interface Script
-//                    (Updated with Polling Support)
+//             (Updated with Confirmed Checkout Logic)
 // ==================================================================
 
 // -- Global Variables --
@@ -261,6 +261,8 @@ function renderFiles() {
     const filesContainer = document.createElement("div");
     filteredFiles.forEach((file) => {
       const fileEl = document.createElement("div");
+      // NEW: Add a unique ID to each file element for easier targeting
+      fileEl.id = `file-${file.filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
       let statusClass = "",
         statusBadgeText = "";
 
@@ -407,18 +409,75 @@ function getActionButtons(file) {
   return buttons;
 }
 
+// MODIFIED: This function now implements the "confirmed checkout" logic.
 async function checkoutFile(filename) {
+  // 1. Update the UI to a "locking..." or "pending..." state
+  setFileStateToLoading(filename);
+
   try {
+    // 2. Call the backend API to perform the checkout
     const response = await fetch(`/files/${filename}/checkout`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user: currentUser }),
     });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "Unknown error");
-    showNotification(`File '${filename}' checked out successfully!`, "success");
+
+    // 3. Check the server's response
+    if (response.ok) {
+      // SUCCESS! The server confirmed the lock.
+      showNotification(
+        `File '${filename}' checked out successfully!`,
+        "success"
+      );
+      // The websocket update will handle the final UI state change,
+      // so we don't need to do anything else here.
+    } else if (response.status === 409) {
+      // CONFLICT! Someone else got the lock first.
+      const errorData = await response.json();
+      showNotification(`Checkout Failed: ${errorData.detail}`, "error");
+      // Revert the UI since the websocket won't necessarily send an immediate update
+      revertFileStateFromLoading(filename);
+    } else {
+      // Another error occurred (e.g., server error 500)
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "An unknown server error occurred.");
+    }
   } catch (error) {
+    // Handle network errors or other exceptions
     showNotification(`Checkout Error: ${error.message}`, "error");
+    revertFileStateFromLoading(filename);
+  }
+}
+
+// NEW: Helper function to show a loading state on a specific file's button
+function setFileStateToLoading(filename) {
+  const safeId = `file-${filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
+  const fileEl = document.getElementById(safeId);
+  if (fileEl) {
+    const checkoutBtn = fileEl.querySelector(".js-checkout-btn");
+    if (checkoutBtn) {
+      checkoutBtn.disabled = true;
+      checkoutBtn.innerHTML = `
+        <i class="fa-solid fa-spinner fa-spin"></i>
+        <span>Locking...</span>
+      `;
+    }
+  }
+}
+
+// NEW: Helper function to revert the UI if the checkout fails
+function revertFileStateFromLoading(filename) {
+  const safeId = `file-${filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
+  const fileEl = document.getElementById(safeId);
+  if (fileEl) {
+    const checkoutBtn = fileEl.querySelector(".js-checkout-btn");
+    if (checkoutBtn) {
+      checkoutBtn.disabled = false;
+      checkoutBtn.innerHTML = `
+        <i class="fa-solid fa-download"></i>
+        <span>Checkout</span>
+      `;
+    }
   }
 }
 
@@ -498,35 +557,35 @@ function showFileHistoryModal(historyData) {
 
     historyData.history.forEach((commit) => {
       historyHtml += `
-                <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg border border-gray-200 dark:border-gray-600">
-                    <div class="flex justify-between items-start">
-                        <div>
-                            <div class="flex items-center space-x-3 text-sm mb-1">
-                                <span class="font-mono font-bold text-indigo-600 dark:text-indigo-400">${commit.commit_hash.substring(
-                                  0,
-                                  8
-                                )}</span>
-                                <span class="text-gray-500 dark:text-gray-400">${formatDate(
-                                  commit.date
-                                )}</span>
-                            </div>
-                            <div class="text-gray-800 dark:text-gray-200 text-sm mb-1">${
-                              commit.message
-                            }</div>
-                            <div class="text-xs text-gray-500 dark:text-gray-400">Author: ${
-                              commit.author_name
-                            }</div>
-                        </div>
-                        <div class="flex-shrink-0 ml-4">
-                            <a href="/files/${historyData.filename}/versions/${
+              <div class="p-4 bg-gray-50 dark:bg-gray-700/50 rounded-lg border border-gray-200 dark:border-gray-600">
+                  <div class="flex justify-between items-start">
+                      <div>
+                          <div class="flex items-center space-x-3 text-sm mb-1">
+                              <span class="font-mono font-bold text-indigo-600 dark:text-indigo-400">${commit.commit_hash.substring(
+                                0,
+                                8
+                              )}</span>
+                              <span class="text-gray-500 dark:text-gray-400">${formatDate(
+                                commit.date
+                              )}</span>
+                          </div>
+                          <div class="text-gray-800 dark:text-gray-200 text-sm mb-1">${
+                            commit.message
+                          }</div>
+                          <div class="text-xs text-gray-500 dark:text-gray-400">Author: ${
+                            commit.author_name
+                          }</div>
+                      </div>
+                      <div class="flex-shrink-0 ml-4">
+                          <a href="/files/${historyData.filename}/versions/${
         commit.commit_hash
       }" class="flex items-center space-x-2 px-3 py-1.5 bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-200 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors text-sm font-semibold">
-                                <i class="fa-solid fa-file-arrow-down"></i>
-                                <span>Download</span>
-                            </a>
-                        </div>
-                    </div>
-                </div>`;
+                              <i class="fa-solid fa-file-arrow-down"></i>
+                              <span>Download</span>
+                          </a>
+                      </div>
+                  </div>
+              </div>`;
     });
 
     historyHtml += "</div>";
