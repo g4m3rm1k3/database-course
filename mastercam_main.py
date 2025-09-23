@@ -173,12 +173,21 @@ class GitRepository:
             return None
 
     def pull(self):
+        """
+        FIXED: Replaced simple pull with a more robust fetch and hard reset.
+        This ensures the local repository is always an exact mirror of the remote,
+        preventing synchronization issues caused by local changes or merge conflicts.
+        """
         try:
             if self.repo:
                 with self.repo.git.custom_environment(**self.git_env):
-                    self.repo.remotes.origin.pull()
+                    # Fetch all updates from the remote origin
+                    self.repo.remotes.origin.fetch()
+                    # Forcefully reset the local branch to match the remote branch
+                    self.repo.git.reset('--hard', f'origin/{self.repo.active_branch.name}')
+                    logger.debug("Successfully synced with remote via fetch and hard reset.")
         except Exception as e:
-            logger.error(f"Git pull failed: {e}")
+            logger.error(f"Git sync (fetch/reset) failed: {e}")
 
     def list_files(self, pattern: str = "*.mcam") -> List[Dict]:
         if not self.repo: return []
@@ -341,6 +350,7 @@ class GitStateMonitor:
             return False
         
         try:
+            # This now performs the more robust fetch and hard reset
             self.git_repo.pull()
             
             current_commit = self.git_repo.repo.head.commit.hexsha
@@ -478,6 +488,7 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
     if not git_repo or not metadata_manager: return {"Miscellaneous": get_demo_files()}
 
     try:
+        # This will now perform the robust fetch and hard reset
         git_repo.pull()
     except Exception as e:
         logger.warning(f"Failed to pull latest changes: {e}")
@@ -552,7 +563,8 @@ async def manual_refresh():
             await broadcast_file_list_update()
             return {"status": "success", "message": "Files refreshed"}
         else:
-            return {"status": "success", "message": "No changes detected"}
+            await broadcast_file_list_update() # Broadcast even if no change detected to force UI sync
+            return {"status": "success", "message": "No remote changes detected, UI resynced."}
     except Exception as e:
         logger.error(f"Manual refresh failed: {e}")
         raise HTTPException(status_code=500, detail="Refresh failed")
@@ -652,7 +664,6 @@ async def checkin_file(filename: str, user: str = Form(...), commit_message: str
     
     if success:
         await handle_successful_git_operation()
-        git_repo.pull()
         return JSONResponse({"status": "success"})
     else:
         metadata_manager.create_lock(file_path, user, force=True)
@@ -678,7 +689,6 @@ async def admin_override(filename: str, request: AdminOverrideRequest):
     
     if success:
         await handle_successful_git_operation()
-        git_repo.pull()
         return JSONResponse({"status": "success"})
     else:
         lock_info = {"user": "unknown", "timestamp": datetime.now().isoformat() + "Z"}
