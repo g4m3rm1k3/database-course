@@ -803,12 +803,19 @@ document.addEventListener("DOMContentLoaded", function () {
     .getElementById("configForm")
     .addEventListener("submit", async function (e) {
       e.preventDefault();
+
+      // MODIFIED: Do not send an empty token, as this could overwrite a valid one on the server
+      const tokenInput = document.getElementById("token");
       const formData = {
         gitlab_url: document.getElementById("gitlabUrl").value,
         project_id: document.getElementById("projectId").value,
         username: document.getElementById("username").value,
-        token: document.getElementById("token").value,
       };
+      // Only include the token if the user actually typed something in the box
+      if (tokenInput.value) {
+        formData.token = tokenInput.value;
+      }
+
       try {
         showNotification("Saving configuration...", "info");
         const response = await fetch("/config/gitlab", {
@@ -818,8 +825,18 @@ document.addEventListener("DOMContentLoaded", function () {
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.detail);
-        showNotification("Configuration saved! Re-initializing...", "success");
+
+        showNotification("Configuration saved! Refreshing...", "success");
         toggleConfigPanel();
+
+        // NEW: After successful save, reload the app's data and reconnect the websocket
+        // This ensures the UI reflects the new configuration immediately.
+        await loadConfig(); // Reload the config to get updated currentUser, etc.
+        await loadFiles(); // Reload the file list from the new repo.
+        disconnectWebSocket(); // Disconnect the old socket
+        connectWebSocket(); // Connect new socket with updated user info
+
+        tokenInput.value = ""; // Clear the token field for security
       } catch (error) {
         showNotification(`Config Error: ${error.message}`, "error");
       }

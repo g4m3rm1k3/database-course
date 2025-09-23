@@ -56,7 +56,7 @@ class AdminOverrideRequest(BaseModel):
     admin_user: str
 
 class ConfigUpdateRequest(BaseModel):
-    base_url: str = Field(alias="gitlab_url")  # frontend sends gitlab_url, backend uses base_url
+    gitlab_url: str
     project_id: str
     username: str
     token: str
@@ -74,6 +74,7 @@ class AppConfig(BaseModel):
     })
 
 # --- Core Application Classes ---
+# ... (No changes to EncryptionManager, ConfigManager, GitLabAPI, GitRepository, MetadataManager, GitStateMonitor, ConnectionManager) ...
 class EncryptionManager:
     def __init__(self, config_dir: Path):
         self.key_file = config_dir / '.encryption_key'
@@ -155,10 +156,10 @@ class GitRepository:
             if not self.repo_path.exists():
                 logger.info(f"Cloning repository to {self.repo_path}")
                 return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
-            
+
             repo = git.Repo(self.repo_path)
             if not repo.remotes: raise git.exc.InvalidGitRepositoryError
-            
+
             with repo.git.custom_environment(**self.git_env):
                 pass
             return repo
@@ -173,17 +174,10 @@ class GitRepository:
             return None
 
     def pull(self):
-        """
-        FIXED: Replaced simple pull with a more robust fetch and hard reset.
-        This ensures the local repository is always an exact mirror of the remote,
-        preventing synchronization issues caused by local changes or merge conflicts.
-        """
         try:
             if self.repo:
                 with self.repo.git.custom_environment(**self.git_env):
-                    # Fetch all updates from the remote origin
                     self.repo.remotes.origin.fetch()
-                    # Forcefully reset the local branch to match the remote branch
                     self.repo.git.reset('--hard', f'origin/{self.repo.active_branch.name}')
                     logger.debug("Successfully synced with remote via fetch and hard reset.")
         except Exception as e:
@@ -227,11 +221,11 @@ class GitRepository:
                     if not self.repo.untracked_files and not staged_deletions:
                         logger.info("No changes to commit.")
                         return True
-                
+
                 author = Actor(author_name, author_email)
                 self.repo.index.commit(message, author=author)
                 self.repo.remotes.origin.push()
-                
+
             logger.info("Changes pushed to GitLab.")
             return True
         except Exception as e:
@@ -310,7 +304,7 @@ class GitStateMonitor:
         self.last_commit_hash = None
         self.last_locks_hash = None
         self.initialize_state()
-    
+
     def initialize_state(self):
         """Initialize tracking hashes"""
         if self.git_repo and self.git_repo.repo:
@@ -321,16 +315,16 @@ class GitStateMonitor:
                 logger.error(f"Failed to initialize git state: {e}")
                 self.last_commit_hash = None
                 self.last_locks_hash = None
-    
+
     def _calculate_locks_hash(self) -> str:
         """Calculate a hash of all lock files to detect changes"""
         if not self.git_repo or not self.git_repo.repo:
             return ""
-        
+
         locks_dir = self.git_repo.repo_path / '.locks'
         if not locks_dir.exists():
             return ""
-        
+
         lock_files_data = []
         try:
             for lock_file in locks_dir.glob('*.lock'):
@@ -339,34 +333,33 @@ class GitStateMonitor:
         except Exception as e:
             logger.error(f"Error reading lock files: {e}")
             return ""
-        
+
         lock_files_data.sort()
         combined_data = "".join(lock_files_data)
         return hashlib.md5(combined_data.encode()).hexdigest()
-    
+
     def check_for_changes(self) -> bool:
         """Check if Git state has changed since last check"""
         if not self.git_repo or not self.git_repo.repo:
             return False
-        
+
         try:
-            # This now performs the more robust fetch and hard reset
             self.git_repo.pull()
-            
+
             current_commit = self.git_repo.repo.head.commit.hexsha
             current_locks_hash = self._calculate_locks_hash()
-            
+
             commit_changed = current_commit != self.last_commit_hash
             locks_changed = current_locks_hash != self.last_locks_hash
-            
+
             if commit_changed or locks_changed:
                 logger.info(f"Git state changed - Commit: {commit_changed}, Locks: {locks_changed}")
                 self.last_commit_hash = current_commit
                 self.last_locks_hash = current_locks_hash
                 return True
-            
+
             return False
-            
+
         except Exception as e:
             logger.error(f"Error checking git changes: {e}")
             return False
@@ -389,15 +382,24 @@ manager = ConnectionManager()
 app_state = {}
 git_monitor = None
 
+# MODIFIED: Lifespan manager to handle task cancellation on shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Application starting up...")
+    app_state['polling_task'] = None  # Initialize the key
     await initialize_application()
     yield
-    if cfg_manager := app_state.get('config_manager'): cfg_manager.save_config()
+    # On shutdown, ensure the polling task is stopped
+    if polling_task := app_state.get('polling_task'):
+        if not polling_task.done():
+            polling_task.cancel()
+            logger.info("Cancelled polling task on shutdown.")
+    if cfg_manager := app_state.get('config_manager'):
+        cfg_manager.save_config()
     logger.info("Application shutting down.")
 
 app = FastAPI(title="Mastercam GitLab Interface", lifespan=lifespan)
+# ... (app.add_middleware, resource_path, app.mount, templates remain the same) ...
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 def resource_path(relative_path):
@@ -408,8 +410,20 @@ app.mount("/static", StaticFiles(directory=resource_path("static")), name="stati
 templates = Jinja2Templates(directory=resource_path("templates"))
 
 # --- Initialization ---
+# MODIFIED: This function now manages the polling task's lifecycle
 async def initialize_application():
     global git_monitor
+    
+    # NEW: Cancel any previously running polling task
+    if polling_task := app_state.get('polling_task'):
+        if not polling_task.done():
+            polling_task.cancel()
+            logger.info("Cancelled previous polling task for re-initialization.")
+            # Give it a moment to cancel
+            await asyncio.sleep(0.1)
+
+    app_state['initialized'] = False # Reset initialization status
+
     try:
         app_state['config_manager'] = ConfigManager()
         cfg = app_state['config_manager'].config.model_dump()
@@ -426,38 +440,43 @@ async def initialize_application():
                     git_monitor = GitStateMonitor(app_state['git_repo'])
                     app_state['initialized'] = True
                     logger.info("Repository synchronized.")
-                    asyncio.create_task(git_polling_task())
+                    
+                    # NEW: Start the new polling task and store its handle
+                    task = asyncio.create_task(git_polling_task())
+                    app_state['polling_task'] = task
     except Exception as e:
         logger.error(f"Initialization failed: {e}")
     if not app_state.get('initialized'):
         logger.warning("Running in limited/demo mode. Check config if this is unexpected.")
         app_state['metadata_manager'] = MetadataManager(Path(tempfile.gettempdir()) / 'mastercam_git_interface')
 
+
+# ... (git_polling_task and all helper functions and API endpoints remain the same) ...
 async def git_polling_task():
     """Background task that polls Git for changes and broadcasts updates"""
     global git_monitor
-    
+
     if not git_monitor:
-        logger.error("Git monitor not initialized")
+        logger.error("Git monitor not initialized for this task.")
         return
-    
+
     logger.info("Starting Git polling task...")
     poll_interval = 15
-    
+
     while True:
         try:
+            # Check for cancellation
+            await asyncio.sleep(poll_interval)
+            
             if not app_state.get('initialized'):
-                await asyncio.sleep(poll_interval)
                 continue
             
             if git_monitor.check_for_changes():
                 logger.info("Git changes detected, broadcasting update...")
                 await broadcast_file_list_update()
-            
-            await asyncio.sleep(poll_interval)
-            
+
         except asyncio.CancelledError:
-            logger.info("Git polling task cancelled")
+            logger.info("Git polling task was cancelled.")
             break
         except Exception as e:
             logger.error(f"Error in git polling task: {e}")
@@ -488,7 +507,6 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
     if not git_repo or not metadata_manager: return {"Miscellaneous": get_demo_files()}
 
     try:
-        # This will now perform the robust fetch and hard reset
         git_repo.pull()
     except Exception as e:
         logger.warning(f"Failed to pull latest changes: {e}")
@@ -500,13 +518,13 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
         group_name = "Miscellaneous"
         if re.match(r"^\d{7}.*\.mcam$", filename): group_name = f"{filename[:2]}XXXXX"
         if group_name not in grouped_files: grouped_files[group_name] = []
-        
+
         lock_info = metadata_manager.get_lock_info(file_data['path'])
         status, locked_by, locked_at = "unlocked", None, None
         if lock_info:
             status, locked_by, locked_at = "locked", lock_info.get('user'), lock_info.get('timestamp')
             if locked_by == current_user: status = "checked_out_by_user"
-        
+
         file_data['filename'] = file_data.pop('name')
         file_data.update({"status": status, "locked_by": locked_by, "locked_at": locked_at})
         grouped_files[group_name].append(file_data)
@@ -519,7 +537,7 @@ async def broadcast_file_list_update():
         await asyncio.sleep(0.2)
         grouped_data = _get_current_file_state()
         message = json.dumps({
-            "type": "FILE_LIST_UPDATED", 
+            "type": "FILE_LIST_UPDATED",
             "payload": grouped_data,
             "timestamp": datetime.now().isoformat()
         })
@@ -550,11 +568,16 @@ async def get_config():
 @app.post("/config/gitlab")
 async def update_gitlab_config(request: ConfigUpdateRequest):
     if config_manager := app_state.get('config_manager'):
-        config_manager.update_gitlab_config(**request.model_dump(by_alias=False))
+        # The token is not passed in the request, so we should not nullify it if it's missing
+        update_data = request.model_dump(exclude_unset=True)
+        if 'token' in update_data and not update_data['token']:
+            del update_data['token'] # Don't save an empty token
+
+        config_manager.update_gitlab_config(**update_data)
+        # This now correctly cancels the old polling task and starts a new one
         asyncio.create_task(initialize_application())
         return {"status": "success"}
     raise HTTPException(status_code=500, detail="Configuration manager not found.")
-
 
 @app.get("/refresh")
 async def manual_refresh():
@@ -585,11 +608,11 @@ async def new_upload(user: str = Form(...), file: UploadFile = File(...)):
     if not git_repo or not app_state['initialized']: raise HTTPException(status_code=500, detail="Repository not available.")
     content, filename_str = await file.read(), file.filename
     if not content: raise HTTPException(status_code=400, detail="File is empty.")
-    
+
     git_repo.save_file(filename_str, content)
     commit_message = f"ADD: {filename_str} by {user}"
     success = git_repo.commit_and_push([filename_str], commit_message, user, f"{user}@example.com")
-    
+
     if success:
         await handle_successful_git_operation()
         return JSONResponse({"status": "success"})
@@ -628,11 +651,11 @@ async def checkout_file(filename: str, request: CheckoutRequest):
     relative_lock_path_str = str(lock_file_path.relative_to(git_repo.repo_path)).replace(os.sep, '/')
     commit_message = f"LOCK: {filename} by {request.user}"
     success = git_repo.commit_and_push([relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com")
-    
+
     if success:
         await handle_successful_git_operation()
         return JSONResponse({"status": "success"})
-    
+
     metadata_manager.release_lock(file_path)
     raise HTTPException(status_code=500, detail="Failed to push lock file.")
 
@@ -640,29 +663,29 @@ async def checkout_file(filename: str, request: CheckoutRequest):
 async def checkin_file(filename: str, user: str = Form(...), commit_message: str = Form(...), file: UploadFile = File(...)):
     git_repo, metadata_manager = app_state.get('git_repo'), app_state.get('metadata_manager')
     if not git_repo or not metadata_manager: raise HTTPException(status_code=500, detail="Repository not initialized.")
-    
+
     file_path = find_file_path(filename)
     if not file_path: raise HTTPException(status_code=404, detail="File not found")
 
     lock_info = metadata_manager.get_lock_info(file_path)
     if not lock_info or lock_info['user'] != user: raise HTTPException(status_code=403, detail="You do not have this file locked.")
-    
+
     content = await file.read()
     cfg = app_state['config_manager'].config.model_dump()
     if cfg.get('local', {}).get('auto_backup'): create_backup(file_path, content)
-    
+
     git_repo.save_file(file_path, content)
 
     absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
     relative_lock_path_str = str(absolute_lock_path.relative_to(git_repo.repo_path)).replace(os.sep, '/')
-    
+
     metadata_manager.release_lock(file_path)
-    
+
     final_commit_message = f"{filename}: {commit_message}"
     files_to_commit = [file_path, relative_lock_path_str]
 
     success = git_repo.commit_and_push(files_to_commit, final_commit_message, user, f"{user}@example.com")
-    
+
     if success:
         await handle_successful_git_operation()
         return JSONResponse({"status": "success"})
@@ -674,20 +697,20 @@ async def checkin_file(filename: str, user: str = Form(...), commit_message: str
 async def admin_override(filename: str, request: AdminOverrideRequest):
     git_repo, metadata_manager = app_state.get('git_repo'), app_state.get('metadata_manager')
     if not git_repo or not metadata_manager: raise HTTPException(status_code=500, detail="Repository not initialized.")
-    
+
     file_path = find_file_path(filename)
     if not file_path: raise HTTPException(status_code=404, detail="File not found")
 
     absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
     if not absolute_lock_path.exists(): return JSONResponse({"status": "success", "message": "File was already unlocked."})
-    
+
     relative_lock_path_str = str(absolute_lock_path.relative_to(git_repo.repo_path)).replace(os.sep, '/')
-    
+
     metadata_manager.release_lock(file_path)
-    
+
     commit_message = f"ADMIN OVERRIDE: Unlock {filename} by {request.admin_user}"
     success = git_repo.commit_and_push([relative_lock_path_str], commit_message, request.admin_user, f"{request.admin_user}@example.com")
-    
+
     if success:
         await handle_successful_git_operation()
         return JSONResponse({"status": "success"})
@@ -715,7 +738,7 @@ async def download_file_version(filename: str, commit_hash: str):
     git_repo = app_state.get('git_repo')
     if not git_repo:
         raise HTTPException(status_code=500, detail="Repository not initialized.")
-    
+
     file_path = find_file_path(filename)
     if not file_path:
         raise HTTPException(status_code=404, detail="File not found in current version.")
@@ -726,25 +749,26 @@ async def download_file_version(filename: str, commit_hash: str):
 
     base, ext = os.path.splitext(filename)
     download_filename = f"{base}_rev_{commit_hash[:7]}{ext}"
-    
+
     return Response(
         content,
         media_type='application/octet-stream',
         headers={'Content-Disposition': f'attachment; filename="{download_filename}"'}
     )
 
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
     await manager.connect(websocket)
     logger.info(f"WebSocket connected for user: {user}")
-    
+
     try:
         grouped_data = _get_current_file_state()
         await websocket.send_text(json.dumps({
-            "type": "FILE_LIST_UPDATED", 
+            "type": "FILE_LIST_UPDATED",
             "payload": grouped_data
         }))
-        
+
         while True:
             data = await websocket.receive_text()
             if data.startswith("SET_USER:"):
@@ -753,13 +777,13 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
                 logger.info(f"User changed to: {new_user}")
                 grouped_data = _get_current_file_state()
                 await websocket.send_text(json.dumps({
-                    "type": "FILE_LIST_UPDATED", 
+                    "type": "FILE_LIST_UPDATED",
                     "payload": grouped_data
                 }))
             elif data == "REFRESH_FILES":
                 grouped_data = _get_current_file_state()
                 await websocket.send_text(json.dumps({
-                    "type": "FILE_LIST_UPDATED", 
+                    "type": "FILE_LIST_UPDATED",
                     "payload": grouped_data
                 }))
     except WebSocketDisconnect:
@@ -769,11 +793,11 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
         logger.error(f"WebSocket error for user {user}: {e}")
         manager.disconnect(websocket)
 
-def main():
-    port = 8000
-    if not getattr(sys, 'frozen', False):
-        threading.Timer(2.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
-    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+# def main():
+#     port = 8000
+#     if not getattr(sys, 'frozen', False):
+#         threading.Timer(2.0, lambda: webbrowser.open(f"http://localhost:{port}")).start()
+#     uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
