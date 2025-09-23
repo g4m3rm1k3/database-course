@@ -19,6 +19,7 @@
   },
   "homepage": "https://github.com/g4m3rm1k3/database-course#readme",
   "devDependencies": {
+    "@tailwindcss/forms": "^0.5.10",
     "tailwindcss": "^4.1.13"
   }
 }

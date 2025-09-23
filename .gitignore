@@ -6,7 +6,9 @@
 /poetry.lock
 /pyproject.toml
 /__pycache__
-
+/node_modules
+/build
+/dist
 # In your main .gitignore file
 
 # --- Add these lines at the very bottom ---
