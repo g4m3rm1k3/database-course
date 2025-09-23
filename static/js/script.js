@@ -1,6 +1,6 @@
 // ==================================================================
 //               Mastercam GitLab Interface Script
-//                    (Improved WebSocket Version)
+//                    (Updated with Polling Support)
 // ==================================================================
 
 // -- Global Variables --
@@ -115,6 +115,7 @@ function handleWebSocketMessage(message) {
     console.log("Received non-JSON WebSocket message:", message);
   }
 }
+
 // Add a manual refresh function for when WebSocket isn't working
 function manualRefresh() {
   console.log("Manual refresh requested");
@@ -351,16 +352,6 @@ async function loadConfig() {
   }
 }
 
-// -- UI Update Functions --
-function updateConnectionStatus(connected) {
-  const statusEl = document.getElementById("connectionStatus");
-  const textEl = document.getElementById("connectionText");
-  statusEl.className = `w-3 h-3 rounded-full animate-pulse ${
-    connected ? "bg-green-500" : "bg-red-500"
-  }`;
-  textEl.textContent = connected ? "Connected" : "Disconnected";
-}
-
 // -- Updated UI Functions --
 function updateConnectionStatus(connected) {
   const statusEl = document.getElementById("connectionStatus");
@@ -376,6 +367,10 @@ function updateConnectionStatus(connected) {
       ? `Reconnecting... (${reconnectAttempts}/${maxReconnectAttempts})`
       : "Disconnected";
   }
+}
+
+function updateRepoStatus(status) {
+  document.getElementById("repoStatus").textContent = status;
 }
 
 function updateConfigDisplay() {
@@ -678,11 +673,27 @@ document.addEventListener("DOMContentLoaded", function () {
     disconnectWebSocket();
   });
 
-  // Add refresh button to header (you may need to add this to your HTML)
-  const refreshButton = document.querySelector('[data-action="refresh"]');
-  if (refreshButton) {
-    refreshButton.addEventListener("click", manualRefresh);
-  }
+  // Add manual refresh functionality
+  window.manualRefresh = manualRefresh;
+
+  // Add periodic fallback polling in case WebSocket fails
+  setInterval(async () => {
+    // Only do fallback polling if WebSocket is disconnected
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.log("WebSocket disconnected, doing fallback refresh...");
+      try {
+        const response = await fetch("/refresh");
+        if (response.ok) {
+          const result = await response.json();
+          if (result.message && result.message !== "No changes detected") {
+            loadFiles(); // Reload files if changes were detected
+          }
+        }
+      } catch (error) {
+        console.error("Fallback refresh failed:", error);
+      }
+    }
+  }, 30000); // Check every 30 seconds as fallback
 
   document.getElementById("searchInput").addEventListener("input", renderFiles);
 
