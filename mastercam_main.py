@@ -376,37 +376,54 @@ def create_backup(file_path: str, content: bytes):
 def _get_current_file_state() -> Dict[str, List[Dict]]:
     """Pulls latest changes, lists all files, and groups them. This is the single source of truth."""
     git_repo, metadata_manager = app_state.get('git_repo'), app_state.get('metadata_manager')
-    if not git_repo or not metadata_manager: return {"Miscellaneous": get_demo_files()}
+    if not git_repo or not metadata_manager: 
+        return {"Miscellaneous": get_demo_files()}
 
-    git_repo.pull()
+    try:
+        # Always pull latest changes to ensure we have current state
+        git_repo.pull()
+    except Exception as e:
+        logger.warning(f"Failed to pull latest changes: {e}")
+    
     repo_files, grouped_files = git_repo.list_files("*.mcam"), {}
     current_user = app_state.get('current_user', 'demo_user')
+    
     for file_data in repo_files:
         filename = file_data['name'].strip()
         group_name = "Miscellaneous"
-        if re.match(r"^\d{7}.*\.mcam$", filename): group_name = f"{filename[:2]}XXXXX"
-        if group_name not in grouped_files: grouped_files[group_name] = []
+        if re.match(r"^\d{7}.*\.mcam$", filename): 
+            group_name = f"{filename[:2]}XXXXX"
+        if group_name not in grouped_files: 
+            grouped_files[group_name] = []
         
         lock_info = metadata_manager.get_lock_info(file_data['path'])
         status, locked_by, locked_at = "unlocked", None, None
         if lock_info:
             status, locked_by, locked_at = "locked", lock_info.get('user'), lock_info.get('timestamp')
-            if locked_by == current_user: status = "checked_out_by_user"
+            if locked_by == current_user: 
+                status = "checked_out_by_user"
         
         file_data['filename'] = file_data.pop('name')
         file_data.update({"status": status, "locked_by": locked_by, "locked_at": locked_at})
         grouped_files[group_name].append(file_data)
+    
     return grouped_files
+
 
 async def broadcast_file_list_update():
     """Broadcasts the current file state to all WebSocket clients."""
     try:
         logger.info("Broadcasting file list update...")
+        # Add a small delay to ensure file operations are complete
+        await asyncio.sleep(0.1)
         grouped_data = _get_current_file_state()
-        await manager.broadcast(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
-        logger.info("Broadcast complete.")
+        message = json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data})
+        await manager.broadcast(message)
+        logger.info(f"Broadcast complete to {len(manager.active_connections)} clients.")
     except Exception as e:
         logger.error(f"Failed to broadcast file list update: {e}")
+
+
 
 # --- API Endpoints ---
 @app.get("/")
@@ -494,57 +511,84 @@ async def checkout_file(filename: str, request: CheckoutRequest):
 @app.post("/files/{filename}/checkin")
 async def checkin_file(filename: str, user: str = Form(...), commit_message: str = Form(...), file: UploadFile = File(...)):
     git_repo, metadata_manager = app_state.get('git_repo'), app_state.get('metadata_manager')
-    if not git_repo or not metadata_manager: raise HTTPException(status_code=500, detail="Repository not initialized.")
+    if not git_repo or not metadata_manager: 
+        raise HTTPException(status_code=500, detail="Repository not initialized.")
     
     file_path = find_file_path(filename)
-    if not file_path: raise HTTPException(status_code=404, detail="File not found")
+    if not file_path: 
+        raise HTTPException(status_code=404, detail="File not found")
 
     lock_info = metadata_manager.get_lock_info(file_path)
-    if not lock_info or lock_info['user'] != user: raise HTTPException(status_code=403, detail="You do not have this file locked.")
+    if not lock_info or lock_info['user'] != user: 
+        raise HTTPException(status_code=403, detail="You do not have this file locked.")
     
     content = await file.read()
     cfg = app_state['config_manager'].config.model_dump()
-    if cfg.get('local', {}).get('auto_backup'): create_backup(file_path, content)
+    if cfg.get('local', {}).get('auto_backup'): 
+        create_backup(file_path, content)
     
     # Save updated file content
     git_repo.save_file(file_path, content)
 
-    # Prepare paths for commit - note: do NOT delete lock file before commit; stage deletion instead.
+    # Get lock file path for commit
     absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
     relative_lock_path_str = str(absolute_lock_path.relative_to(git_repo.repo_path)).replace(os.sep, '/')
     
-    # Stage the file update and the lock removal (commit_and_push handles deletions)
+    # CRITICAL FIX: Remove the lock file BEFORE commit so git can stage the deletion
+    metadata_manager.release_lock(file_path)
+    
+    # Now commit both the file update and the lock removal
     final_commit_message = f"{filename}: {commit_message}"
     files_to_commit = [file_path, relative_lock_path_str]
 
-    if git_repo.commit_and_push(files_to_commit, final_commit_message, user, f"{user}@example.com"):
-        # Only remove lock file from disk AFTER successful commit/push
-        metadata_manager.release_lock(file_path)
-        asyncio.create_task(broadcast_file_list_update())
+    success = git_repo.commit_and_push(files_to_commit, final_commit_message, user, f"{user}@example.com")
+    
+    if success:
+        # Force a fresh pull and broadcast to ensure all clients see the update
+        git_repo.pull()
+        await broadcast_file_list_update()
         return JSONResponse({"status": "success"})
-    raise HTTPException(status_code=500, detail="Failed to push changes.")
+    else:
+        # If commit failed, recreate the lock file to maintain consistency
+        metadata_manager.create_lock(file_path, user, force=True)
+        raise HTTPException(status_code=500, detail="Failed to push changes.")
+
 
 @app.post("/files/{filename}/override")
 async def admin_override(filename: str, request: AdminOverrideRequest):
     git_repo, metadata_manager = app_state.get('git_repo'), app_state.get('metadata_manager')
-    if not git_repo or not metadata_manager: raise HTTPException(status_code=500, detail="Repository not initialized.")
+    if not git_repo or not metadata_manager: 
+        raise HTTPException(status_code=500, detail="Repository not initialized.")
     
     file_path = find_file_path(filename)
-    if not file_path: raise HTTPException(status_code=404, detail="File not found")
+    if not file_path: 
+        raise HTTPException(status_code=404, detail="File not found")
 
     absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
-    if not absolute_lock_path.exists(): return JSONResponse({"status": "success", "message": "File was already unlocked."})
+    if not absolute_lock_path.exists(): 
+        return JSONResponse({"status": "success", "message": "File was already unlocked."})
     
     relative_lock_path_str = str(absolute_lock_path.relative_to(git_repo.repo_path)).replace(os.sep, '/')
-    # Stage a removal of the lock (commit_and_push will detect missing file and stage the removal)
-    # Do NOT delete the file before commit; commit_and_push will handle staging removals.
+    
+    # CRITICAL FIX: Remove lock file BEFORE commit
+    metadata_manager.release_lock(file_path)
+    
     commit_message = f"ADMIN OVERRIDE: Unlock {filename} by {request.admin_user}"
-    if git_repo.commit_and_push([relative_lock_path_str], commit_message, request.admin_user, f"{request.admin_user}@example.com"):
-        # After successful commit, remove local lock file
-        metadata_manager.release_lock(file_path)
-        asyncio.create_task(broadcast_file_list_update())
+    
+    success = git_repo.commit_and_push([relative_lock_path_str], commit_message, request.admin_user, f"{request.admin_user}@example.com")
+    
+    if success:
+        # Force a fresh pull and broadcast
+        git_repo.pull()
+        await broadcast_file_list_update()
         return JSONResponse({"status": "success"})
-    raise HTTPException(status_code=500, detail="Failed to commit lock override.")
+    else:
+        # If commit failed, recreate the lock to maintain consistency
+        lock_info = {"user": "unknown", "timestamp": datetime.now().isoformat() + "Z"}  # We don't know the original user
+        absolute_lock_path.write_text(json.dumps({"file": file_path, **lock_info}, indent=2))
+        raise HTTPException(status_code=500, detail="Failed to commit lock override.")
+
+
 
 @app.get("/files/{filename}/download")
 async def download_file(filename: str):
@@ -563,15 +607,41 @@ async def get_file_history(filename: str):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
     await manager.connect(websocket)
-    app_state['current_user'] = user
+    logger.info(f"WebSocket connected for user: {user}")
+    
     try:
+        # Send initial file state when user connects
+        grouped_data = _get_current_file_state()
+        await websocket.send_text(json.dumps({
+            "type": "FILE_LIST_UPDATED", 
+            "payload": grouped_data
+        }))
+        
         while True:
             data = await websocket.receive_text()
             if data.startswith("SET_USER:"):
-                app_state['current_user'] = data.split(":", 1)[1]
+                new_user = data.split(":", 1)[1]
+                app_state['current_user'] = new_user
+                logger.info(f"User changed to: {new_user}")
+                # Send updated file state with new user context
+                grouped_data = _get_current_file_state()
+                await websocket.send_text(json.dumps({
+                    "type": "FILE_LIST_UPDATED", 
+                    "payload": grouped_data
+                }))
+            elif data == "REFRESH_FILES":
+                # Allow clients to request a file list refresh
+                grouped_data = _get_current_file_state()
+                await websocket.send_text(json.dumps({
+                    "type": "FILE_LIST_UPDATED", 
+                    "payload": grouped_data
+                }))
     except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for user: {user}")
         manager.disconnect(websocket)
-
+    except Exception as e:
+        logger.error(f"WebSocket error for user {user}: {e}")
+        manager.disconnect(websocket)
 
 # In mastercam_main.py
 

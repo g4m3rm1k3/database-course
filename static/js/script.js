@@ -1,6 +1,6 @@
 // ==================================================================
 //               Mastercam GitLab Interface Script
-//                    (Final Corrected Version)
+//                    (Improved WebSocket Version)
 // ==================================================================
 
 // -- Global Variables --
@@ -8,75 +8,167 @@ let currentUser = "demo_user";
 let ws = null;
 let groupedFiles = {};
 let currentConfig = null;
+let reconnectAttempts = 0;
+let maxReconnectAttempts = 5;
+let reconnectTimeout = null;
+let isManualDisconnect = false;
 
-// -- WebSocket Management --
+// -- Improved WebSocket Management --
 function connectWebSocket() {
+  // Clear any existing reconnection timeout
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
+
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${protocol}//${
     window.location.host
   }/ws?user=${encodeURIComponent(currentUser)}`;
+
+  console.log(
+    `Attempting WebSocket connection (attempt ${
+      reconnectAttempts + 1
+    }/${maxReconnectAttempts})`
+  );
   ws = new WebSocket(wsUrl);
 
   ws.onopen = function () {
-    console.log("WebSocket connected");
+    console.log("WebSocket connected successfully");
     updateConnectionStatus(true);
+    reconnectAttempts = 0; // Reset attempts on successful connection
+
+    // Send user info to backend
     ws.send(`SET_USER:${currentUser}`);
+
+    // Request initial file state
+    ws.send("REFRESH_FILES");
   };
 
   ws.onmessage = function (event) {
-    console.log("WebSocket message:", event.data);
+    console.log("WebSocket message received:", event.data);
     handleWebSocketMessage(event.data);
   };
 
-  ws.onclose = function () {
-    console.log("WebSocket disconnected");
+  ws.onclose = function (event) {
+    console.log(
+      "WebSocket disconnected. Code:",
+      event.code,
+      "Reason:",
+      event.reason
+    );
     updateConnectionStatus(false);
-    setTimeout(connectWebSocket, 3000);
+
+    // Don't attempt to reconnect if this was a manual disconnect
+    if (isManualDisconnect) {
+      isManualDisconnect = false;
+      return;
+    }
+
+    // Attempt to reconnect with exponential backoff
+    if (reconnectAttempts < maxReconnectAttempts) {
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000); // Max 30 seconds
+      console.log(`Attempting to reconnect in ${delay}ms...`);
+
+      reconnectTimeout = setTimeout(() => {
+        reconnectAttempts++;
+        connectWebSocket();
+      }, delay);
+    } else {
+      console.error(
+        "Max reconnection attempts reached. Please refresh the page."
+      );
+      showNotification("Connection lost. Please refresh the page.", "error");
+    }
   };
 
   ws.onerror = function (error) {
     console.error("WebSocket error:", error);
     updateConnectionStatus(false);
   };
+}
 
-  setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send("PING");
-  }, 30000);
+function disconnectWebSocket() {
+  isManualDisconnect = true;
+  if (ws) {
+    ws.close();
+  }
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
 }
 
 function handleWebSocketMessage(message) {
   try {
     const data = JSON.parse(message);
     if (data.type === "FILE_LIST_UPDATED") {
-      console.log("Received real-time file list update.");
-      groupedFiles = data.payload;
+      console.log("Received real-time file list update");
+      groupedFiles = data.payload || {};
       renderFiles();
-      showNotification("File list updated automatically.", "info");
+      showNotification("File list updated", "info");
+    } else {
+      console.log("Received unknown message type:", data.type);
     }
   } catch (error) {
+    // Handle non-JSON messages (like PONG responses if we add them later)
     console.log("Received non-JSON WebSocket message:", message);
   }
 }
+// Add a manual refresh function for when WebSocket isn't working
+function manualRefresh() {
+  console.log("Manual refresh requested");
+  loadFiles();
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send("REFRESH_FILES");
+  }
+}
 
-// -- Data Loading and Rendering --
+// -- Updated Data Loading and Rendering --
 async function loadFiles() {
   try {
+    console.log("Loading files from API...");
     const response = await fetch("/files");
-    if (!response.ok)
-      throw new Error(`Server responded with ${response.status}`);
+    if (!response.ok) {
+      throw new Error(
+        `Server responded with ${response.status}: ${response.statusText}`
+      );
+    }
+
     const data = await response.json();
 
     if (typeof data === "object" && data !== null && !Array.isArray(data)) {
       groupedFiles = data;
+      console.log(
+        "Files loaded successfully:",
+        Object.keys(groupedFiles).length,
+        "groups"
+      );
     } else {
+      console.warn("Unexpected data format received:", typeof data);
       groupedFiles = {};
     }
+
     renderFiles();
     updateRepoStatus("Ready");
   } catch (error) {
     console.error("Error loading files:", error);
-    showNotification("Error loading files", "error");
+    showNotification(`Error loading files: ${error.message}`, "error");
     updateRepoStatus("Error");
+
+    // If API fails, show demo data
+    groupedFiles = {
+      Miscellaneous: [
+        {
+          filename: "demo_connection_error.mcam",
+          path: "demo_connection_error.mcam",
+          status: "unlocked",
+          size: 0,
+          modified_at: new Date().toISOString(),
+        },
+      ],
+    };
+    renderFiles();
   }
 }
 
@@ -85,8 +177,23 @@ function renderFiles() {
   const searchTerm = document.getElementById("searchInput").value.toLowerCase();
   const expandedGroups =
     JSON.parse(localStorage.getItem("expandedGroups")) || [];
+
   fileListEl.innerHTML = "";
   let totalFilesFound = 0;
+
+  // Check if we have any files
+  if (!groupedFiles || Object.keys(groupedFiles).length === 0) {
+    fileListEl.innerHTML = `
+      <div class="flex flex-col items-center justify-center py-12 text-gray-500 dark:text-gray-400">
+        <i class="fa-solid fa-exclamation-triangle text-6xl mb-4"></i>
+        <h3 class="text-2xl font-semibold">No Connection</h3>
+        <p class="mt-2 text-center">Unable to load files. Check your configuration.</p>
+        <button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
+          Try Again
+        </button>
+      </div>`;
+    return;
+  }
 
   const groupOrder = [
     "12XXXXX",
@@ -105,7 +212,11 @@ function renderFiles() {
 
   sortedGroupNames.forEach((groupName) => {
     const filesInGroup = groupedFiles[groupName];
-    if (!Array.isArray(filesInGroup)) return;
+    if (!Array.isArray(filesInGroup)) {
+      console.warn(`Invalid files data for group ${groupName}:`, filesInGroup);
+      return;
+    }
+
     const filteredFiles = filesInGroup.filter(
       (file) =>
         file.filename.toLowerCase().includes(searchTerm) ||
@@ -151,6 +262,7 @@ function renderFiles() {
       const fileEl = document.createElement("div");
       let statusClass = "",
         statusBadgeText = "";
+
       switch (file.status) {
         case "unlocked":
           statusClass =
@@ -167,32 +279,46 @@ function renderFiles() {
             "bg-blue-100 text-blue-800 dark:bg-gold-500 dark:text-black";
           statusBadgeText = "Checked out by you";
           break;
+        default:
+          statusClass =
+            "bg-gray-100 text-gray-800 dark:bg-gray-600 dark:text-gray-200";
+          statusBadgeText = "Unknown";
       }
+
       const actionsHtml = getActionButtons(file);
       fileEl.className =
         "py-6 px-4 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors duration-200 border-b border-gray-200 dark:border-gray-600";
       fileEl.innerHTML = `
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
-            <div class="flex items-center space-x-4"><h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">${
-              file.filename
-            }</h3><span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span></div>
+            <div class="flex items-center space-x-4">
+                <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">${
+                  file.filename
+                }</h3>
+                <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
+            </div>
             <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-gray-600 dark:text-gray-300 text-sm">
-            <div class="flex items-center space-x-2"><i class="fa-solid fa-file text-gray-500 dark:text-gray-400"></i><span>Path: ${
-              file.path
-            }</span></div>
-            <div class="flex items-center space-x-2"><i class="fa-solid fa-hard-drive text-gray-500 dark:text-gray-400"></i><span>Size: ${formatBytes(
-              file.size
-            )}</span></div>
-            <div class="flex items-center space-x-2"><i class="fa-solid fa-clock text-gray-500 dark:text-gray-400"></i><span>Modified: ${formatDate(
-              file.modified_at
-            )}</span></div>
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-file text-gray-500 dark:text-gray-400"></i>
+                <span>Path: ${file.path}</span>
+            </div>
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-hard-drive text-gray-500 dark:text-gray-400"></i>
+                <span>Size: ${formatBytes(file.size)}</span>
+            </div>
+            <div class="flex items-center space-x-2">
+                <i class="fa-solid fa-clock text-gray-500 dark:text-gray-400"></i>
+                <span>Modified: ${formatDate(file.modified_at)}</span>
+            </div>
             ${
               file.locked_by && file.status !== "checked_out_by_user"
-                ? `<div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1"><i class="fa-solid fa-lock text-gray-500 dark:text-gray-400"></i><span>Locked by: ${
-                    file.locked_by
-                  } at ${formatDate(file.locked_at)}</span></div>`
+                ? `<div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1">
+                <i class="fa-solid fa-lock text-gray-500 dark:text-gray-400"></i>
+                <span>Locked by: ${file.locked_by} at ${formatDate(
+                    file.locked_at
+                  )}</span>
+              </div>`
                 : ""
             }
         </div>`;
@@ -203,7 +329,15 @@ function renderFiles() {
   });
 
   if (totalFilesFound === 0) {
-    fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-gray-500 dark:text-gray-400"><i class="fa-solid fa-folder-open text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No files found</h3><p class="mt-2 text-center">No Mastercam files match your search criteria.</p></div>`;
+    fileListEl.innerHTML = `
+      <div class="flex flex-col items-center justify-center py-12 text-gray-500 dark:text-gray-400">
+        <i class="fa-solid fa-folder-open text-6xl mb-4"></i>
+        <h3 class="text-2xl font-semibold">No files found</h3>
+        <p class="mt-2 text-center">No Mastercam files match your search criteria.</p>
+        <button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">
+          Refresh
+        </button>
+      </div>`;
   }
 }
 
@@ -227,8 +361,21 @@ function updateConnectionStatus(connected) {
   textEl.textContent = connected ? "Connected" : "Disconnected";
 }
 
-function updateRepoStatus(status) {
-  document.getElementById("repoStatus").textContent = status;
+// -- Updated UI Functions --
+function updateConnectionStatus(connected) {
+  const statusEl = document.getElementById("connectionStatus");
+  const textEl = document.getElementById("connectionText");
+
+  if (statusEl && textEl) {
+    statusEl.className = `w-3 h-3 rounded-full ${
+      connected ? "bg-green-500" : "bg-red-500 animate-pulse"
+    }`;
+    textEl.textContent = connected
+      ? "Connected"
+      : reconnectAttempts > 0
+      ? `Reconnecting... (${reconnectAttempts}/${maxReconnectAttempts})`
+      : "Disconnected";
+  }
 }
 
 function updateConfigDisplay() {
@@ -506,9 +653,36 @@ function saveExpandedState() {
 // -- Initial Setup --
 document.addEventListener("DOMContentLoaded", function () {
   applyThemePreference();
-  connectWebSocket();
+
+  // Load initial data
   loadConfig();
   loadFiles();
+
+  // Connect WebSocket after initial load
+  setTimeout(() => {
+    connectWebSocket();
+  }, 1000);
+
+  // Add visibility change handler to reconnect when tab becomes active
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && ws && ws.readyState !== WebSocket.OPEN) {
+      console.log("Tab became visible, checking WebSocket connection...");
+      if (reconnectAttempts < maxReconnectAttempts) {
+        connectWebSocket();
+      }
+    }
+  });
+
+  // Clean up WebSocket on page unload
+  window.addEventListener("beforeunload", function () {
+    disconnectWebSocket();
+  });
+
+  // Add refresh button to header (you may need to add this to your HTML)
+  const refreshButton = document.querySelector('[data-action="refresh"]');
+  if (refreshButton) {
+    refreshButton.addEventListener("click", manualRefresh);
+  }
 
   document.getElementById("searchInput").addEventListener("input", renderFiles);
 
