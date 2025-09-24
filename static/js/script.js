@@ -1,6 +1,6 @@
 // ==================================================================
 //           Mastercam GitLab Interface Script
-// (Updated with Correct Group Sorting)
+// (Final Version with All Features)
 // ==================================================================
 
 // -- Global Variables --
@@ -35,19 +35,11 @@ function connectWebSocket() {
     clearTimeout(reconnectTimeout);
     reconnectTimeout = null;
   }
-
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${protocol}//${
     window.location.host
   }/ws?user=${encodeURIComponent(currentUser)}`;
-
-  console.log(
-    `Attempting WebSocket connection (attempt ${
-      reconnectAttempts + 1
-    }/${maxReconnectAttempts})`
-  );
   ws = new WebSocket(wsUrl);
-
   ws.onopen = function () {
     console.log("WebSocket connected successfully");
     updateConnectionStatus(true);
@@ -55,44 +47,28 @@ function connectWebSocket() {
     ws.send(`SET_USER:${currentUser}`);
     ws.send("REFRESH_FILES");
   };
-
   ws.onmessage = function (event) {
-    console.log("WebSocket message received:", event.data);
     handleWebSocketMessage(event.data);
   };
-
   ws.onclose = function (event) {
-    console.log(
-      "WebSocket disconnected. Code:",
-      event.code,
-      "Reason:",
-      event.reason
-    );
     updateConnectionStatus(false);
-
     if (isManualDisconnect) {
       isManualDisconnect = false;
       return;
     }
-
     if (reconnectAttempts < maxReconnectAttempts) {
       const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-      console.log(`Attempting to reconnect in ${delay}ms...`);
       reconnectTimeout = setTimeout(() => {
         reconnectAttempts++;
         connectWebSocket();
       }, delay);
     } else {
-      console.error(
-        "Max reconnection attempts reached. Please refresh the page."
-      );
       debounceNotifications(
         "Connection lost. Please refresh the page.",
         "error"
       );
     }
   };
-
   ws.onerror = function (error) {
     console.error("WebSocket error:", error);
     updateConnectionStatus(false);
@@ -112,12 +88,9 @@ function handleWebSocketMessage(message) {
   try {
     const data = JSON.parse(message);
     if (data.type === "FILE_LIST_UPDATED") {
-      console.log("Received real-time file list update");
       groupedFiles = data.payload || {};
       renderFiles();
       debounceNotifications("File list updated", "info");
-    } else {
-      console.log("Received unknown message type:", data.type);
     }
   } catch (error) {
     console.log("Received non-JSON WebSocket message:", message);
@@ -125,56 +98,25 @@ function handleWebSocketMessage(message) {
 }
 
 function manualRefresh() {
-  console.log("Manual refresh requested");
   loadFiles();
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send("REFRESH_FILES");
-  }
 }
 
 // -- Data Loading and Rendering --
 async function loadFiles() {
   try {
-    console.log("Loading files from API...");
     const response = await fetch("/files");
     if (!response.ok) {
       throw new Error(
         `Server responded with ${response.status}: ${response.statusText}`
       );
     }
-
-    const data = await response.json();
-    if (typeof data === "object" && data !== null && !Array.isArray(data)) {
-      groupedFiles = data;
-      console.log(
-        "Files loaded successfully:",
-        Object.keys(groupedFiles).length,
-        "groups"
-      );
-    } else {
-      console.warn("Unexpected data format received:", typeof data);
-      groupedFiles = {};
-    }
-
+    groupedFiles = await response.json();
     renderFiles();
     updateRepoStatus("Ready");
   } catch (error) {
     console.error("Error loading files:", error);
     debounceNotifications(`Error loading files: ${error.message}`, "error");
     updateRepoStatus("Error");
-
-    groupedFiles = {
-      Miscellaneous: [
-        {
-          filename: "demo_connection_error.mcam",
-          path: "demo_connection_error.mcam",
-          status: "unlocked",
-          size: 0,
-          modified_at: new Date().toISOString(),
-        },
-      ],
-    };
-    renderFiles();
   }
 }
 
@@ -183,50 +125,32 @@ function renderFiles() {
   const searchTerm = document.getElementById("searchInput").value.toLowerCase();
   const expandedGroups =
     JSON.parse(localStorage.getItem("expandedGroups")) || [];
-
   fileListEl.innerHTML = "";
   let totalFilesFound = 0;
 
   if (!groupedFiles || Object.keys(groupedFiles).length === 0) {
-    fileListEl.innerHTML = `
-      <div class="flex flex-col items-center justify-center py-12 text-primary-600 dark:text-primary-300">
-        <i class="fa-solid fa-exclamation-triangle text-6xl mb-4"></i>
-        <h3 class="text-2xl font-semibold">No Connection</h3>
-        <p class="mt-2 text-center">Unable to load files. Check your configuration.</p>
-        <button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-accent to-accent-hover text-white rounded-md hover:bg-opacity-80">
-          Try Again
-        </button>
-      </div>`;
+    fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-primary-600 dark:text-primary-300"><i class="fa-solid fa-exclamation-triangle text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No Connection</h3><p class="mt-2 text-center">Unable to load files. Check your configuration.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-accent to-accent-hover text-white rounded-md hover:bg-opacity-80">Try Again</button></div>`;
     return;
   }
 
-  // NEW: Smarter group sorting logic
   const sortedGroupNames = Object.keys(groupedFiles).sort((a, b) => {
     const isAMisc = a === "Miscellaneous";
     const isBMisc = b === "Miscellaneous";
-
-    if (isAMisc) return 1; // Always move Miscellaneous to the end
-    if (isBMisc) return -1; // Keep non-Miscellaneous items before it
-
-    return a.localeCompare(b); // Sort all other groups alphanumerically
+    if (isAMisc) return 1;
+    if (isBMisc) return -1;
+    return a.localeCompare(b);
   });
 
   sortedGroupNames.forEach((groupName) => {
     const filesInGroup = groupedFiles[groupName];
-    if (!Array.isArray(filesInGroup)) {
-      console.warn(`Invalid files data for group ${groupName}:`, filesInGroup);
-      return;
-    }
+    if (!Array.isArray(filesInGroup)) return;
 
     let filteredFiles = filesInGroup.filter(
       (file) =>
         file.filename.toLowerCase().includes(searchTerm) ||
         file.path.toLowerCase().includes(searchTerm)
     );
-
-    // Sort the files within the group alphanumerically
     filteredFiles.sort((a, b) => a.filename.localeCompare(b.filename));
-
     if (filteredFiles.length === 0) return;
     totalFilesFound += filteredFiles.length;
 
@@ -240,26 +164,11 @@ function renderFiles() {
     const summaryEl = document.createElement("summary");
     summaryEl.className =
       "list-none py-3 px-4 bg-gradient-to-r from-mc-light-accent to-white dark:from-mc-dark-accent dark:to-mc-dark-bg cursor-pointer hover:bg-opacity-80 flex justify-between items-center transition-colors";
-
-    const summaryLeft = document.createElement("div");
-    summaryLeft.className = "flex items-center space-x-3";
-    const icon = document.createElement("i");
-    icon.className =
-      "fa-solid fa-chevron-right text-xs text-primary-600 dark:text-primary-300 transform transition-transform duration-200 group-open:rotate-90";
-    const titleSpan = document.createElement("span");
-    titleSpan.className =
-      "font-semibold text-primary-800 dark:text-primary-200";
-    titleSpan.textContent = groupName.endsWith("XXXXX")
-      ? `${groupName} SERIES`
-      : groupName;
-    summaryLeft.append(icon, titleSpan);
-
-    const countSpan = document.createElement("span");
-    countSpan.className =
-      "text-sm font-medium text-primary-600 dark:text-primary-300";
-    countSpan.textContent = `(${filteredFiles.length} files)`;
-
-    summaryEl.append(summaryLeft, countSpan);
+    summaryEl.innerHTML = `<div class="flex items-center space-x-3"><i class="fa-solid fa-chevron-right text-xs text-primary-600 dark:text-primary-300 transform transition-transform duration-200 group-open:rotate-90"></i><span class="font-semibold text-primary-800 dark:text-primary-200">${
+      groupName.endsWith("XXXXX") ? `${groupName} SERIES` : groupName
+    }</span></div><span class="text-sm font-medium text-primary-600 dark:text-primary-300">(${
+      filteredFiles.length
+    } files)</span>`;
     detailsEl.appendChild(summaryEl);
 
     const filesContainer = document.createElement("div");
@@ -268,42 +177,50 @@ function renderFiles() {
       fileEl.id = `file-${file.filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
       let statusClass = "",
         statusBadgeText = "";
-
       switch (file.status) {
         case "unlocked":
           statusClass =
-            "bg-gradient-to-r from-green-100 to-green-200 text-green-900 dark:from-green-900 dark:to-green-800 dark:text-green-200";
+            "bg-green-100 text-green-900 dark:bg-green-900 dark:text-green-200";
           statusBadgeText = "Available";
           break;
         case "locked":
           statusClass =
-            "bg-gradient-to-r from-red-100 to-red-200 text-red-900 dark:from-red-900 dark:to-red-800 dark:text-red-200";
+            "bg-red-100 text-red-900 dark:bg-red-900 dark:text-red-200";
           statusBadgeText = `Locked by ${file.locked_by}`;
           break;
         case "checked_out_by_user":
           statusClass =
-            "bg-gradient-to-r from-blue-100 to-blue-200 text-blue-900 dark:from-blue-900 dark:to-blue-800 dark:text-blue-200";
+            "bg-blue-100 text-blue-900 dark:bg-blue-900 dark:text-blue-200";
           statusBadgeText = "Checked out by you";
           break;
         default:
           statusClass =
-            "bg-gradient-to-r from-primary-100 to-primary-200 text-primary-900 dark:from-primary-600 dark:to-primary-700 dark:text-primary-200";
+            "bg-primary-100 text-primary-900 dark:bg-primary-600 dark:text-primary-200";
           statusBadgeText = "Unknown";
       }
-
       const actionsHtml = getActionButtons(file);
       fileEl.className =
         "py-6 px-4 bg-white dark:bg-mc-dark-bg hover:bg-opacity-80 transition-colors duration-200 border-b border-primary-300 dark:border-mc-dark-accent bg-opacity-95";
       fileEl.innerHTML = `
         <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
-            <div class="flex items-center space-x-4">
+            <div class="flex items-center space-x-4 flex-wrap">
                 <h3 class="text-lg font-semibold text-primary-900 dark:text-primary-100">${
                   file.filename
                 }</h3>
                 <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
+                ${
+                  file.revision
+                    ? `<span class="text-xs font-bold px-2.5 py-1 rounded-full bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200">REV ${file.revision}</span>`
+                    : ""
+                }
             </div>
             <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
         </div>
+        ${
+          file.description
+            ? `<div class="mt-2 text-sm text-primary-700 dark:text-primary-300 italic">${file.description}</div>`
+            : ""
+        }
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-primary-700 dark:text-primary-300 text-sm">
             <div class="flex items-center space-x-2"><i class="fa-solid fa-file text-primary-600 dark:text-primary-300"></i><span>Path: ${
               file.path
@@ -329,13 +246,7 @@ function renderFiles() {
   });
 
   if (totalFilesFound === 0) {
-    fileListEl.innerHTML = `
-      <div class="flex flex-col items-center justify-center py-12 text-primary-600 dark:text-primary-300">
-        <i class="fa-solid fa-folder-open text-6xl mb-4"></i>
-        <h3 class="text-2xl font-semibold">No files found</h3>
-        <p class="mt-2 text-center">No Mastercam files match your search criteria.</p>
-        <button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-accent to-accent-hover text-white rounded-md hover:bg-opacity-80">Refresh</button>
-      </div>`;
+    fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-primary-600 dark:text-primary-300"><i class="fa-solid fa-folder-open text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No files found</h3><p class="mt-2 text-center">No Mastercam files match your search criteria.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-accent to-accent-hover text-white rounded-md hover:bg-opacity-80">Refresh</button></div>`;
   }
 }
 
@@ -344,17 +255,15 @@ async function loadConfig() {
     const response = await fetch("/config");
     currentConfig = await response.json();
     updateConfigDisplay();
-    setupAdminUI(); // Setup admin controls after config is loaded
+    setupAdminUI();
   } catch (error) {
     console.error("Error loading config:", error);
   }
 }
 
-// -- UI Functions --
 function updateConnectionStatus(connected) {
   const statusEl = document.getElementById("connectionStatus");
   const textEl = document.getElementById("connectionText");
-
   if (statusEl && textEl) {
     statusEl.className = `w-3 h-3 rounded-full ${
       connected
@@ -368,11 +277,9 @@ function updateConnectionStatus(connected) {
       : "Disconnected";
   }
 }
-
 function updateRepoStatus(status) {
   document.getElementById("repoStatus").textContent = status;
 }
-
 function updateConfigDisplay() {
   if (currentConfig) {
     document.getElementById("configStatusText").textContent =
@@ -388,19 +295,14 @@ function updateConfigDisplay() {
     }
   }
 }
-
 function setupAdminUI() {
   const toggleButton = document.getElementById("globalAdminToggle");
   if (!toggleButton) return;
-
   if (currentConfig && currentConfig.is_admin) {
     toggleButton.classList.remove("hidden");
-
     if (!toggleButton.dataset.listenerAttached) {
       toggleButton.addEventListener("click", () => {
         isAdminModeEnabled = !isAdminModeEnabled;
-
-        // Toggle appearance for active state
         toggleButton.classList.toggle("from-gray-200", !isAdminModeEnabled);
         toggleButton.classList.toggle("to-gray-300", !isAdminModeEnabled);
         toggleButton.classList.toggle("text-gray-800", !isAdminModeEnabled);
@@ -413,12 +315,10 @@ function setupAdminUI() {
           "dark:text-gray-100",
           !isAdminModeEnabled
         );
-
         toggleButton.classList.toggle("from-accent", isAdminModeEnabled);
         toggleButton.classList.toggle("to-accent-hover", isAdminModeEnabled);
         toggleButton.classList.toggle("text-white", isAdminModeEnabled);
         toggleButton.classList.toggle("dark:text-white", isAdminModeEnabled);
-
         document.querySelectorAll(".admin-action-btn").forEach((btn) => {
           btn.classList.toggle("hidden", !isAdminModeEnabled);
         });
@@ -430,12 +330,10 @@ function setupAdminUI() {
   }
 }
 
-// -- ACTION BUTTONS AND EVENT HANDLERS --
 function getActionButtons(file) {
   const btnClass =
     "flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold";
   let buttons = "";
-
   let viewBtnHtml = `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80"><i class="fa-solid fa-eye"></i><span>View</span></a>`;
 
   if (file.status === "unlocked") {
@@ -449,12 +347,10 @@ function getActionButtons(file) {
   }
 
   buttons = viewBtnHtml + buttons;
-
   buttons += `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
 
   if (currentConfig && currentConfig.is_admin) {
     const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
-
     if (file.status === "locked" && file.locked_by !== currentUser) {
       const overrideBtnClasses =
         "bg-gradient-to-r from-yellow-400 to-yellow-500 text-yellow-900 dark:from-yellow-600 dark:to-yellow-700 dark:text-yellow-100";
@@ -464,11 +360,8 @@ function getActionButtons(file) {
       "bg-gradient-to-r from-red-600 to-red-700 text-white dark:from-red-700 dark:to-red-800 dark:text-red-100";
     buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${deleteBtnClasses} hover:bg-opacity-80 js-delete-btn" data-filename="${file.filename}"><i class="fa-solid fa-trash-can"></i><span>Delete</span></button>`;
   }
-
   return buttons;
 }
-
-// ... (Rest of the script is unchanged) ...
 
 async function checkoutFile(filename) {
   setFileStateToLoading(filename);
@@ -478,7 +371,6 @@ async function checkoutFile(filename) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user: currentUser }),
     });
-
     if (response.ok) {
       debounceNotifications(
         `File '${filename}' checked out successfully!`,
@@ -497,7 +389,6 @@ async function checkoutFile(filename) {
     revertFileStateFromLoading(filename);
   }
 }
-
 function setFileStateToLoading(filename) {
   const safeId = `file-${filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
   const fileEl = document.getElementById(safeId);
@@ -509,7 +400,6 @@ function setFileStateToLoading(filename) {
     }
   }
 }
-
 function revertFileStateFromLoading(filename) {
   const safeId = `file-${filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
   const fileEl = document.getElementById(safeId);
@@ -521,7 +411,6 @@ function revertFileStateFromLoading(filename) {
     }
   }
 }
-
 function showCheckinDialog(filename) {
   const modal = document.getElementById("checkinModal");
   const form = document.getElementById("checkinForm");
@@ -529,16 +418,23 @@ function showCheckinDialog(filename) {
   title.textContent = `Check In: ${filename}`;
   form.dataset.filename = filename;
   form.reset();
+  document.getElementById("newMajorRevInput").disabled = true; // Reset disabled state
   modal.classList.remove("hidden");
 }
-
-async function checkinFile(filename, file, commitMessage) {
+async function checkinFile(
+  filename,
+  file,
+  commitMessage,
+  revType,
+  newMajorRev
+) {
   try {
-    debounceNotifications(`Uploading ${filename}...`, "info");
     const formData = new FormData();
     formData.append("user", currentUser);
     formData.append("file", file);
     formData.append("commit_message", commitMessage);
+    formData.append("rev_type", revType);
+    if (newMajorRev) formData.append("new_major_rev", newMajorRev);
     const response = await fetch(`/files/${filename}/checkin`, {
       method: "POST",
       body: formData,
@@ -570,7 +466,6 @@ async function adminOverride(filename) {
     debounceNotifications(`Override Error: ${error.message}`, "error");
   }
 }
-
 async function adminDeleteFile(filename) {
   if (
     !confirm(
@@ -595,15 +490,17 @@ async function adminDeleteFile(filename) {
     debounceNotifications(`Delete Error: ${error.message}`, "error");
   }
 }
-
 async function viewFileHistory(filename) {
   try {
     const response = await fetch(`/files/${filename}/history`);
     const result = await response.json();
     if (response.ok) showFileHistoryModal(result);
-    else debounceNotifications("Error loading file history", "error");
+    else {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "Failed to load history");
+    }
   } catch (error) {
-    debounceNotifications("Error loading file history", "error");
+    debounceNotifications(`History Error: ${error.message}`, "error");
   }
 }
 
@@ -614,72 +511,47 @@ function showFileHistoryModal(historyData) {
   modal.addEventListener("click", (e) => {
     if (e.target === modal) modal.remove();
   });
-
   let historyListHtml = "";
   if (historyData.history && historyData.history.length > 0) {
     historyData.history.forEach((commit) => {
-      historyListHtml += `
-                <div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95">
-                    <div class="flex justify-between items-start">
-                        <div>
-                            <div class="flex items-center space-x-3 text-sm mb-1">
-                                <span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
-                                  0,
-                                  8
-                                )}</span>
-                                <span class="text-primary-600 dark:text-primary-300">${formatDate(
-                                  commit.date
-                                )}</span>
-                            </div>
-                            <div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
-                              commit.message
-                            }</div>
-                            <div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
-                              commit.author_name
-                            }</div>
-                        </div>
-                        <div class="flex-shrink-0 ml-4">
-                            <a href="/files/${historyData.filename}/versions/${
+      const revisionBadge = commit.revision
+        ? `<span class="font-bold text-xs bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200 px-2 py-1 rounded-full">REV ${commit.revision}</span>`
+        : "";
+      historyListHtml += `<div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95"><div class="flex justify-between items-start"><div><div class="flex items-center space-x-3 text-sm mb-2 flex-wrap gap-y-1"><span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
+        0,
+        8
+      )}</span>${revisionBadge}<span class="text-primary-600 dark:text-primary-300">${formatDate(
+        commit.date
+      )}</span></div><div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
+        commit.message
+      }</div><div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
+        commit.author_name
+      }</div></div><div class="flex-shrink-0 ml-4"><a href="/files/${
+        historyData.filename
+      }/versions/${
         commit.commit_hash
-      }" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold">
-                                <i class="fa-solid fa-file-arrow-down"></i><span>Download</span>
-                            </a>
-                        </div>
-                    </div>
-                </div>`;
+      }" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold"><i class="fa-solid fa-file-arrow-down"></i><span>Download</span></a></div></div></div>`;
     });
   } else {
     historyListHtml = `<p class="text-center text-primary-600 dark:text-primary-300">No version history available.</p>`;
   }
-
-  modal.innerHTML = `
-        <div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-2xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
-            <div class="flex-shrink-0 flex justify-between items-center p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent">
-                <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3>
-                <button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.fixed').remove()">
-                    <i class="fa-solid fa-xmark text-2xl"></i>
-                </button>
-            </div>
-            <div class="overflow-y-auto p-6 space-y-4">${historyListHtml}</div>
-        </div>`;
-
+  modal.innerHTML = `<div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-2xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent"><div class="flex-shrink-0 flex justify-between items-center p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent"><h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3><button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.fixed').remove()"><i class="fa-solid fa-xmark text-2xl"></i></button></div><div class="overflow-y-auto p-6 space-y-4">${historyListHtml}</div></div>`;
   document.body.appendChild(modal);
 }
 
 function showNewFileDialog() {
-  const input = document.getElementById("newFileUpload");
-  input.onchange = () => {
-    if (input.files[0]) uploadNewFile(input.files[0]);
-  };
-  input.click();
+  const modal = document.getElementById("newUploadModal");
+  const form = document.getElementById("newUploadForm");
+  form.reset();
+  modal.classList.remove("hidden");
 }
-
-async function uploadNewFile(file) {
+async function uploadNewFile(file, description, rev) {
   try {
-    debounceNotifications(`Adding new file '${file.name}'...`, "info");
     const formData = new FormData();
     formData.append("user", currentUser);
     formData.append("file", file);
+    formData.append("description", description);
+    formData.append("rev", rev);
     const response = await fetch(`/files/new_upload`, {
       method: "POST",
       body: formData,
@@ -692,11 +564,9 @@ async function uploadNewFile(file) {
   }
 }
 
-// -- UI Toggles and Theme --
 function toggleConfigPanel() {
   document.getElementById("configPanel").classList.toggle("translate-x-full");
 }
-
 function toggleDarkMode() {
   const htmlEl = document.documentElement;
   if (htmlEl.classList.contains("dark")) {
@@ -707,7 +577,6 @@ function toggleDarkMode() {
     localStorage.setItem("theme", "dark");
   }
 }
-
 function applyThemePreference() {
   const savedTheme = localStorage.getItem("theme");
   if (
@@ -719,8 +588,6 @@ function applyThemePreference() {
     document.documentElement.classList.remove("dark");
   }
 }
-
-// -- Utility Functions --
 function showNotification(message, type = "info") {
   const notification = document.createElement("div");
   let bgColor;
@@ -751,7 +618,6 @@ function showNotification(message, type = "info") {
     setTimeout(() => notification.remove(), 300);
   }, 4000);
 }
-
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return "0 Bytes";
   const k = 1024;
@@ -759,7 +625,6 @@ function formatBytes(bytes) {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }
-
 function formatDate(dateString) {
   if (!dateString) return "Unknown";
   try {
@@ -779,7 +644,6 @@ function formatDate(dateString) {
     return "Date Error";
   }
 }
-
 function saveExpandedState() {
   const openGroups = [];
   document.querySelectorAll(".file-group[open]").forEach((detailsEl) => {
@@ -789,7 +653,6 @@ function saveExpandedState() {
   localStorage.setItem("expandedGroups", JSON.stringify(openGroups));
 }
 
-// -- Initial Setup --
 document.addEventListener("DOMContentLoaded", function () {
   applyThemePreference();
   loadConfig();
@@ -798,17 +661,13 @@ document.addEventListener("DOMContentLoaded", function () {
 
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && ws && ws.readyState !== WebSocket.OPEN) {
-      console.log("Tab became visible, checking WebSocket connection...");
       if (reconnectAttempts < maxReconnectAttempts) connectWebSocket();
     }
   });
-
   window.addEventListener("beforeunload", () => disconnectWebSocket());
   window.manualRefresh = manualRefresh;
-
   setInterval(async () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      console.log("WebSocket disconnected, doing fallback refresh...");
       try {
         const response = await fetch("/refresh");
         if (response.ok) {
@@ -821,14 +680,12 @@ document.addEventListener("DOMContentLoaded", function () {
       }
     }
   }, 30000);
-
   document.getElementById("searchInput").addEventListener("input", renderFiles);
 
   document.getElementById("fileList").addEventListener("click", (e) => {
     const button = e.target.closest("button, a");
-    if (!button) return;
+    if (!button || !button.dataset.filename) return;
     const filename = button.dataset.filename;
-
     if (button.classList.contains("js-checkout-btn")) checkoutFile(filename);
     else if (button.classList.contains("js-checkin-btn"))
       showCheckinDialog(filename);
@@ -843,29 +700,70 @@ document.addEventListener("DOMContentLoaded", function () {
   const checkinModal = document.getElementById("checkinModal");
   const checkinForm = document.getElementById("checkinForm");
   const cancelCheckinBtn = document.getElementById("cancelCheckin");
+  const newMajorRevInput = document.getElementById("newMajorRevInput");
 
+  checkinForm.addEventListener("change", (e) => {
+    if (e.target.name === "rev_type") {
+      newMajorRevInput.disabled = e.target.value !== "major";
+      if (!newMajorRevInput.disabled) newMajorRevInput.focus();
+    }
+  });
   checkinForm.addEventListener("submit", function (e) {
     e.preventDefault();
     const filename = e.target.dataset.filename;
     const fileInput = document.getElementById("checkinFileUpload");
     const messageInput = document.getElementById("commitMessage");
+    const revTypeInput = document.querySelector(
+      'input[name="rev_type"]:checked'
+    );
+    const newMajorValue = newMajorRevInput.value.trim();
     if (
       filename &&
       fileInput.files.length > 0 &&
-      messageInput.value.trim() !== ""
+      messageInput.value.trim() !== "" &&
+      revTypeInput
     ) {
-      checkinFile(filename, fileInput.files[0], messageInput.value.trim());
+      checkinFile(
+        filename,
+        fileInput.files[0],
+        messageInput.value.trim(),
+        revTypeInput.value,
+        newMajorValue
+      );
       checkinModal.classList.add("hidden");
     } else {
-      debounceNotifications(
-        "Please provide a file and a commit message.",
-        "error"
-      );
+      debounceNotifications("Please complete all fields.", "error");
     }
   });
-
   cancelCheckinBtn.addEventListener("click", () =>
     checkinModal.classList.add("hidden")
+  );
+
+  const newUploadModal = document.getElementById("newUploadModal");
+  const newUploadForm = document.getElementById("newUploadForm");
+  const cancelNewUploadBtn = document.getElementById("cancelNewUpload");
+  newUploadForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    const fileInput = document.getElementById("newFileUpload");
+    const descriptionInput = document.getElementById("newFileDescription");
+    const revInput = document.getElementById("newFileRev");
+    if (
+      fileInput.files.length > 0 &&
+      descriptionInput.value.trim() !== "" &&
+      revInput.value.trim() !== ""
+    ) {
+      uploadNewFile(
+        fileInput.files[0],
+        descriptionInput.value.trim(),
+        revInput.value.trim()
+      );
+      newUploadModal.classList.add("hidden");
+    } else {
+      debounceNotifications("Please complete all fields.", "error");
+    }
+  });
+  cancelNewUploadBtn.addEventListener("click", () =>
+    newUploadModal.classList.add("hidden")
   );
 
   document
