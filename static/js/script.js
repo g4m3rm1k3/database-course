@@ -1,6 +1,6 @@
 // ==================================================================
-//               Mastercam GitLab Interface Script
-//             (Updated with Confirmed Checkout Logic)
+//           Mastercam GitLab Interface Script
+// (Updated with Correct Group Sorting)
 // ==================================================================
 
 // -- Global Variables --
@@ -8,6 +8,7 @@ let currentUser = "demo_user";
 let ws = null;
 let groupedFiles = {};
 let currentConfig = null;
+let isAdminModeEnabled = false; // State for the global admin toggle
 let reconnectAttempts = 0;
 let maxReconnectAttempts = 5;
 let reconnectTimeout = null;
@@ -131,7 +132,7 @@ function manualRefresh() {
   }
 }
 
-// -- Updated Data Loading and Rendering --
+// -- Data Loading and Rendering --
 async function loadFiles() {
   try {
     console.log("Loading files from API...");
@@ -199,19 +200,15 @@ function renderFiles() {
     return;
   }
 
-  const groupOrder = [
-    "12XXXXX",
-    "48XXXXX",
-    "49XXXXX",
-    "74XXXXX",
-    "Miscellaneous",
-  ];
+  // NEW: Smarter group sorting logic
   const sortedGroupNames = Object.keys(groupedFiles).sort((a, b) => {
-    const indexA =
-      groupOrder.indexOf(a) === -1 ? Infinity : groupOrder.indexOf(a);
-    const indexB =
-      groupOrder.indexOf(b) === -1 ? Infinity : groupOrder.indexOf(b);
-    return indexA - indexB;
+    const isAMisc = a === "Miscellaneous";
+    const isBMisc = b === "Miscellaneous";
+
+    if (isAMisc) return 1; // Always move Miscellaneous to the end
+    if (isBMisc) return -1; // Keep non-Miscellaneous items before it
+
+    return a.localeCompare(b); // Sort all other groups alphanumerically
   });
 
   sortedGroupNames.forEach((groupName) => {
@@ -221,11 +218,14 @@ function renderFiles() {
       return;
     }
 
-    const filteredFiles = filesInGroup.filter(
+    let filteredFiles = filesInGroup.filter(
       (file) =>
         file.filename.toLowerCase().includes(searchTerm) ||
         file.path.toLowerCase().includes(searchTerm)
     );
+
+    // Sort the files within the group alphanumerically
+    filteredFiles.sort((a, b) => a.filename.localeCompare(b.filename));
 
     if (filteredFiles.length === 0) return;
     totalFilesFound += filteredFiles.length;
@@ -305,26 +305,20 @@ function renderFiles() {
             <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-primary-700 dark:text-primary-300 text-sm">
-            <div class="flex items-center space-x-2">
-                <i class="fa-solid fa-file text-primary-600 dark:text-primary-300"></i>
-                <span>Path: ${file.path}</span>
-            </div>
-            <div class="flex items-center space-x-2">
-                <i class="fa-solid fa-hard-drive text-primary-600 dark:text-primary-300"></i>
-                <span>Size: ${formatBytes(file.size)}</span>
-            </div>
-            <div class="flex items-center space-x-2">
-                <i class="fa-solid fa-clock text-primary-600 dark:text-primary-300"></i>
-                <span>Modified: ${formatDate(file.modified_at)}</span>
-            </div>
+            <div class="flex items-center space-x-2"><i class="fa-solid fa-file text-primary-600 dark:text-primary-300"></i><span>Path: ${
+              file.path
+            }</span></div>
+            <div class="flex items-center space-x-2"><i class="fa-solid fa-hard-drive text-primary-600 dark:text-primary-300"></i><span>Size: ${formatBytes(
+              file.size
+            )}</span></div>
+            <div class="flex items-center space-x-2"><i class="fa-solid fa-clock text-primary-600 dark:text-primary-300"></i><span>Modified: ${formatDate(
+              file.modified_at
+            )}</span></div>
             ${
               file.locked_by && file.status !== "checked_out_by_user"
-                ? `<div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1">
-                <i class="fa-solid fa-lock text-primary-600 dark:text-primary-300"></i>
-                <span>Locked by: ${file.locked_by} at ${formatDate(
-                    file.locked_at
-                  )}</span>
-              </div>`
+                ? `<div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1"><i class="fa-solid fa-lock text-primary-600 dark:text-primary-300"></i><span>Locked by: ${
+                    file.locked_by
+                  } at ${formatDate(file.locked_at)}</span></div>`
                 : ""
             }
         </div>`;
@@ -340,9 +334,7 @@ function renderFiles() {
         <i class="fa-solid fa-folder-open text-6xl mb-4"></i>
         <h3 class="text-2xl font-semibold">No files found</h3>
         <p class="mt-2 text-center">No Mastercam files match your search criteria.</p>
-        <button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-accent to-accent-hover text-white rounded-md hover:bg-opacity-80">
-          Refresh
-        </button>
+        <button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-accent to-accent-hover text-white rounded-md hover:bg-opacity-80">Refresh</button>
       </div>`;
   }
 }
@@ -352,12 +344,13 @@ async function loadConfig() {
     const response = await fetch("/config");
     currentConfig = await response.json();
     updateConfigDisplay();
+    setupAdminUI(); // Setup admin controls after config is loaded
   } catch (error) {
     console.error("Error loading config:", error);
   }
 }
 
-// -- Updated UI Functions --
+// -- UI Functions --
 function updateConnectionStatus(connected) {
   const statusEl = document.getElementById("connectionStatus");
   const textEl = document.getElementById("connectionText");
@@ -396,23 +389,86 @@ function updateConfigDisplay() {
   }
 }
 
-// -- Action Button and Event Handlers --
+function setupAdminUI() {
+  const toggleButton = document.getElementById("globalAdminToggle");
+  if (!toggleButton) return;
+
+  if (currentConfig && currentConfig.is_admin) {
+    toggleButton.classList.remove("hidden");
+
+    if (!toggleButton.dataset.listenerAttached) {
+      toggleButton.addEventListener("click", () => {
+        isAdminModeEnabled = !isAdminModeEnabled;
+
+        // Toggle appearance for active state
+        toggleButton.classList.toggle("from-gray-200", !isAdminModeEnabled);
+        toggleButton.classList.toggle("to-gray-300", !isAdminModeEnabled);
+        toggleButton.classList.toggle("text-gray-800", !isAdminModeEnabled);
+        toggleButton.classList.toggle(
+          "dark:from-gray-600",
+          !isAdminModeEnabled
+        );
+        toggleButton.classList.toggle("dark:to-gray-700", !isAdminModeEnabled);
+        toggleButton.classList.toggle(
+          "dark:text-gray-100",
+          !isAdminModeEnabled
+        );
+
+        toggleButton.classList.toggle("from-accent", isAdminModeEnabled);
+        toggleButton.classList.toggle("to-accent-hover", isAdminModeEnabled);
+        toggleButton.classList.toggle("text-white", isAdminModeEnabled);
+        toggleButton.classList.toggle("dark:text-white", isAdminModeEnabled);
+
+        document.querySelectorAll(".admin-action-btn").forEach((btn) => {
+          btn.classList.toggle("hidden", !isAdminModeEnabled);
+        });
+      });
+      toggleButton.dataset.listenerAttached = "true";
+    }
+  } else {
+    toggleButton.classList.add("hidden");
+  }
+}
+
+// -- ACTION BUTTONS AND EVENT HANDLERS --
 function getActionButtons(file) {
   const btnClass =
     "flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold";
   let buttons = "";
+
+  let viewBtnHtml = `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80"><i class="fa-solid fa-eye"></i><span>View</span></a>`;
+
   if (file.status === "unlocked") {
     buttons += `<button class="${btnClass} bg-gradient-to-r from-green-600 to-green-700 text-white hover:bg-opacity-80 js-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
   } else if (file.status === "checked_out_by_user") {
     buttons += `<button class="${btnClass} bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:bg-opacity-80 js-checkin-btn" data-filename="${file.filename}"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
-    buttons += `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80"><i class="fa-solid fa-file-arrow-down"></i><span>Download</span></a>`;
-  } else if (file.status === "locked" && file.locked_by !== currentUser) {
-    buttons += `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80"><i class="fa-solid fa-eye"></i><span>View</span></a>`;
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-red-600 to-red-700 text-white hover:bg-opacity-80 js-override-btn" data-filename="${file.filename}"><i class="fa-solid fa-unlock"></i><span>Admin Override</span></button>`;
+    viewBtnHtml = viewBtnHtml.replace(
+      '<i class="fa-solid fa-eye"></i><span>View</span>',
+      '<i class="fa-solid fa-file-arrow-down"></i><span>Download</span>'
+    );
   }
+
+  buttons = viewBtnHtml + buttons;
+
   buttons += `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
+
+  if (currentConfig && currentConfig.is_admin) {
+    const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
+
+    if (file.status === "locked" && file.locked_by !== currentUser) {
+      const overrideBtnClasses =
+        "bg-gradient-to-r from-yellow-400 to-yellow-500 text-yellow-900 dark:from-yellow-600 dark:to-yellow-700 dark:text-yellow-100";
+      buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${overrideBtnClasses} hover:bg-opacity-80 js-override-btn" data-filename="${file.filename}"><i class="fa-solid fa-unlock"></i><span>Override</span></button>`;
+    }
+    const deleteBtnClasses =
+      "bg-gradient-to-r from-red-600 to-red-700 text-white dark:from-red-700 dark:to-red-800 dark:text-red-100";
+    buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${deleteBtnClasses} hover:bg-opacity-80 js-delete-btn" data-filename="${file.filename}"><i class="fa-solid fa-trash-can"></i><span>Delete</span></button>`;
+  }
+
   return buttons;
 }
+
+// ... (Rest of the script is unchanged) ...
 
 async function checkoutFile(filename) {
   setFileStateToLoading(filename);
@@ -449,10 +505,7 @@ function setFileStateToLoading(filename) {
     const checkoutBtn = fileEl.querySelector(".js-checkout-btn");
     if (checkoutBtn) {
       checkoutBtn.disabled = true;
-      checkoutBtn.innerHTML = `
-        <i class="fa-solid fa-spinner fa-spin"></i>
-        <span>Locking...</span>
-      `;
+      checkoutBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i><span>Locking...</span>`;
     }
   }
 }
@@ -464,10 +517,7 @@ function revertFileStateFromLoading(filename) {
     const checkoutBtn = fileEl.querySelector(".js-checkout-btn");
     if (checkoutBtn) {
       checkoutBtn.disabled = false;
-      checkoutBtn.innerHTML = `
-        <i class="fa-solid fa-download"></i>
-        <span>Checkout</span>
-      `;
+      checkoutBtn.innerHTML = `<i class="fa-solid fa-download"></i><span>Checkout</span>`;
     }
   }
 }
@@ -521,6 +571,31 @@ async function adminOverride(filename) {
   }
 }
 
+async function adminDeleteFile(filename) {
+  if (
+    !confirm(
+      `DANGER!\n\nAre you sure you want to permanently delete '${filename}'?\n\nThis action cannot be undone.`
+    )
+  )
+    return;
+  try {
+    const response = await fetch(`/files/${filename}/delete`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ admin_user: currentUser }),
+    });
+    const result = await response.json();
+    if (!response.ok)
+      throw new Error(result.detail || "An unknown error occurred.");
+    debounceNotifications(
+      result.message || `File '${filename}' deleted successfully!`,
+      "success"
+    );
+  } catch (error) {
+    debounceNotifications(`Delete Error: ${error.message}`, "error");
+  }
+}
+
 async function viewFileHistory(filename) {
   try {
     const response = await fetch(`/files/${filename}/history`);
@@ -536,62 +611,59 @@ function showFileHistoryModal(historyData) {
   const modal = document.createElement("div");
   modal.className =
     "fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100]";
-
-  let historyHtml = `
-      <div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
-        <div class="flex justify-between items-center mb-4 pb-2 border-b border-primary-300 dark:border-mc-dark-accent">
-          <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3>
-          <button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.fixed').remove()">
-            <i class="fa-solid fa-xmark text-2xl"></i>
-          </button>
-        </div>`;
-
-  if (historyData.history && historyData.history.length > 0) {
-    historyHtml += '<div class="space-y-4">';
-    historyData.history.forEach((commit) => {
-      historyHtml += `
-              <div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95">
-                  <div class="flex justify-between items-start">
-                      <div>
-                          <div class="flex items-center space-x-3 text-sm mb-1">
-                              <span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
-                                0,
-                                8
-                              )}</span>
-                              <span class="text-primary-600 dark:text-primary-300">${formatDate(
-                                commit.date
-                              )}</span>
-                          </div>
-                          <div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
-                            commit.message
-                          }</div>
-                          <div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
-                            commit.author_name
-                          }</div>
-                      </div>
-                      <div class="flex-shrink-0 ml-4">
-                          <a href="/files/${historyData.filename}/versions/${
-        commit.commit_hash
-      }" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold">
-                              <i class="fa-solid fa-file-arrow-down"></i>
-                              <span>Download</span>
-                          </a>
-                      </div>
-                  </div>
-              </div>`;
-    });
-    historyHtml += "</div>";
-  } else {
-    historyHtml +=
-      '<p class="text-center text-primary-600 dark:text-primary-300">No version history available.</p>';
-  }
-
-  historyHtml += `</div>`;
-  modal.innerHTML = historyHtml;
-  document.body.appendChild(modal);
   modal.addEventListener("click", (e) => {
     if (e.target === modal) modal.remove();
   });
+
+  let historyListHtml = "";
+  if (historyData.history && historyData.history.length > 0) {
+    historyData.history.forEach((commit) => {
+      historyListHtml += `
+                <div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <div class="flex items-center space-x-3 text-sm mb-1">
+                                <span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
+                                  0,
+                                  8
+                                )}</span>
+                                <span class="text-primary-600 dark:text-primary-300">${formatDate(
+                                  commit.date
+                                )}</span>
+                            </div>
+                            <div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
+                              commit.message
+                            }</div>
+                            <div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
+                              commit.author_name
+                            }</div>
+                        </div>
+                        <div class="flex-shrink-0 ml-4">
+                            <a href="/files/${historyData.filename}/versions/${
+        commit.commit_hash
+      }" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold">
+                                <i class="fa-solid fa-file-arrow-down"></i><span>Download</span>
+                            </a>
+                        </div>
+                    </div>
+                </div>`;
+    });
+  } else {
+    historyListHtml = `<p class="text-center text-primary-600 dark:text-primary-300">No version history available.</p>`;
+  }
+
+  modal.innerHTML = `
+        <div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-2xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
+            <div class="flex-shrink-0 flex justify-between items-center p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent">
+                <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3>
+                <button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.fixed').remove()">
+                    <i class="fa-solid fa-xmark text-2xl"></i>
+                </button>
+            </div>
+            <div class="overflow-y-auto p-6 space-y-4">${historyListHtml}</div>
+        </div>`;
+
+  document.body.appendChild(modal);
 }
 
 function showNewFileDialog() {
@@ -690,7 +762,22 @@ function formatBytes(bytes) {
 
 function formatDate(dateString) {
   if (!dateString) return "Unknown";
-  return new Date(dateString).toLocaleString();
+  try {
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) return "Invalid Date";
+    const options = {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZoneName: "short",
+    };
+    return date.toLocaleString(undefined, options);
+  } catch (error) {
+    console.error("Error formatting date:", dateString, error);
+    return "Date Error";
+  }
 }
 
 function saveExpandedState() {
@@ -708,14 +795,17 @@ document.addEventListener("DOMContentLoaded", function () {
   loadConfig();
   loadFiles();
   setTimeout(() => connectWebSocket(), 1000);
+
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && ws && ws.readyState !== WebSocket.OPEN) {
       console.log("Tab became visible, checking WebSocket connection...");
       if (reconnectAttempts < maxReconnectAttempts) connectWebSocket();
     }
   });
+
   window.addEventListener("beforeunload", () => disconnectWebSocket());
   window.manualRefresh = manualRefresh;
+
   setInterval(async () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       console.log("WebSocket disconnected, doing fallback refresh...");
@@ -731,22 +821,29 @@ document.addEventListener("DOMContentLoaded", function () {
       }
     }
   }, 30000);
+
   document.getElementById("searchInput").addEventListener("input", renderFiles);
+
   document.getElementById("fileList").addEventListener("click", (e) => {
     const button = e.target.closest("button, a");
     if (!button) return;
     const filename = button.dataset.filename;
+
     if (button.classList.contains("js-checkout-btn")) checkoutFile(filename);
     else if (button.classList.contains("js-checkin-btn"))
       showCheckinDialog(filename);
     else if (button.classList.contains("js-override-btn"))
       adminOverride(filename);
+    else if (button.classList.contains("js-delete-btn"))
+      adminDeleteFile(filename);
     else if (button.classList.contains("js-history-btn"))
       viewFileHistory(filename);
   });
+
   const checkinModal = document.getElementById("checkinModal");
   const checkinForm = document.getElementById("checkinForm");
   const cancelCheckinBtn = document.getElementById("cancelCheckin");
+
   checkinForm.addEventListener("submit", function (e) {
     e.preventDefault();
     const filename = e.target.dataset.filename;
@@ -766,9 +863,11 @@ document.addEventListener("DOMContentLoaded", function () {
       );
     }
   });
+
   cancelCheckinBtn.addEventListener("click", () =>
     checkinModal.classList.add("hidden")
   );
+
   document
     .getElementById("configForm")
     .addEventListener("submit", async function (e) {

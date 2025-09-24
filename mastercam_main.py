@@ -55,6 +55,10 @@ class CheckoutRequest(BaseModel):
 class AdminOverrideRequest(BaseModel):
     admin_user: str
 
+# NEW: Pydantic model for the delete request
+class AdminDeleteRequest(BaseModel):
+    admin_user: str
+
 class ConfigUpdateRequest(BaseModel):
     base_url: str = Field(alias="gitlab_url")  # frontend sends gitlab_url, backend uses base_url
     project_id: str
@@ -66,7 +70,8 @@ class AppConfig(BaseModel):
     gitlab: dict = Field(default_factory=dict)
     local: dict = Field(default_factory=dict)
     ui: dict = Field(default_factory=dict)
-    security: dict = Field(default_factory=dict)
+    # NEW: Added security section for admin users
+    security: dict = Field(default_factory=lambda: {"admin_users": ["admin"]})
     polling: dict = Field(default_factory=lambda: {
         "enabled": True,
         "interval_seconds": 15,
@@ -128,7 +133,16 @@ class ConfigManager:
         cfg = self.config.model_dump()
         gitlab_cfg = cfg.get('gitlab', {})
         local_cfg = cfg.get('local', {})
-        return {'gitlab_url': gitlab_cfg.get('base_url'),'project_id': gitlab_cfg.get('project_id'),'username': gitlab_cfg.get('username'),'has_token': bool(gitlab_cfg.get('token')),'repo_path': local_cfg.get('repo_path')}
+        security_cfg = cfg.get('security', {})
+        # MODIFIED: Added is_admin flag to the config summary
+        return {
+            'gitlab_url': gitlab_cfg.get('base_url'),
+            'project_id': gitlab_cfg.get('project_id'),
+            'username': gitlab_cfg.get('username'),
+            'has_token': bool(gitlab_cfg.get('token')),
+            'repo_path': local_cfg.get('repo_path'),
+            'is_admin': gitlab_cfg.get('username') in security_cfg.get('admin_users', [])
+        }
 
 class GitLabAPI:
     def __init__(self, base_url: str, token: str, project_id: str):
@@ -695,6 +709,50 @@ async def admin_override(filename: str, request: AdminOverrideRequest):
         lock_info = {"user": "unknown", "timestamp": datetime.now().isoformat() + "Z"}
         absolute_lock_path.write_text(json.dumps({"file": file_path, **lock_info}, indent=2))
         raise HTTPException(status_code=500, detail="Failed to commit lock override.")
+
+# NEW: Endpoint for an admin to permanently delete a file
+@app.delete("/files/{filename}/delete")
+async def admin_delete_file(filename: str, request: AdminDeleteRequest):
+    cfg_manager = app_state.get('config_manager')
+    git_repo = app_state.get('git_repo')
+    metadata_manager = app_state.get('metadata_manager')
+    
+    if not all([cfg_manager, git_repo, metadata_manager]):
+        raise HTTPException(status_code=500, detail="Repository not initialized.")
+
+    # Admin check
+    admin_users = cfg_manager.config.security.get("admin_users", [])
+    if request.admin_user not in admin_users:
+        raise HTTPException(status_code=403, detail="Permission denied. Admin access required.")
+
+    file_path_str = find_file_path(filename)
+    if not file_path_str:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Prepare paths for commit log
+    absolute_file_path = git_repo.repo_path / file_path_str
+    absolute_lock_path = metadata_manager._get_lock_file_path(file_path_str)
+    
+    relative_lock_path_str = str(absolute_lock_path.relative_to(git_repo.repo_path)).replace(os.sep, '/')
+    files_to_commit = [file_path_str]
+    if absolute_lock_path.exists():
+        files_to_commit.append(relative_lock_path_str)
+
+    # Delete files locally
+    absolute_file_path.unlink(missing_ok=True)
+    metadata_manager.release_lock(file_path_str) # This deletes the lock file
+
+    # Commit and push the deletion
+    commit_message = f"ADMIN DELETE: {filename} by {request.admin_user}"
+    success = git_repo.commit_and_push(files_to_commit, commit_message, request.admin_user, f"{request.admin_user}@example.com")
+    
+    if success:
+        await handle_successful_git_operation()
+        return JSONResponse({"status": "success", "message": f"File '{filename}' permanently deleted."})
+    else:
+        # Attempt to revert if push fails (though file is already gone locally)
+        git_repo.pull() 
+        raise HTTPException(status_code=500, detail="Failed to commit the file deletion.")
 
 @app.get("/files/{filename}/download")
 async def download_file(filename: str):
