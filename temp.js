@@ -1,6 +1,6 @@
 // ==================================================================
 //           Mastercam GitLab Interface Script
-// (Corrected Version with Admin and View Fixes)
+// (Final Version with All Features)
 // ==================================================================
 
 // -- Global Variables --
@@ -257,7 +257,6 @@ async function loadConfig() {
   try {
     const response = await fetch("/config");
     currentConfig = await response.json();
-    console.log("Loaded config:", currentConfig); // Added for debugging admin status
     updateConfigDisplay();
     setupAdminUI();
   } catch (error) {
@@ -337,48 +336,36 @@ function setupAdminUI() {
   }
 }
 
-// FIXED: Action buttons now show View for all files
 function getActionButtons(file) {
   const btnClass =
     "flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold";
   let buttons = "";
-
-  // Always show View/Download button first
   let viewBtnHtml = `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80"><i class="fa-solid fa-eye"></i><span>View</span></a>`;
 
   if (file.status === "unlocked") {
     buttons += `<button class="${btnClass} bg-gradient-to-r from-green-600 to-green-700 text-white hover:bg-opacity-80 js-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
   } else if (file.status === "checked_out_by_user") {
     buttons += `<button class="${btnClass} bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:bg-opacity-80 js-checkin-btn" data-filename="${file.filename}"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-yellow-600 to-yellow-700 text-white hover:bg-opacity-80 js-cancel-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-times"></i><span>Cancel Checkout</span></button>`;
-    // Change View to Download for checked out files
     viewBtnHtml = viewBtnHtml.replace(
       '<i class="fa-solid fa-eye"></i><span>View</span>',
       '<i class="fa-solid fa-file-arrow-down"></i><span>Download</span>'
     );
   }
 
-  // Add View/Download button
   buttons = viewBtnHtml + buttons;
-
-  // Always add History button
   buttons += `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
 
-  // Admin buttons (only show if user is admin and admin mode is enabled)
   if (currentConfig && currentConfig.is_admin) {
     const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
-
     if (file.status === "locked" && file.locked_by !== currentUser) {
       const overrideBtnClasses =
         "bg-gradient-to-r from-yellow-400 to-yellow-500 text-yellow-900 dark:from-yellow-600 dark:to-yellow-700 dark:text-yellow-100";
       buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${overrideBtnClasses} hover:bg-opacity-80 js-override-btn" data-filename="${file.filename}"><i class="fa-solid fa-unlock"></i><span>Override</span></button>`;
     }
-
     const deleteBtnClasses =
       "bg-gradient-to-r from-red-600 to-red-700 text-white dark:from-red-700 dark:to-red-800 dark:text-red-100";
     buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${deleteBtnClasses} hover:bg-opacity-80 js-delete-btn" data-filename="${file.filename}"><i class="fa-solid fa-trash-can"></i><span>Delete</span></button>`;
   }
-
   return buttons;
 }
 
@@ -433,16 +420,24 @@ function showCheckinDialog(filename) {
   title.textContent = `Check In: ${filename}`;
   form.dataset.filename = filename;
   form.reset();
+  document.getElementById("newMajorRevInput").disabled = true;
   modal.classList.remove("hidden");
 }
-
-// FIXED: Parameter name to match Python backend
-async function checkinFile(filename, file, commitMessage) {
+async function checkinFile(
+  filename,
+  file,
+  commitMessage,
+  revType,
+  newMajorRevNumber
+) {
   try {
     const formData = new FormData();
     formData.append("user", currentUser);
     formData.append("file", file);
     formData.append("commit_message", commitMessage);
+    formData.append("rev_type", revType);
+    if (newMajorRevNumber)
+      formData.append("new_major_rev_str", newMajorRevNumber);
     const response = await fetch(`/files/${filename}/checkin`, {
       method: "POST",
       body: formData,
@@ -653,33 +648,6 @@ async function acknowledgeMessage(messageId) {
   }
 }
 
-async function cancelCheckout(filename) {
-  if (
-    !confirm(
-      `Are you sure you want to cancel checkout for '${filename}'? Any local changes will be lost.`
-    )
-  )
-    return;
-  try {
-    const response = await fetch(`/files/${filename}/cancel_checkout`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user: currentUser }),
-    });
-    if (response.ok) {
-      debounceNotifications(
-        `Checkout for '${filename}' canceled successfully!`,
-        "success"
-      );
-    } else {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || "Cancel failed");
-    }
-  } catch (error) {
-    debounceNotifications(`Cancel Error: ${error.message}`, "error");
-  }
-}
-
 function toggleConfigPanel() {
   document.getElementById("configPanel").classList.toggle("translate-x-full");
 }
@@ -741,27 +709,11 @@ function formatBytes(bytes) {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }
-
-// FIXED: Better date formatting with proper timezone handling
 function formatDate(dateString) {
   if (!dateString) return "Unknown";
   try {
-    let date;
-
-    // Handle different date string formats
-    if (dateString.includes("T") && !dateString.endsWith("Z")) {
-      // If it's ISO format without Z, assume it's UTC
-      date = new Date(dateString + "Z");
-    } else if (dateString.includes("T") && dateString.endsWith("Z")) {
-      // Already has Z, it's UTC
-      date = new Date(dateString);
-    } else {
-      // Try to parse as-is first
-      date = new Date(dateString);
-    }
-
+    const date = new Date(dateString);
     if (isNaN(date.getTime())) return "Invalid Date";
-
     const options = {
       year: "numeric",
       month: "short",
@@ -776,7 +728,6 @@ function formatDate(dateString) {
     return "Date Error";
   }
 }
-
 function saveExpandedState() {
   const openGroups = [];
   document.querySelectorAll(".file-group[open]").forEach((detailsEl) => {
@@ -831,8 +782,6 @@ document.addEventListener("DOMContentLoaded", function () {
     if (button.classList.contains("js-checkout-btn")) checkoutFile(filename);
     else if (button.classList.contains("js-checkin-btn"))
       showCheckinDialog(filename);
-    else if (button.classList.contains("js-cancel-checkout-btn"))
-      cancelCheckout(filename);
     else if (button.classList.contains("js-override-btn"))
       adminOverride(filename);
     else if (button.classList.contains("js-delete-btn"))
@@ -844,17 +793,35 @@ document.addEventListener("DOMContentLoaded", function () {
   const checkinModal = document.getElementById("checkinModal");
   const checkinForm = document.getElementById("checkinForm");
   const cancelCheckinBtn = document.getElementById("cancelCheckin");
+  const newMajorRevInput = document.getElementById("newMajorRevInput");
+  checkinForm.addEventListener("change", (e) => {
+    if (e.target.name === "rev_type") {
+      newMajorRevInput.disabled = e.target.value !== "major";
+      if (!newMajorRevInput.disabled) newMajorRevInput.focus();
+    }
+  });
   checkinForm.addEventListener("submit", function (e) {
     e.preventDefault();
     const filename = e.target.dataset.filename;
     const fileInput = document.getElementById("checkinFileUpload");
     const messageInput = document.getElementById("commitMessage");
+    const revTypeInput = document.querySelector(
+      'input[name="rev_type"]:checked'
+    );
+    const newMajorValue = newMajorRevInput.value.trim();
     if (
       filename &&
       fileInput.files.length > 0 &&
-      messageInput.value.trim() !== ""
+      messageInput.value.trim() !== "" &&
+      revTypeInput
     ) {
-      checkinFile(filename, fileInput.files[0], messageInput.value.trim());
+      checkinFile(
+        filename,
+        fileInput.files[0],
+        messageInput.value.trim(),
+        revTypeInput.value,
+        newMajorValue
+      );
       checkinModal.classList.add("hidden");
     } else {
       debounceNotifications("Please complete all fields.", "error");
