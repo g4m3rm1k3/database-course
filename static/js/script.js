@@ -128,6 +128,8 @@ function renderFiles() {
   const searchTerm = document.getElementById("searchInput").value.toLowerCase();
   const expandedGroups =
     JSON.parse(localStorage.getItem("expandedGroups")) || [];
+  const expandedSubGroups =
+    JSON.parse(localStorage.getItem("expandedSubGroups")) || [];
   fileListEl.innerHTML = "";
   let totalFilesFound = 0;
 
@@ -148,15 +150,38 @@ function renderFiles() {
     const filesInGroup = groupedFiles[groupName];
     if (!Array.isArray(filesInGroup)) return;
 
-    let filteredFiles = filesInGroup.filter(
-      (file) =>
-        file.filename.toLowerCase().includes(searchTerm) ||
-        file.path.toLowerCase().includes(searchTerm)
-    );
-    filteredFiles.sort((a, b) => a.filename.localeCompare(b.filename));
-    if (filteredFiles.length === 0) return;
-    totalFilesFound += filteredFiles.length;
+    // Group files by the first 7 digits of their filename
+    const subGroupedFiles = {};
+    filesInGroup.forEach((file) => {
+      const sevenDigitPrefix =
+        file.filename.match(/^\d{7}/)?.[0] || "Miscellaneous";
+      if (!subGroupedFiles[sevenDigitPrefix]) {
+        subGroupedFiles[sevenDigitPrefix] = [];
+      }
+      subGroupedFiles[sevenDigitPrefix].push(file);
+    });
 
+    // Filter and count total files after search
+    let groupFileCount = 0;
+    const filteredSubGroups = {};
+    Object.keys(subGroupedFiles).forEach((subGroupName) => {
+      const filteredFiles = subGroupedFiles[subGroupName].filter(
+        (file) =>
+          file.filename.toLowerCase().includes(searchTerm) ||
+          file.path.toLowerCase().includes(searchTerm)
+      );
+      if (filteredFiles.length > 0) {
+        filteredSubGroups[subGroupName] = filteredFiles.sort((a, b) =>
+          a.filename.localeCompare(b.filename)
+        );
+        groupFileCount += filteredFiles.length;
+      }
+    });
+
+    if (groupFileCount === 0) return;
+    totalFilesFound += groupFileCount;
+
+    // Create top-level group (by first two digits)
     const detailsEl = document.createElement("details");
     detailsEl.className =
       "file-group group border-t border-primary-300 dark:border-mc-dark-accent";
@@ -169,82 +194,110 @@ function renderFiles() {
       "list-none py-3 px-4 bg-gradient-to-r from-mc-light-accent to-white dark:from-mc-dark-accent dark:to-mc-dark-bg cursor-pointer hover:bg-opacity-80 flex justify-between items-center transition-colors";
     summaryEl.innerHTML = `<div class="flex items-center space-x-3"><i class="fa-solid fa-chevron-right text-xs text-primary-600 dark:text-primary-300 transform transition-transform duration-200 group-open:rotate-90"></i><span class="font-semibold text-primary-800 dark:text-primary-200">${
       groupName.endsWith("XXXXX") ? `${groupName} SERIES` : groupName
-    }</span></div><span class="text-sm font-medium text-primary-600 dark:text-primary-300">(${
-      filteredFiles.length
-    } files)</span>`;
+    }</span></div><span class="text-sm font-medium text-primary-600 dark:text-primary-300">(${groupFileCount} files)</span>`;
     detailsEl.appendChild(summaryEl);
 
-    const filesContainer = document.createElement("div");
-    filteredFiles.forEach((file) => {
-      const fileEl = document.createElement("div");
-      fileEl.id = `file-${file.filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
-      let statusClass = "",
-        statusBadgeText = "";
-      switch (file.status) {
-        case "unlocked":
-          statusClass =
-            "bg-green-100 text-green-900 dark:bg-green-900 dark:text-green-200";
-          statusBadgeText = "Available";
-          break;
-        case "locked":
-          statusClass =
-            "bg-red-100 text-red-900 dark:bg-red-900 dark:text-red-200";
-          statusBadgeText = `Locked by ${file.locked_by}`;
-          break;
-        case "checked_out_by_user":
-          statusClass =
-            "bg-blue-100 text-blue-900 dark:bg-blue-900 dark:text-blue-200";
-          statusBadgeText = "Checked out by you";
-          break;
-        default:
-          statusClass =
-            "bg-primary-100 text-primary-900 dark:bg-primary-600 dark:text-primary-200";
-          statusBadgeText = "Unknown";
-      }
-      const actionsHtml = getActionButtons(file);
-      fileEl.className =
-        "py-6 px-4 bg-white dark:bg-mc-dark-bg hover:bg-opacity-80 transition-colors duration-200 border-b border-primary-300 dark:border-mc-dark-accent bg-opacity-95";
-      fileEl.innerHTML = `
-        <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
-            <div class="flex items-center space-x-4 flex-wrap">
-                <h3 class="text-lg font-semibold text-primary-900 dark:text-primary-100">${
-                  file.filename
-                }</h3>
-                <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
-                ${
-                  file.revision
-                    ? `<span class="text-xs font-bold px-2.5 py-1 rounded-full bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200">REV ${file.revision}</span>`
-                    : ""
-                }
-            </div>
-            <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
-        </div>
-        ${
-          file.description
-            ? `<div class="mt-2 text-sm text-primary-700 dark:text-primary-300 italic">${file.description}</div>`
-            : ""
+    // Create container for subgroups
+    const subGroupsContainer = document.createElement("div");
+    subGroupsContainer.className = "pl-4";
+
+    // Render subgroups (by seven-digit prefix)
+    Object.keys(filteredSubGroups)
+      .sort()
+      .forEach((subGroupName) => {
+        const filesInSubGroup = filteredSubGroups[subGroupName];
+
+        const subDetailsEl = document.createElement("details");
+        subDetailsEl.className =
+          "sub-file-group group border-t border-primary-200 dark:border-primary-600";
+        subDetailsEl.dataset.subGroupName = `${groupName}/${subGroupName}`;
+        if (expandedSubGroups.includes(`${groupName}/${subGroupName}`)) {
+          subDetailsEl.open = true;
         }
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-primary-700 dark:text-primary-300 text-sm">
-            <div class="flex items-center space-x-2"><i class="fa-solid fa-file text-primary-600 dark:text-primary-300"></i><span>Path: ${
-              file.path
-            }</span></div>
-            <div class="flex items-center space-x-2"><i class="fa-solid fa-hard-drive text-primary-600 dark:text-primary-300"></i><span>Size: ${formatBytes(
-              file.size
-            )}</span></div>
-            <div class="flex items-center space-x-2"><i class="fa-solid fa-clock text-primary-600 dark:text-primary-300"></i><span>Modified: ${formatDate(
-              file.modified_at
-            )}</span></div>
+        subDetailsEl.addEventListener("toggle", saveExpandedSubState);
+
+        const subSummaryEl = document.createElement("summary");
+        subSummaryEl.className =
+          "list-none py-2 px-3 bg-gradient-to-r from-primary-50 to-primary-100 dark:from-primary-700 dark:to-primary-800 cursor-pointer hover:bg-opacity-80 flex justify-between items-center transition-colors";
+        subSummaryEl.innerHTML = `<div class="flex items-center space-x-3"><i class="fa-solid fa-chevron-right text-xs text-primary-600 dark:text-primary-300 transform transition-transform duration-200 group-open:rotate-90"></i><span class="font-medium text-primary-800 dark:text-primary-200">${subGroupName}</span></div><span class="text-sm font-medium text-primary-600 dark:text-primary-300">(${filesInSubGroup.length} files)</span>`;
+        subDetailsEl.appendChild(subSummaryEl);
+
+        const filesContainer = document.createElement("div");
+        filesContainer.className = "pl-4";
+        filesInSubGroup.forEach((file) => {
+          const fileEl = document.createElement("div");
+          fileEl.id = `file-${file.filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
+          let statusClass = "",
+            statusBadgeText = "";
+          switch (file.status) {
+            case "unlocked":
+              statusClass =
+                "bg-green-100 text-green-900 dark:bg-green-900 dark:text-green-200";
+              statusBadgeText = "Available";
+              break;
+            case "locked":
+              statusClass =
+                "bg-red-100 text-red-900 dark:bg-red-900 dark:text-red-200";
+              statusBadgeText = `Locked by ${file.locked_by}`;
+              break;
+            case "checked_out_by_user":
+              statusClass =
+                "bg-blue-100 text-blue-900 dark:bg-blue-900 dark:text-blue-200";
+              statusBadgeText = "Checked out by you";
+              break;
+            default:
+              statusClass =
+                "bg-primary-100 text-primary-900 dark:bg-primary-600 dark:text-primary-200";
+              statusBadgeText = "Unknown";
+          }
+          const actionsHtml = getActionButtons(file);
+          fileEl.className =
+            "py-6 px-4 bg-white dark:bg-mc-dark-bg hover:bg-opacity-80 transition-colors duration-200 border-b border-primary-300 dark:border-mc-dark-accent bg-opacity-95";
+          fileEl.innerHTML = `
+            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
+                <div class="flex items-center space-x-4 flex-wrap">
+                    <h3 class="text-lg font-semibold text-primary-900 dark:text-primary-100">${
+                      file.filename
+                    }</h3>
+                    <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
+                    ${
+                      file.revision
+                        ? `<span class="text-xs font-bold px-2.5 py-1 rounded-full bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200">REV ${file.revision}</span>`
+                        : ""
+                    }
+                </div>
+                <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
+            </div>
             ${
-              file.locked_by && file.status !== "checked_out_by_user"
-                ? `<div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1"><i class="fa-solid fa-lock text-primary-600 dark:text-primary-300"></i><span>Locked by: ${
-                    file.locked_by
-                  } at ${formatDate(file.locked_at)}</span></div>`
+              file.description
+                ? `<div class="mt-2 text-sm text-primary-700 dark:text-primary-300 italic">${file.description}</div>`
                 : ""
             }
-        </div>`;
-      filesContainer.appendChild(fileEl);
-    });
-    detailsEl.appendChild(filesContainer);
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-primary-700 dark:text-primary-300 text-sm">
+                <div class="flex items-center space-x-2"><i class="fa-solid fa-file text-primary-600 dark:text-primary-300"></i><span>Path: ${
+                  file.path
+                }</span></div>
+                <div class="flex items-center space-x-2"><i class="fa-solid fa-hard-drive text-primary-600 dark:text-primary-300"></i><span>Size: ${formatBytes(
+                  file.size
+                )}</span></div>
+                <div class="flex items-center space-x-2"><i class="fa-solid fa-clock text-primary-600 dark:text-primary-300"></i><span>Modified: ${formatDate(
+                  file.modified_at
+                )}</span></div>
+                ${
+                  file.locked_by && file.status !== "checked_out_by_user"
+                    ? `<div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1"><i class="fa-solid fa-lock text-primary-600 dark:text-primary-300"></i><span>Locked by: ${
+                        file.locked_by
+                      } at ${formatDate(file.locked_at)}</span></div>`
+                    : ""
+                }
+            </div>`;
+          filesContainer.appendChild(fileEl);
+        });
+        subDetailsEl.appendChild(filesContainer);
+        subGroupsContainer.appendChild(subDetailsEl);
+      });
+
+    detailsEl.appendChild(subGroupsContainer);
     fileListEl.appendChild(detailsEl);
   });
 
@@ -785,6 +838,16 @@ function formatDate(dateString) {
     console.error("Error formatting date:", dateString, error);
     return "Date Error";
   }
+}
+
+function saveExpandedSubState() {
+  const openSubGroups = [];
+  document.querySelectorAll(".sub-file-group[open]").forEach((subDetailsEl) => {
+    if (subDetailsEl.dataset.subGroupName) {
+      openSubGroups.push(subDetailsEl.dataset.subGroupName);
+    }
+  });
+  localStorage.setItem("expandedSubGroups", JSON.stringify(openSubGroups));
 }
 
 function saveExpandedState() {
