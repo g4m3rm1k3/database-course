@@ -350,7 +350,7 @@ function getActionButtons(file) {
     buttons += `<button class="${btnClass} bg-gradient-to-r from-green-600 to-green-700 text-white hover:bg-opacity-80 js-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
   } else if (file.status === "checked_out_by_user") {
     buttons += `<button class="${btnClass} bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:bg-opacity-80 js-checkin-btn" data-filename="${file.filename}"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-yellow-600 to-yellow-700 text-white hover:bg-opacity-80 js-cancel-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-times"></i><span>Cancel Checkout</span></button>`;
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-yellow-600 to-yellow-700 text-white dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-cancel-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-times"></i><span>Cancel Checkout</span></button>`;
     // Change View to Download for checked out files
     viewBtnHtml = viewBtnHtml.replace(
       '<i class="fa-solid fa-eye"></i><span>View</span>',
@@ -436,13 +436,23 @@ function showCheckinDialog(filename) {
   modal.classList.remove("hidden");
 }
 
-// FIXED: Parameter name to match Python backend
-async function checkinFile(filename, file, commitMessage) {
+async function checkinFile(
+  filename,
+  file,
+  commitMessage,
+  rev_type,
+  new_major_rev
+) {
   try {
     const formData = new FormData();
     formData.append("user", currentUser);
     formData.append("file", file);
     formData.append("commit_message", commitMessage);
+    formData.append("rev_type", rev_type);
+    // Only add the new major rev number if it's provided
+    if (new_major_rev) {
+      formData.append("new_major_rev", new_major_rev);
+    }
     const response = await fetch(`/files/${filename}/checkin`, {
       method: "POST",
       body: formData,
@@ -791,6 +801,25 @@ document.addEventListener("DOMContentLoaded", function () {
   loadConfig();
   loadFiles();
   setTimeout(() => connectWebSocket(), 1000);
+  document.querySelectorAll('input[name="rev_type"]').forEach((radio) => {
+    radio.addEventListener("change", (e) => {
+      const majorRevField = document.getElementById("newMajorRevInput");
+      const majorRevLabel = document.querySelector(
+        'label[for="newMajorRevInput"]'
+      ); // Find the associated label
+
+      if (e.target.value === "major") {
+        majorRevField.disabled = false;
+        majorRevField.classList.remove("opacity-50", "cursor-not-allowed");
+        if (majorRevLabel) majorRevLabel.classList.remove("opacity-50");
+      } else {
+        majorRevField.disabled = true;
+        majorRevField.value = "";
+        majorRevField.classList.add("opacity-50", "cursor-not-allowed");
+        if (majorRevLabel) majorRevLabel.classList.add("opacity-50");
+      }
+    });
+  });
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && ws && ws.readyState !== WebSocket.OPEN) {
       if (reconnectAttempts < maxReconnectAttempts) connectWebSocket();
@@ -849,15 +878,26 @@ document.addEventListener("DOMContentLoaded", function () {
     const filename = e.target.dataset.filename;
     const fileInput = document.getElementById("checkinFileUpload");
     const messageInput = document.getElementById("commitMessage");
+    const revTypeInput = document.querySelector(
+      'input[name="rev_type"]:checked'
+    );
+    const newMajorRevInput = document.getElementById("newMajorRevInput");
     if (
       filename &&
       fileInput.files.length > 0 &&
       messageInput.value.trim() !== ""
     ) {
-      checkinFile(filename, fileInput.files[0], messageInput.value.trim());
+      checkinFile(
+        filename,
+        fileInput.files[0],
+        messageInput.value.trim(),
+        revTypeInput.value,
+        // Pass the value from the input field if rev type is 'major'
+        revTypeInput.value === "major" ? newMajorRevInput.value : null
+      );
       checkinModal.classList.add("hidden");
     } else {
-      debounceNotifications("Please complete all fields.", "error");
+      debounceNotifications("Please complete all required fields.", "error");
     }
   });
   cancelCheckinBtn.addEventListener("click", () =>
