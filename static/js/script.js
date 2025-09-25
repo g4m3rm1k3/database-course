@@ -1,5 +1,5 @@
 // ==================================================================
-//           Mastercam GitLab Interface Script
+// 			Mastercam GitLab Interface Script
 // (Corrected Version with Admin and View Fixes)
 // ==================================================================
 
@@ -390,7 +390,6 @@ function setupAdminUI() {
   }
 }
 
-// FIXED: Action buttons now show View for all files
 function getActionButtons(file) {
   const btnClass =
     "flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold";
@@ -734,6 +733,7 @@ async function cancelCheckout(filename) {
         `Checkout for '${filename}' canceled successfully!`,
         "success"
       );
+      loadFiles(); // <<<--- THIS IS THE FIX
     } else {
       const errorData = await response.json();
       throw new Error(errorData.detail || "Cancel failed");
@@ -805,33 +805,17 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
 }
 
-// FIXED: Better date formatting with proper timezone handling
 function formatDate(dateString) {
   if (!dateString) return "Unknown";
   try {
-    let date;
-
-    // Handle different date string formats
-    if (dateString.includes("T") && !dateString.endsWith("Z")) {
-      // If it's ISO format without Z, assume it's UTC
-      date = new Date(dateString + "Z");
-    } else if (dateString.includes("T") && dateString.endsWith("Z")) {
-      // Already has Z, it's UTC
-      date = new Date(dateString);
-    } else {
-      // Try to parse as-is first
-      date = new Date(dateString);
-    }
-
+    const date = new Date(dateString);
     if (isNaN(date.getTime())) return "Invalid Date";
-
     const options = {
       year: "numeric",
       month: "short",
       day: "numeric",
       hour: "2-digit",
       minute: "2-digit",
-      timeZoneName: "short",
     };
     return date.toLocaleString(undefined, options);
   } catch (error) {
@@ -839,6 +823,103 @@ function formatDate(dateString) {
     return "Date Error";
   }
 }
+
+// +++ NEW DASHBOARD FUNCTIONS +++
+function formatDuration(totalSeconds) {
+  if (totalSeconds < 60) {
+    return `${Math.round(totalSeconds)}s`;
+  }
+  const days = Math.floor(totalSeconds / 86400);
+  totalSeconds %= 86400;
+  const hours = Math.floor(totalSeconds / 3600);
+  totalSeconds %= 3600;
+  const minutes = Math.floor(totalSeconds / 60);
+
+  let parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+
+  return parts.join(" ") || "0m";
+}
+
+async function loadAndRenderDashboard() {
+  const dashboardContent = document.getElementById("dashboardContent");
+  dashboardContent.innerHTML = `<div class="flex justify-center items-center py-12"><div class="animate-spin rounded-full h-12 w-12 border-4 border-primary-400 dark:border-mc-dark-accent border-t-accent"></div></div>`;
+
+  try {
+    const response = await fetch("/dashboard/stats");
+    if (!response.ok) {
+      throw new Error(`Server error: ${response.statusText}`);
+    }
+    const data = await response.json();
+
+    let tableHtml = "";
+
+    if (data.active_checkouts.length === 0) {
+      tableHtml += `<div class="text-center text-primary-600 dark:text-primary-300 py-8">
+          <i class="fa-solid fa-check-circle text-4xl mb-3 text-green-500"></i>
+          <p>No files are currently checked out.</p>
+      </div>`;
+    } else {
+      tableHtml += `
+        <div class="overflow-x-auto">
+          <table class="min-w-full divide-y divide-primary-300 dark:divide-mc-dark-accent">
+            <thead class="bg-primary-100 dark:bg-mc-dark-accent">
+              <tr>
+                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-primary-600 dark:text-primary-300 uppercase tracking-wider">File</th>
+                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-primary-600 dark:text-primary-300 uppercase tracking-wider">Checked Out By</th>
+                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-primary-600 dark:text-primary-300 uppercase tracking-wider">Duration</th>
+                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-primary-600 dark:text-primary-300 uppercase tracking-wider">Checked Out At</th>
+              </tr>
+            </thead>
+            <tbody class="bg-white dark:bg-mc-dark-bg divide-y divide-primary-200 dark:divide-primary-700">
+      `;
+      data.active_checkouts.forEach((item) => {
+        tableHtml += `
+          <tr>
+            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-primary-900 dark:text-primary-100">${
+              item.filename
+            }</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-primary-700 dark:text-primary-300">${
+              item.locked_by
+            }</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-primary-700 dark:text-primary-300">${formatDuration(
+              item.duration_seconds
+            )}</td>
+            <td class="px-6 py-4 whitespace-nowrap text-sm text-primary-700 dark:text-primary-300">${formatDate(
+              item.locked_at
+            )}</td>
+          </tr>
+        `;
+      });
+      tableHtml += `
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+    dashboardContent.innerHTML = tableHtml;
+  } catch (error) {
+    dashboardContent.innerHTML = `<p class="text-center text-red-500">Error loading dashboard: ${error.message}</p>`;
+  }
+}
+
+function openDashboardModal() {
+  const modal = document.getElementById("dashboardModal");
+  if (modal) {
+    modal.classList.remove("hidden");
+    loadAndRenderDashboard();
+  }
+}
+
+function closeDashboardModal() {
+  const modal = document.getElementById("dashboardModal");
+  if (modal) {
+    modal.classList.add("hidden");
+  }
+}
+// +++ END OF NEW DASHBOARD FUNCTIONS +++
 
 function saveExpandedSubState() {
   const openSubGroups = [];
@@ -916,6 +997,26 @@ document.addEventListener("DOMContentLoaded", function () {
       saveExpandedState();
     });
   }
+
+  // *** Event listener for the new dashboard button ***
+  const dashboardBtn = document.getElementById("dashboardBtn");
+  if (dashboardBtn) {
+    dashboardBtn.addEventListener("click", openDashboardModal);
+  }
+
+  // *** Event listeners for the new dashboard modal ***
+  const dashboardModal = document.getElementById("dashboardModal");
+  const closeDashboardBtn = document.getElementById("closeDashboardBtn");
+  if (dashboardModal && closeDashboardBtn) {
+    closeDashboardBtn.addEventListener("click", closeDashboardModal);
+    dashboardModal.addEventListener("click", (e) => {
+      // Close modal if user clicks on the background overlay
+      if (e.target === dashboardModal) {
+        closeDashboardModal();
+      }
+    });
+  }
+
   document.getElementById("fileList").addEventListener("click", (e) => {
     const button = e.target.closest("button, a");
     if (!button || !button.dataset.filename) return;

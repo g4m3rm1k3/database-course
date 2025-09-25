@@ -55,6 +55,18 @@ class FileInfo(BaseModel):
     revision: Optional[str] = None
 
 
+class CheckoutInfo(BaseModel):
+    filename: str
+    path: str
+    locked_by: str
+    locked_at: str
+    duration_seconds: float
+
+
+class DashboardStats(BaseModel):
+    active_checkouts: List[CheckoutInfo]
+
+
 class CheckoutRequest(BaseModel):
     user: str
 
@@ -787,6 +799,59 @@ async def send_message(request: SendMessageRequest):
             f"An unexpected error occurred in send_message: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"An internal error occurred: {e}")
+
+
+@app.get("/dashboard/stats", response_model=DashboardStats)
+async def get_dashboard_stats():
+    """
+    Scans the .locks directory to find all currently checked-out files
+    and calculates how long they have been locked.
+    """
+    metadata_manager = app_state.get('metadata_manager')
+    if not metadata_manager:
+        raise HTTPException(
+            status_code=503, detail="Metadata manager is not available."
+        )
+
+    active_checkouts = []
+    now_utc = datetime.now(timezone.utc)
+    locks_dir = metadata_manager.locks_dir
+
+    if locks_dir.exists():
+        for lock_file in locks_dir.glob('*.lock'):
+            try:
+                lock_data = json.loads(lock_file.read_text())
+                file_path = lock_data.get("file")
+                user = lock_data.get("user")
+                timestamp_str = lock_data.get("timestamp")
+
+                if not all([file_path, user, timestamp_str]):
+                    logger.warning(
+                        f"Skipping malformed lock file: {lock_file.name}")
+                    continue
+
+                # Parse the UTC timestamp string from the lock file
+                locked_at_dt = datetime.fromisoformat(
+                    timestamp_str.replace('Z', '+00:00'))
+
+                # Calculate the duration
+                duration = now_utc - locked_at_dt
+
+                active_checkouts.append(CheckoutInfo(
+                    filename=Path(file_path).name,
+                    path=file_path,
+                    locked_by=user,
+                    locked_at=timestamp_str,
+                    duration_seconds=duration.total_seconds()
+                ))
+            except (json.JSONDecodeError, TypeError, KeyError) as e:
+                logger.warning(
+                    f"Could not process lock file {lock_file.name}: {e}")
+
+    # Sort the list by the longest checkout duration first
+    active_checkouts.sort(key=lambda x: x.duration_seconds, reverse=True)
+
+    return DashboardStats(active_checkouts=active_checkouts)
 
 
 @app.post("/messages/acknowledge")
