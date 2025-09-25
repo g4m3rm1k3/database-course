@@ -434,14 +434,13 @@ class GitStateMonitor:
             return ""
         lock_files_data = []
         try:
-            for lock_file in locks_dir.glob('*.lock'):
+            for lock_file in sorted(locks_dir.glob('*.lock')):
                 if lock_file.is_file():
                     lock_files_data.append(
                         f"{lock_file.name}:{lock_file.read_text()}")
         except Exception as e:
             logger.error(f"Error reading lock files: {e}")
             return ""
-        lock_files_data.sort()
         combined_data = "".join(lock_files_data)
         return hashlib.md5(combined_data.encode()).hexdigest()
 
@@ -468,18 +467,20 @@ class GitStateMonitor:
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        # Store user associated with each connection
+        self.active_connections: Dict[WebSocket, str] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, user: str):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections[websocket] = user
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+            del self.active_connections[websocket]
 
     async def broadcast(self, message: str):
-        for connection in self.active_connections[:]:
+        # Iterating over a copy of keys to allow for disconnections during broadcast
+        for connection in list(self.active_connections.keys()):
             try:
                 await connection.send_text(message)
             except Exception:
@@ -560,8 +561,8 @@ async def git_polling_task():
                 await asyncio.sleep(poll_interval)
                 continue
             if git_monitor.check_for_changes():
-                logger.info("Git changes detected, broadcasting update...")
-                await broadcast_file_list_update()
+                logger.info("Git changes detected, broadcasting updates...")
+                await broadcast_updates()  # Use the new comprehensive broadcast function
             await asyncio.sleep(poll_interval)
         except asyncio.CancelledError:
             logger.info("Git polling task cancelled")
@@ -621,29 +622,64 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
         grouped_files[group_name].append(file_data)
     return grouped_files
 
+# NEW: Comprehensive update function
 
-async def broadcast_file_list_update():
+
+async def broadcast_updates():
     try:
-        logger.info("Broadcasting file list update...")
+        logger.info("Broadcasting all updates...")
+        # Small delay to ensure FS changes are settled
         await asyncio.sleep(0.2)
+
+        # Prepare file list payload once
         grouped_data = _get_current_file_state()
-        message = json.dumps({"type": "FILE_LIST_UPDATED",
-                             "payload": grouped_data, "timestamp": datetime.utcnow().isoformat() + "Z"})
-        if manager.active_connections:
-            await manager.broadcast(message)
-            logger.info(
-                f"Broadcast complete to {len(manager.active_connections)} clients.")
-        else:
+        file_list_message = json.dumps({
+            "type": "FILE_LIST_UPDATED",
+            "payload": grouped_data,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+
+        if not manager.active_connections:
             logger.debug("No active WebSocket connections to broadcast to.")
+            return
+
+        # Iterate through a copy of connections to handle disconnections safely
+        for websocket, user in list(manager.active_connections.items()):
+            # 1. Send file list update to everyone
+            try:
+                await websocket.send_text(file_list_message)
+            except Exception as e:
+                logger.warning(f"Could not send file list to {user}: {e}")
+                manager.disconnect(websocket)
+                continue
+
+            # 2. Check for and send specific messages to each user
+            if git_repo := app_state.get('git_repo'):
+                user_message_file = git_repo.repo_path / \
+                    ".messages" / f"{user}.json"
+                if user_message_file.exists():
+                    try:
+                        messages = json.loads(user_message_file.read_text())
+                        if messages:
+                            message_payload = json.dumps(
+                                {"type": "NEW_MESSAGES", "payload": messages})
+                            await websocket.send_text(message_payload)
+                    except Exception as e:
+                        logger.error(
+                            f"Could not check or send messages to {user}: {e}")
+
+        logger.info(
+            f"Broadcast complete to {len(manager.active_connections)} clients.")
+
     except Exception as e:
-        logger.error(f"Failed to broadcast file list update: {e}")
+        logger.error(f"Failed to broadcast updates: {e}")
 
 
 async def handle_successful_git_operation():
     global git_monitor
     if git_monitor:
         git_monitor.initialize_state()
-    await broadcast_file_list_update()
+    await broadcast_updates()  # Use the new comprehensive broadcast function
 
 # --- API Endpoints ---
 
@@ -676,10 +712,10 @@ async def update_gitlab_config(request: ConfigUpdateRequest):
 async def manual_refresh():
     try:
         if git_monitor and git_monitor.check_for_changes():
-            await broadcast_file_list_update()
+            await broadcast_updates()  # Use new broadcast function
             return {"status": "success", "message": "Files refreshed"}
         else:
-            await broadcast_file_list_update()
+            await broadcast_updates()  # Resync even if no changes
             return {"status": "success", "message": "No remote changes detected, UI resynced."}
     except Exception as e:
         logger.error(f"Manual refresh failed: {e}")
@@ -904,10 +940,7 @@ async def checkin_file(filename: str, user: str = Form(...), commit_message: str
             except json.JSONDecodeError:
                 pass
         current_rev = meta_content.get("revision", "")
-
-        # This is the key change: passing 'new_major_rev' to the increment function
         new_rev = _increment_revision(current_rev, rev_type, new_major_rev)
-
         meta_content["revision"] = new_rev
         meta_path.write_text(json.dumps(meta_content, indent=2))
         absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
@@ -929,6 +962,48 @@ async def checkin_file(filename: str, user: str = Form(...), commit_message: str
     except Exception as e:
         logger.error(
             f"An unexpected error occurred in checkin_file: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"An internal error occurred: {e}")
+
+
+@app.post("/files/{filename}/override")
+async def admin_override(filename: str, request: AdminOverrideRequest):
+    try:
+        cfg_manager = app_state.get('config_manager')
+        git_repo, metadata_manager = app_state.get(
+            'git_repo'), app_state.get('metadata_manager')
+        if not all([cfg_manager, git_repo, metadata_manager]):
+            raise HTTPException(
+                status_code=500, detail="Repository not initialized.")
+        admin_users = cfg_manager.config.security.get("admin_users", [])
+        if request.admin_user not in admin_users:
+            raise HTTPException(
+                status_code=403, detail="Permission denied. Admin access required.")
+        file_path = find_file_path(filename)
+        if not file_path:
+            raise HTTPException(status_code=404, detail="File not found")
+        absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
+        if not absolute_lock_path.exists():
+            return JSONResponse({"status": "success", "message": "File was already unlocked."})
+        relative_lock_path_str = str(absolute_lock_path.relative_to(
+            git_repo.repo_path)).replace(os.sep, '/')
+        metadata_manager.release_lock(file_path)
+        commit_message = f"ADMIN OVERRIDE: Unlock {filename} by {request.admin_user}"
+        success = git_repo.commit_and_push(
+            [relative_lock_path_str], commit_message, request.admin_user, f"{request.admin_user}@example.com")
+        if success:
+            await handle_successful_git_operation()
+            return JSONResponse({"status": "success"})
+        else:
+            lock_info = {"user": "unknown",
+                         "timestamp": datetime.now(timezone.utc).isoformat()}
+            absolute_lock_path.write_text(json.dumps(
+                {"file": file_path, **lock_info}, indent=2))
+            raise HTTPException(
+                status_code=500, detail="Failed to commit lock override.")
+    except Exception as e:
+        logger.error(
+            f"An unexpected error occurred in admin_override: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"An internal error occurred: {e}")
 
@@ -1068,9 +1143,11 @@ async def download_file_version(filename: str, commit_hash: str):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
-    await manager.connect(websocket)
+    # Pass user to the connection manager
+    await manager.connect(websocket, user)
     logger.info(f"WebSocket connected for user: {user}")
 
+    # Initial check for messages upon connection
     if (git_repo := app_state.get('git_repo')):
         user_message_file = git_repo.repo_path / ".messages" / f"{user}.json"
         if user_message_file.exists():
@@ -1081,30 +1158,42 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
             except Exception as e:
                 logger.error(f"Could not send messages to {user}: {e}")
     try:
+        # Send initial file list
         grouped_data = _get_current_file_state()
         await websocket.send_text(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
+
         while True:
             data = await websocket.receive_text()
             if data.startswith("SET_USER:"):
                 new_user = data.split(":", 1)[1]
+                # Update user in app_state and connection manager
                 app_state['current_user'] = new_user
-                logger.info(f"User changed to: {new_user}")
+                manager.active_connections[websocket] = new_user
+                logger.info(f"User for WebSocket changed to: {new_user}")
+
+                # Re-check messages for the new user
                 user_message_file = git_repo.repo_path / \
                     ".messages" / f"{new_user}.json"
                 if user_message_file.exists():
                     messages = json.loads(user_message_file.read_text())
                     if messages:
                         await websocket.send_text(json.dumps({"type": "NEW_MESSAGES", "payload": messages}))
+
+                # Resend file list for the new user's context
                 grouped_data = _get_current_file_state()
                 await websocket.send_text(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
+
             elif data == "REFRESH_FILES":
                 grouped_data = _get_current_file_state()
                 await websocket.send_text(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
+
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for user: {user}")
+        logger.info(
+            f"WebSocket disconnected for user: {manager.active_connections.get(websocket, 'unknown')}")
         manager.disconnect(websocket)
     except Exception as e:
-        logger.error(f"WebSocket error for user {user}: {e}")
+        logger.error(
+            f"WebSocket error for user {manager.active_connections.get(websocket, 'unknown')}: {e}")
         manager.disconnect(websocket)
 
 
