@@ -97,6 +97,25 @@ class ConfigUpdateRequest(BaseModel):
     token: str
 
 
+class AdminRevertRequest(BaseModel):
+    admin_user: str
+    commit_hash: str
+
+
+class ActivityItem(BaseModel):
+    event_type: str
+    filename: str
+    user: str
+    timestamp: str
+    commit_hash: str
+    message: str
+    revision: Optional[str] = None
+
+
+class ActivityFeed(BaseModel):
+    activities: List[ActivityItem]
+
+
 class AppConfig(BaseModel):
     version: str = "1.0.0"
     gitlab: dict = Field(default_factory=dict)
@@ -1260,6 +1279,159 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
         logger.error(
             f"WebSocket error for user {manager.active_connections.get(websocket, 'unknown')}: {e}")
         manager.disconnect(websocket)
+
+
+@app.get("/dashboard/activity", response_model=ActivityFeed)
+async def get_activity_feed():
+    """
+    Scans the Git history to create a feed of recent check-in/out events.
+    """
+    git_repo = app_state.get('git_repo')
+    if not git_repo or not git_repo.repo:
+        raise HTTPException(
+            status_code=503, detail="Repository not available.")
+
+    activities = []
+    try:
+        # Scan the last 50 commits for relevant activities
+        for commit in git_repo.repo.iter_commits(max_count=50):
+            msg = commit.message.strip()
+            user = commit.author.name
+            event_type = "COMMIT"
+            filename = "N/A"
+            revision = None
+
+            # Parse commit messages to determine event type and filename
+            if msg.startswith("REV"):
+                event_type = "CHECK_IN"
+                match = re.search(r"REV ([\d\.]+):\s*(.*)", msg)
+                if match:
+                    revision = match.group(1)
+            elif msg.startswith("LOCK:"):
+                event_type = "CHECK_OUT"
+                filename = msg.replace("LOCK:", "").split(" by ")[0].strip()
+            elif msg.startswith("USER CANCEL:"):
+                event_type = "CANCEL"
+                filename = msg.replace("USER CANCEL: Unlock", "").split(" by ")[
+                    0].strip()
+            elif msg.startswith("ADMIN OVERRIDE:"):
+                event_type = "OVERRIDE"
+                filename = msg.replace("ADMIN OVERRIDE: Unlock", "").split(" by ")[
+                    0].strip()
+
+            # For check-ins, find the actual file that was changed
+            if event_type == "CHECK_IN":
+                for file_diff in commit.diff(commit.parents[0]):
+                    if file_diff.a_path.endswith('.mcam'):
+                        filename = Path(file_diff.a_path).name
+                        break
+
+            # Only add known event types to the feed
+            if event_type != "COMMIT":
+                activities.append(ActivityItem(
+                    event_type=event_type,
+                    filename=filename,
+                    user=user,
+                    timestamp=datetime.utcfromtimestamp(
+                        commit.committed_date).isoformat() + "Z",
+                    commit_hash=commit.hexsha,
+                    message=msg,
+                    revision=revision
+                ))
+
+        return ActivityFeed(activities=activities)
+
+    except Exception as e:
+        logger.error(f"Failed to generate activity feed: {e}")
+        raise HTTPException(
+            status_code=500, detail="Could not generate activity feed.")
+
+
+@app.post("/files/{filename}/revert_commit")
+async def revert_commit(filename: str, request: AdminRevertRequest):
+    """
+    Admin action to revert a file's content to the state before a specific commit.
+    This manually checks out the previous version of the file(s) and creates a new commit.
+    """
+    cfg_manager, git_repo, metadata_manager = app_state.get(
+        'config_manager'), app_state.get('git_repo'), app_state.get('metadata_manager')
+
+    if not all([cfg_manager, git_repo, metadata_manager]):
+        raise HTTPException(
+            status_code=500, detail="Repository not initialized.")
+
+    # 1. Admin Permission Check
+    admin_users = cfg_manager.config.security.get("admin_users", [])
+    if request.admin_user not in admin_users:
+        raise HTTPException(
+            status_code=403, detail="Permission denied. Admin access required.")
+
+    # 2. Find file and check for existing lock
+    file_path = find_file_path(filename)
+    if not file_path:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    if metadata_manager.get_lock_info(file_path):
+        raise HTTPException(
+            status_code=409, detail="Cannot revert while file is checked out by a user.")
+
+    # 3. Perform the Git Revert using a manual checkout from the parent commit
+    try:
+        repo = git_repo.repo
+        bad_commit = repo.commit(request.commit_hash)
+
+        # Ensure there is a parent commit to revert to
+        if not bad_commit.parents:
+            raise HTTPException(
+                status_code=400, detail="Cannot revert the initial commit of a file.")
+        parent_commit = bad_commit.parents[0]
+
+        # Define the paths to revert (the main file and its metadata)
+        paths_to_revert = [file_path]
+        meta_path_str = f"{file_path}.meta.json"
+
+        # Check if the meta file existed in the parent commit to avoid errors
+        try:
+            parent_commit.tree[meta_path_str]
+            paths_to_revert.append(meta_path_str)
+        except KeyError:
+            logger.info(
+                f"No meta file found in parent commit for {filename}, reverting main file only.")
+
+        # Use git checkout to restore the files from the parent commit's state
+        with repo.git.custom_environment(**git_repo.git_env):
+            repo.git.checkout(parent_commit.hexsha, '--', *paths_to_revert)
+
+            # Stage the restored files for the new commit
+            repo.index.add(paths_to_revert)
+
+            # Create a new commit for this revert action
+            author = Actor(request.admin_user,
+                           f"{request.admin_user}@example.com")
+            commit_message = f"ADMIN REVERT: {filename} to state before {request.commit_hash[:7]}\n\nReverted changes from commit: {bad_commit.message.strip()}"
+            repo.index.commit(commit_message, author=author)
+
+            # Push the new revert commit
+            repo.remotes.origin.push()
+
+        logger.info(
+            f"Admin {request.admin_user} reverted {filename} to state before commit {request.commit_hash[:7]}")
+        await handle_successful_git_operation()
+        return JSONResponse({"status": "success", "message": f"Changes from commit {request.commit_hash[:7]} have been reverted."})
+
+    except git.exc.GitCommandError as e:
+        logger.error(f"Git revert (manual) failed: {e}")
+        # Attempt to reset the repository to a clean state to avoid leaving it in a bad state
+        try:
+            with git_repo.repo.git.custom_environment(**git_repo.git_env):
+                git_repo.repo.git.reset(
+                    '--hard', f'origin/{git_repo.repo.active_branch.name}')
+        except Exception as reset_e:
+            logger.error(
+                f"Failed to reset repo after revert failure: {reset_e}")
+
+        raise HTTPException(
+            status_code=500, detail=f"Failed to revert commit: {e}")
 
 
 def main():

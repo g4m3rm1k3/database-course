@@ -1,6 +1,5 @@
 // ==================================================================
 // 			Mastercam GitLab Interface Script
-// (Corrected Version with Admin and View Fixes)
 // ==================================================================
 
 // -- Global Variables --
@@ -89,13 +88,18 @@ function handleWebSocketMessage(message) {
     const data = JSON.parse(message);
     if (data.type === "FILE_LIST_UPDATED") {
       groupedFiles = data.payload || {};
-      renderFiles();
+      // *** FIX: Check if dashboard modal is hidden before re-rendering file list ***
+      const dashboardModal = document.getElementById("dashboardModal");
+      if (dashboardModal && dashboardModal.classList.contains("hidden")) {
+        renderFiles();
+      }
     } else if (data.type === "NEW_MESSAGES") {
       if (data.payload && data.payload.length > 0) {
         populateAndShowMessagesModal(data.payload);
       }
     }
   } catch (error) {
+    console.error("Error handling WebSocket message:", error);
     console.log("Received non-JSON WebSocket message:", message);
   }
 }
@@ -150,7 +154,6 @@ function renderFiles() {
     const filesInGroup = groupedFiles[groupName];
     if (!Array.isArray(filesInGroup)) return;
 
-    // Group files by the first 7 digits of their filename
     const subGroupedFiles = {};
     filesInGroup.forEach((file) => {
       const sevenDigitPrefix =
@@ -161,7 +164,6 @@ function renderFiles() {
       subGroupedFiles[sevenDigitPrefix].push(file);
     });
 
-    // Filter and count total files after search
     let groupFileCount = 0;
     const filteredSubGroups = {};
     Object.keys(subGroupedFiles).forEach((subGroupName) => {
@@ -181,7 +183,6 @@ function renderFiles() {
     if (groupFileCount === 0) return;
     totalFilesFound += groupFileCount;
 
-    // Create top-level group (by first two digits)
     const detailsEl = document.createElement("details");
     detailsEl.className =
       "file-group group border-t border-primary-300 dark:border-mc-dark-accent";
@@ -197,11 +198,9 @@ function renderFiles() {
     }</span></div><span class="text-sm font-medium text-primary-600 dark:text-primary-300">(${groupFileCount} files)</span>`;
     detailsEl.appendChild(summaryEl);
 
-    // Create container for subgroups
     const subGroupsContainer = document.createElement("div");
     subGroupsContainer.className = "pl-4";
 
-    // Render subgroups (by seven-digit prefix)
     Object.keys(filteredSubGroups)
       .sort()
       .forEach((subGroupName) => {
@@ -310,7 +309,7 @@ async function loadConfig() {
   try {
     const response = await fetch("/config");
     currentConfig = await response.json();
-    console.log("Loaded config:", currentConfig); // Added for debugging admin status
+    console.log("Loaded config:", currentConfig);
     updateConfigDisplay();
     setupAdminUI();
   } catch (error) {
@@ -374,9 +373,7 @@ function setupAdminUI() {
         adminToggle.classList.toggle("to-accent-hover", isAdminModeEnabled);
         adminToggle.classList.toggle("text-white", isAdminModeEnabled);
         adminToggle.classList.toggle("dark:text-white", isAdminModeEnabled);
-        document.querySelectorAll(".admin-action-btn").forEach((btn) => {
-          btn.classList.toggle("hidden", !isAdminModeEnabled);
-        });
+        renderFiles(); // Re-render to show/hide admin buttons
       });
       adminToggle.dataset.listenerAttached = "true";
     }
@@ -395,39 +392,33 @@ function getActionButtons(file) {
     "flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold";
   let buttons = "";
 
-  // Always show View/Download button first
   let viewBtnHtml = `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80"><i class="fa-solid fa-eye"></i><span>View</span></a>`;
 
   if (file.status === "unlocked") {
     buttons += `<button class="${btnClass} bg-gradient-to-r from-green-600 to-green-700 text-white hover:bg-opacity-80 js-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
   } else if (file.status === "checked_out_by_user") {
     buttons += `<button class="${btnClass} bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:bg-opacity-80 js-checkin-btn" data-filename="${file.filename}"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-yellow-600 to-yellow-700 text-white dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-cancel-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-times"></i><span>Cancel Checkout</span></button>`;
-    // Change View to Download for checked out files
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-yellow-600 to-yellow-700 text-white hover:bg-opacity-80 js-cancel-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-times"></i><span>Cancel Checkout</span></button>`;
     viewBtnHtml = viewBtnHtml.replace(
       '<i class="fa-solid fa-eye"></i><span>View</span>',
       '<i class="fa-solid fa-file-arrow-down"></i><span>Download</span>'
     );
   }
 
-  // Add View/Download button
   buttons = viewBtnHtml + buttons;
-
-  // Always add History button
   buttons += `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
 
-  // Admin buttons (only show if user is admin and admin mode is enabled)
   if (currentConfig && currentConfig.is_admin) {
     const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
 
     if (file.status === "locked" && file.locked_by !== currentUser) {
       const overrideBtnClasses =
-        "bg-gradient-to-r from-yellow-400 to-yellow-500 text-yellow-900 dark:from-yellow-600 dark:to-yellow-700 dark:text-yellow-100";
+        "bg-gradient-to-r from-yellow-400 to-yellow-500 text-yellow-900";
       buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${overrideBtnClasses} hover:bg-opacity-80 js-override-btn" data-filename="${file.filename}"><i class="fa-solid fa-unlock"></i><span>Override</span></button>`;
     }
 
     const deleteBtnClasses =
-      "bg-gradient-to-r from-red-600 to-red-700 text-white dark:from-red-700 dark:to-red-800 dark:text-red-100";
+      "bg-gradient-to-r from-red-600 to-red-700 text-white";
     buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${deleteBtnClasses} hover:bg-opacity-80 js-delete-btn" data-filename="${file.filename}"><i class="fa-solid fa-trash-can"></i><span>Delete</span></button>`;
   }
 
@@ -442,12 +433,7 @@ async function checkoutFile(filename) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user: currentUser }),
     });
-    if (response.ok) {
-      debounceNotifications(
-        `File '${filename}' checked out successfully!`,
-        "success"
-      );
-    } else {
+    if (!response.ok) {
       const errorData = await response.json();
       throw new Error(errorData.detail || "Checkout failed");
     }
@@ -501,7 +487,6 @@ async function checkinFile(
     formData.append("file", file);
     formData.append("commit_message", commitMessage);
     formData.append("rev_type", rev_type);
-    // Only add the new major rev number if it's provided
     if (new_major_rev) {
       formData.append("new_major_rev", new_major_rev);
     }
@@ -509,12 +494,10 @@ async function checkinFile(
       method: "POST",
       body: formData,
     });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "Unknown error");
-    debounceNotifications(
-      `File '${filename}' checked in successfully!`,
-      "success"
-    );
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "Unknown error during check-in");
+    }
   } catch (error) {
     debounceNotifications(`Check-in Error: ${error.message}`, "error");
   }
@@ -529,9 +512,10 @@ async function adminOverride(filename) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ admin_user: currentUser }),
     });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "Unknown error");
-    debounceNotifications(`File '${filename}' lock overridden!`, "success");
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "Unknown error");
+    }
   } catch (error) {
     debounceNotifications(`Override Error: ${error.message}`, "error");
   }
@@ -549,17 +533,50 @@ async function adminDeleteFile(filename) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ admin_user: currentUser }),
     });
-    const result = await response.json();
-    if (!response.ok)
-      throw new Error(result.detail || "An unknown error occurred.");
-    debounceNotifications(
-      result.message || `File '${filename}' deleted successfully!`,
-      "success"
-    );
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "An unknown error occurred.");
+    }
   } catch (error) {
     debounceNotifications(`Delete Error: ${error.message}`, "error");
   }
 }
+
+async function revertCheckin(filename, commit_hash) {
+  if (
+    !confirm(
+      `Are you sure you want to revert the check-in for commit ${commit_hash.substring(
+        0,
+        7
+      )}?\n\nThis will create a NEW check-in that undoes the changes from this version.`
+    )
+  )
+    return;
+
+  try {
+    const response = await fetch(`/files/${filename}/revert_commit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        admin_user: currentUser,
+        commit_hash: commit_hash,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) {
+      throw new Error(result.detail || "Failed to revert check-in.");
+    }
+    debounceNotifications(
+      result.message || "Check-in reverted successfully!",
+      "success"
+    );
+    document.querySelector(".js-history-modal")?.remove(); // Close the history modal
+    loadFiles(); // Refresh file list to show the new state
+  } catch (error) {
+    debounceNotifications(`Revert Error: ${error.message}`, "error");
+  }
+}
+
 async function viewFileHistory(filename) {
   try {
     const response = await fetch(`/files/${filename}/history`);
@@ -577,35 +594,68 @@ async function viewFileHistory(filename) {
 function showFileHistoryModal(historyData) {
   const modal = document.createElement("div");
   modal.className =
-    "fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100]";
+    "fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100] js-history-modal";
   modal.addEventListener("click", (e) => {
     if (e.target === modal) modal.remove();
   });
   let historyListHtml = "";
   if (historyData.history && historyData.history.length > 0) {
-    historyData.history.forEach((commit) => {
+    historyData.history.forEach((commit, index) => {
       const revisionBadge = commit.revision
         ? `<span class="font-bold text-xs bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200 px-2 py-1 rounded-full">REV ${commit.revision}</span>`
         : "";
-      historyListHtml += `<div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95"><div class="flex justify-between items-start"><div><div class="flex items-center space-x-3 text-sm mb-2 flex-wrap gap-y-1"><span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
-        0,
-        8
-      )}</span>${revisionBadge}<span class="text-primary-600 dark:text-primary-300">${formatDate(
-        commit.date
-      )}</span></div><div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
-        commit.message
-      }</div><div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
-        commit.author_name
-      }</div></div><div class="flex-shrink-0 ml-4"><a href="/files/${
-        historyData.filename
-      }/versions/${
+
+      let adminActions = "";
+      const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
+      if (currentConfig && currentConfig.is_admin && index === 0) {
+        adminActions = `<button class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold admin-action-btn js-revert-btn ${adminBtnVisibility}" data-filename="${historyData.filename}" data-commit-hash="${commit.commit_hash}"><i class="fa-solid fa-undo"></i><span>Revert</span></button>`;
+      }
+
+      historyListHtml += `<div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95">
+        <div class="flex justify-between items-start">
+            <div>
+                <div class="flex items-center space-x-3 text-sm mb-2 flex-wrap gap-y-1">
+                    <span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
+                      0,
+                      8
+                    )}</span>
+                    ${revisionBadge}
+                    <span class="text-primary-600 dark:text-primary-300">${formatDate(
+                      commit.date
+                    )}</span>
+                </div>
+                <div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
+                  commit.message
+                }</div>
+                <div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
+                  commit.author_name
+                }</div>
+            </div>
+            <div class="flex-shrink-0 ml-4 flex items-center space-x-2">
+                ${adminActions}
+                <a href="/files/${historyData.filename}/versions/${
         commit.commit_hash
-      }" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold"><i class="fa-solid fa-file-arrow-down"></i><span>Download</span></a></div></div></div>`;
+      }" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold">
+                    <i class="fa-solid fa-file-arrow-down"></i><span>Download</span>
+                </a>
+            </div>
+        </div>
+      </div>`;
     });
   } else {
     historyListHtml = `<p class="text-center text-primary-600 dark:text-primary-300">No version history available.</p>`;
   }
-  modal.innerHTML = `<div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-2xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent"><div class="flex-shrink-0 flex justify-between items-center p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent"><h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3><button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.fixed').remove()"><i class="fa-solid fa-xmark text-2xl"></i></button></div><div class="overflow-y-auto p-6 space-y-4">${historyListHtml}</div></div>`;
+  modal.innerHTML = `<div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-3xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
+    <div class="flex-shrink-0 flex justify-between items-center p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent">
+        <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3>
+        <button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.js-history-modal').remove()">
+            <i class="fa-solid fa-xmark text-2xl"></i>
+        </button>
+    </div>
+    <div class="overflow-y-auto p-6 space-y-4">
+        ${historyListHtml}
+    </div>
+  </div>`;
   document.body.appendChild(modal);
 }
 
@@ -733,7 +783,7 @@ async function cancelCheckout(filename) {
         `Checkout for '${filename}' canceled successfully!`,
         "success"
       );
-      loadFiles(); // <<<--- THIS IS THE FIX
+      loadFiles();
     } else {
       const errorData = await response.json();
       throw new Error(errorData.detail || "Cancel failed");
@@ -824,7 +874,6 @@ function formatDate(dateString) {
   }
 }
 
-// +++ NEW DASHBOARD FUNCTIONS +++
 function formatDuration(totalSeconds) {
   if (totalSeconds < 60) {
     return `${Math.round(totalSeconds)}s`;
@@ -844,64 +893,128 @@ function formatDuration(totalSeconds) {
 }
 
 async function loadAndRenderDashboard() {
-  const dashboardContent = document.getElementById("dashboardContent");
-  dashboardContent.innerHTML = `<div class="flex justify-center items-center py-12"><div class="animate-spin rounded-full h-12 w-12 border-4 border-primary-400 dark:border-mc-dark-accent border-t-accent"></div></div>`;
+  const activeCheckoutsContainer = document.getElementById(
+    "activeCheckoutsContainer"
+  );
+  const activityFeedContainer = document.getElementById(
+    "activityFeedContainer"
+  );
 
+  const loadingSpinner = `<div class="flex justify-center items-center py-12"><div class="animate-spin rounded-full h-12 w-12 border-4 border-primary-400 dark:border-mc-dark-accent border-t-accent"></div></div>`;
+  activeCheckoutsContainer.innerHTML = loadingSpinner;
+  activityFeedContainer.innerHTML = loadingSpinner;
+
+  await Promise.all([
+    loadAndRenderActiveCheckouts(),
+    loadAndRenderActivityFeed(),
+  ]);
+}
+
+async function loadAndRenderActiveCheckouts() {
+  const container = document.getElementById("activeCheckoutsContainer");
   try {
     const response = await fetch("/dashboard/stats");
-    if (!response.ok) {
-      throw new Error(`Server error: ${response.statusText}`);
-    }
+    if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
     const data = await response.json();
 
-    let tableHtml = "";
+    let contentHtml = `<h4 class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-4 flex-shrink-0">Active Checkouts</h4>`;
 
     if (data.active_checkouts.length === 0) {
-      tableHtml += `<div class="text-center text-primary-600 dark:text-primary-300 py-8">
-          <i class="fa-solid fa-check-circle text-4xl mb-3 text-green-500"></i>
-          <p>No files are currently checked out.</p>
-      </div>`;
+      contentHtml += `<div class="text-center text-primary-600 dark:text-primary-300 py-8">
+                <i class="fa-solid fa-check-circle text-4xl mb-3 text-green-500"></i>
+                <p>No files are currently checked out.</p>
+            </div>`;
     } else {
-      tableHtml += `
-        <div class="overflow-x-auto">
-          <table class="min-w-full divide-y divide-primary-300 dark:divide-mc-dark-accent">
-            <thead class="bg-primary-100 dark:bg-mc-dark-accent">
-              <tr>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-primary-600 dark:text-primary-300 uppercase tracking-wider">File</th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-primary-600 dark:text-primary-300 uppercase tracking-wider">Checked Out By</th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-primary-600 dark:text-primary-300 uppercase tracking-wider">Duration</th>
-                <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-primary-600 dark:text-primary-300 uppercase tracking-wider">Checked Out At</th>
-              </tr>
-            </thead>
-            <tbody class="bg-white dark:bg-mc-dark-bg divide-y divide-primary-200 dark:divide-primary-700">
-      `;
+      // *** FIX: Added a wrapper div for horizontal scrolling ***
+      contentHtml += `<div class="overflow-x-auto flex-grow">
+                <table class="min-w-full divide-y divide-primary-300 dark:divide-mc-dark-accent">
+                    <thead class="bg-primary-100 dark:bg-mc-dark-accent">
+                        <tr>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-primary-600 dark:text-primary-300 uppercase tracking-wider">File</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-primary-600 dark:text-primary-300 uppercase tracking-wider">User</th>
+                            <th scope="col" class="px-4 py-2 text-left text-xs font-medium text-primary-600 dark:text-primary-300 uppercase tracking-wider">Duration</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white dark:bg-mc-dark-bg divide-y divide-primary-200 dark:divide-primary-700">`;
       data.active_checkouts.forEach((item) => {
-        tableHtml += `
-          <tr>
-            <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-primary-900 dark:text-primary-100">${
-              item.filename
-            }</td>
-            <td class="px-6 py-4 whitespace-nowrap text-sm text-primary-700 dark:text-primary-300">${
-              item.locked_by
-            }</td>
-            <td class="px-6 py-4 whitespace-nowrap text-sm text-primary-700 dark:text-primary-300">${formatDuration(
-              item.duration_seconds
-            )}</td>
-            <td class="px-6 py-4 whitespace-nowrap text-sm text-primary-700 dark:text-primary-300">${formatDate(
-              item.locked_at
-            )}</td>
-          </tr>
-        `;
+        contentHtml += `
+                    <tr>
+                        <td class="px-4 py-3 whitespace-nowrap text-sm font-medium text-primary-900 dark:text-primary-100">${
+                          item.filename
+                        }</td>
+                        <td class="px-4 py-3 whitespace-nowrap text-sm text-primary-700 dark:text-primary-300">${
+                          item.locked_by
+                        }</td>
+                        <td class="px-4 py-3 whitespace-nowrap text-sm text-primary-700 dark:text-primary-300">${formatDuration(
+                          item.duration_seconds
+                        )}</td>
+                    </tr>`;
       });
-      tableHtml += `
-            </tbody>
-          </table>
-        </div>
-      `;
+      contentHtml += `</tbody></table></div>`;
     }
-    dashboardContent.innerHTML = tableHtml;
+    container.innerHTML = contentHtml;
   } catch (error) {
-    dashboardContent.innerHTML = `<p class="text-center text-red-500">Error loading dashboard: ${error.message}</p>`;
+    container.innerHTML = `<h4 class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-4">Active Checkouts</h4><p class="text-center text-red-500">Error: ${error.message}</p>`;
+  }
+}
+
+async function loadAndRenderActivityFeed() {
+  const container = document.getElementById("activityFeedContainer");
+  try {
+    const response = await fetch("/dashboard/activity");
+    if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
+    const data = await response.json();
+
+    let contentHtml = `<h4 class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-4 flex-shrink-0">Recent Activity</h4>`;
+
+    if (data.activities.length === 0) {
+      contentHtml += `<p class="text-center text-primary-600 dark:text-primary-300 py-8">No recent activity found.</p>`;
+    } else {
+      contentHtml += '<div class="space-y-4 flex-grow overflow-y-auto">';
+      data.activities.forEach((item) => {
+        const iconMap = {
+          CHECK_IN: { icon: "fa-upload", color: "text-blue-500" },
+          CHECK_OUT: { icon: "fa-download", color: "text-green-500" },
+          CANCEL: { icon: "fa-times-circle", color: "text-yellow-500" },
+          OVERRIDE: { icon: "fa-unlock", color: "text-orange-500" },
+        };
+        const { icon, color } = iconMap[item.event_type] || {
+          icon: "fa-question-circle",
+          color: "text-gray-500",
+        };
+
+        // *** FIX: Corrected grammar for event types ***
+        const verbMap = {
+          CHECK_IN: "checked in",
+          CHECK_OUT: "checked out",
+          CANCEL: "canceled checkout for",
+          OVERRIDE: "overrode lock on",
+        };
+        const verb = verbMap[item.event_type] || "interacted with";
+
+        contentHtml += `
+                    <div class="flex items-start space-x-3">
+                        <div class="pt-1"><i class="fa-solid ${icon} ${color}"></i></div>
+                        <div>
+                            <p class="text-sm text-primary-800 dark:text-primary-200">
+                                <strong>${item.user}</strong> 
+                                ${verb}
+                                <strong>${item.filename}</strong>
+                                ${
+                                  item.revision ? ` (Rev ${item.revision})` : ""
+                                }
+                            </p>
+                            <p class="text-xs text-primary-600 dark:text-primary-400">${formatDate(
+                              item.timestamp
+                            )}</p>
+                        </div>
+                    </div>`;
+      });
+      contentHtml += "</div>";
+    }
+    container.innerHTML = contentHtml;
+  } catch (error) {
+    container.innerHTML = `<h4 class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-4">Recent Activity</h4><p class="text-center text-red-500">Error: ${error.message}</p>`;
   }
 }
 
@@ -919,7 +1032,6 @@ function closeDashboardModal() {
     modal.classList.add("hidden");
   }
 }
-// +++ END OF NEW DASHBOARD FUNCTIONS +++
 
 function saveExpandedSubState() {
   const openSubGroups = [];
@@ -950,8 +1062,7 @@ document.addEventListener("DOMContentLoaded", function () {
       const majorRevField = document.getElementById("newMajorRevInput");
       const majorRevLabel = document.querySelector(
         'label[for="newMajorRevInput"]'
-      ); // Find the associated label
-
+      );
       if (e.target.value === "major") {
         majorRevField.disabled = false;
         majorRevField.classList.remove("opacity-50", "cursor-not-allowed");
@@ -986,57 +1097,57 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   }, 30000);
   document.getElementById("searchInput").addEventListener("input", renderFiles);
-  const collapseAllBtn = document.getElementById("collapseAllBtn");
-  if (collapseAllBtn) {
-    collapseAllBtn.addEventListener("click", () => {
-      document
-        .querySelectorAll("#fileList details[open]")
-        .forEach((detailsEl) => {
-          detailsEl.open = false;
-        });
-      saveExpandedState();
-    });
-  }
+  document.getElementById("collapseAllBtn")?.addEventListener("click", () => {
+    document
+      .querySelectorAll("#fileList details[open]")
+      .forEach((detailsEl) => {
+        detailsEl.open = false;
+      });
+    saveExpandedState();
+  });
 
-  // *** Event listener for the new dashboard button ***
   const dashboardBtn = document.getElementById("dashboardBtn");
   if (dashboardBtn) {
     dashboardBtn.addEventListener("click", openDashboardModal);
   }
 
-  // *** Event listeners for the new dashboard modal ***
   const dashboardModal = document.getElementById("dashboardModal");
   const closeDashboardBtn = document.getElementById("closeDashboardBtn");
   if (dashboardModal && closeDashboardBtn) {
     closeDashboardBtn.addEventListener("click", closeDashboardModal);
     dashboardModal.addEventListener("click", (e) => {
-      // Close modal if user clicks on the background overlay
       if (e.target === dashboardModal) {
         closeDashboardModal();
       }
     });
   }
 
-  document.getElementById("fileList").addEventListener("click", (e) => {
-    const button = e.target.closest("button, a");
-    if (!button || !button.dataset.filename) return;
-    const filename = button.dataset.filename;
-    if (button.classList.contains("js-checkout-btn")) checkoutFile(filename);
-    else if (button.classList.contains("js-checkin-btn"))
-      showCheckinDialog(filename);
-    else if (button.classList.contains("js-cancel-checkout-btn"))
-      cancelCheckout(filename);
-    else if (button.classList.contains("js-override-btn"))
-      adminOverride(filename);
-    else if (button.classList.contains("js-delete-btn"))
-      adminDeleteFile(filename);
-    else if (button.classList.contains("js-history-btn"))
-      viewFileHistory(filename);
+  document.addEventListener("click", (e) => {
+    const fileListButton = e.target.closest("#fileList button, #fileList a");
+    if (fileListButton && fileListButton.dataset.filename) {
+      const filename = fileListButton.dataset.filename;
+      if (fileListButton.classList.contains("js-checkout-btn"))
+        checkoutFile(filename);
+      else if (fileListButton.classList.contains("js-checkin-btn"))
+        showCheckinDialog(filename);
+      else if (fileListButton.classList.contains("js-cancel-checkout-btn"))
+        cancelCheckout(filename);
+      else if (fileListButton.classList.contains("js-override-btn"))
+        adminOverride(filename);
+      else if (fileListButton.classList.contains("js-delete-btn"))
+        adminDeleteFile(filename);
+      else if (fileListButton.classList.contains("js-history-btn"))
+        viewFileHistory(filename);
+    }
+
+    const revertButton = e.target.closest(".js-revert-btn");
+    if (revertButton) {
+      const { filename, commitHash } = revertButton.dataset;
+      revertCheckin(filename, commitHash);
+    }
   });
 
-  const checkinModal = document.getElementById("checkinModal");
   const checkinForm = document.getElementById("checkinForm");
-  const cancelCheckinBtn = document.getElementById("cancelCheckin");
   checkinForm.addEventListener("submit", function (e) {
     e.preventDefault();
     const filename = e.target.dataset.filename;
@@ -1046,6 +1157,15 @@ document.addEventListener("DOMContentLoaded", function () {
       'input[name="rev_type"]:checked'
     );
     const newMajorRevInput = document.getElementById("newMajorRevInput");
+
+    if (fileInput.files.length > 0 && fileInput.files[0].name !== filename) {
+      debounceNotifications(
+        `Error: Uploaded file name "${fileInput.files[0].name}" must match the original file name "${filename}".`,
+        "error"
+      );
+      return;
+    }
+
     if (
       filename &&
       fileInput.files.length > 0 &&
@@ -1056,21 +1176,20 @@ document.addEventListener("DOMContentLoaded", function () {
         fileInput.files[0],
         messageInput.value.trim(),
         revTypeInput.value,
-        // Pass the value from the input field if rev type is 'major'
         revTypeInput.value === "major" ? newMajorRevInput.value : null
       );
-      checkinModal.classList.add("hidden");
+      document.getElementById("checkinModal").classList.add("hidden");
     } else {
       debounceNotifications("Please complete all required fields.", "error");
     }
   });
-  cancelCheckinBtn.addEventListener("click", () =>
-    checkinModal.classList.add("hidden")
-  );
+  document
+    .getElementById("cancelCheckin")
+    .addEventListener("click", () =>
+      document.getElementById("checkinModal").classList.add("hidden")
+    );
 
-  const newUploadModal = document.getElementById("newUploadModal");
   const newUploadForm = document.getElementById("newUploadForm");
-  const cancelNewUploadBtn = document.getElementById("cancelNewUpload");
   newUploadForm.addEventListener("submit", function (e) {
     e.preventDefault();
     const fileInput = document.getElementById("newFileUpload");
@@ -1086,20 +1205,23 @@ document.addEventListener("DOMContentLoaded", function () {
         descriptionInput.value.trim(),
         revInput.value.trim()
       );
-      newUploadModal.classList.add("hidden");
+      document.getElementById("newUploadModal").classList.add("hidden");
     } else {
       debounceNotifications("Please complete all fields.", "error");
     }
   });
-  cancelNewUploadBtn.addEventListener("click", () =>
-    newUploadModal.classList.add("hidden")
-  );
+  document
+    .getElementById("cancelNewUpload")
+    .addEventListener("click", () =>
+      document.getElementById("newUploadModal").classList.add("hidden")
+    );
 
-  const sendMessageModal = document.getElementById("sendMessageModal");
   const sendMessageForm = document.getElementById("sendMessageForm");
   document
     .getElementById("cancelSendMessage")
-    .addEventListener("click", () => sendMessageModal.classList.add("hidden"));
+    .addEventListener("click", () =>
+      document.getElementById("sendMessageModal").classList.add("hidden")
+    );
   sendMessageForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const recipient = document.getElementById("recipientUserSelect").value;
@@ -1107,7 +1229,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (recipient && message) {
       sendMessage(recipient, message);
       sendMessageForm.reset();
-      sendMessageModal.classList.add("hidden");
+      document.getElementById("sendMessageModal").classList.add("hidden");
     } else {
       debounceNotifications(
         "Please select a recipient and write a message.",
