@@ -67,16 +67,23 @@
         <div
           class="flex flex-col sm:flex-row justify-between items-center mb-6 space-y-4 sm:space-y-0"
         >
+          <!-- ** UPDATED SEARCH FIELD WITH CLEAR BUTTON ** -->
           <div class="relative flex-1 w-full sm:max-w-md">
             <i
-              class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-primary-500 dark:text-primary-400"
+              class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-primary-500 dark:text-primary-400 pointer-events-none"
             ></i>
             <input
               type="text"
               id="searchInput"
               placeholder="Search files..."
-              class="w-full px-4 pl-10 py-2 border border-primary-400 dark:border-mc-dark-accent rounded-full focus:outline-none focus:ring-2 focus:ring-accent bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 transition-colors bg-opacity-90"
+              class="w-full px-4 pl-10 pr-10 py-2 border border-primary-400 dark:border-mc-dark-accent rounded-full focus:outline-none focus:ring-2 focus:ring-accent bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 transition-colors bg-opacity-90"
             />
+            <button
+              id="clearSearchBtn"
+              class="absolute right-4 top-1/2 -translate-y-1/2 text-primary-500 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-100 hidden"
+            >
+              <i class="fa-solid fa-xmark"></i>
+            </button>
           </div>
           <div id="headerActions" class="flex items-center space-x-2">
             <button
@@ -265,7 +272,15 @@
       </button>
     </div>
 
-    <input type="file" id="newFileUploadInput" class="hidden" accept=".mcam" />
+    <input
+      id="newFileUploadInput"
+      name="file"
+      type="file"
+      required
+      class="hidden"
+      accept=".mcam,.vnc"
+      class="w-full text-sm text-primary-600 dark:text-primary-300 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-accent file:to-accent-hover file:text-white hover:file:bg-opacity-80"
+    />
 
     <div
       id="checkinModal"

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
+import test
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Form, UploadFile, File, Response
@@ -39,6 +40,21 @@ import base64
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler('mastercam_git_interface.log'), logging.StreamHandler()])
 logger = logging.getLogger(__name__)
+
+ADMIN_USERS = ["admin", "g4m3rm1k3"]
+
+# +++ NEW: FILE TYPE VALIDATION CONFIG +++
+# Defines allowed file extensions and their "magic number" signatures.
+# 'None' means we'll fall back to only checking the extension.
+ALLOWED_FILE_TYPES = {
+    ".mcam": {
+        "signatures": [
+            b'\x89HDF\r\n\x1a\n',  # Signature for the commercial version
+            b'\x89HDF\x01\x02\x03\x04'  # Example signature for the HLE version
+        ]
+    },
+    ".vnc": {"signature": None}
+}
 
 # --- Pydantic Data Models ---
 
@@ -128,6 +144,51 @@ class AppConfig(BaseModel):
 # --- Core Application Classes & Functions ---
 
 
+async def is_valid_file_type(file: UploadFile) -> bool:
+    """
+    Validates a file based on its extension and magic number signature.
+    """
+    file_extension = Path(file.filename).suffix.lower()
+
+    if file_extension not in ALLOWED_FILE_TYPES:
+        return False
+
+    config = ALLOWED_FILE_TYPES[file_extension]
+    signature = config.get("signature")
+
+    # If no signature is defined, we trust the extension
+    if signature is None:
+        return True
+
+    # Read the first few bytes of the file to check the signature
+    try:
+        file_header = await file.read(len(signature))
+        return file_header == signature
+    finally:
+        # IMPORTANT: Reset the file pointer so it can be read again later
+        await file.seek(0)
+
+
+def validate_filename_format(filename: str) -> tuple[bool, str]:
+    """
+    Validates a filename for both length and a specific format.
+    Format: 7digits_1-3letters_1-3numbers.(mcam|vnc)
+    """
+    stem = Path(filename).stem
+
+    # Check 1: Length Limit
+    MAX_LENGTH = 15
+    if len(stem) > MAX_LENGTH:
+        return False, f"Filename (before extension) cannot exceed {MAX_LENGTH} characters."
+
+    # Check 2: Format using Regular Expression
+    pattern = re.compile(r"^\d{7}_[a-zA-Z]{1,3}\d{1,3}$")
+    if not pattern.match(stem):
+        return False, "Filename must follow the format: 7digits_1-3letters_1-3numbers (e.g., 1234567_AB123)."
+
+    return True, ""
+
+
 def _increment_revision(current_rev: str, rev_type: str, new_major_str: Optional[str] = None) -> str:
     major, minor = 0, 0
     if not current_rev:
@@ -180,11 +241,21 @@ class EncryptionManager:
 class ConfigManager:
     def __init__(self, config_dir: Optional[Path] = None):
         if config_dir is None:
-            config_dir = Path.home() / 'AppData' / 'Local' / \
-                'MastercamGitInterface' if os.name == 'nt' else Path.home() / '.config' / \
-                'mastercam_git_interface'
-        self.config_dir, self.config_file = config_dir, config_dir / 'config.json'
+            # --- THIS IS THE CHANGE ---
+            # We now determine the save location based on where the app is running.
+            if getattr(sys, 'frozen', False):
+                # For the bundled .exe, save config in the same directory as the executable.
+                base_path = Path(sys.executable).parent
+            else:
+                # For development (.py script), save it next to the script file.
+                base_path = Path(__file__).parent
+            config_dir = base_path / 'app_data'  # We'll put it in a subfolder for neatness
+
+        self.config_dir = config_dir
+        self.config_file = self.config_dir / 'config.json'
+        # Create the app_data folder if it doesn't exist
         self.config_dir.mkdir(parents=True, exist_ok=True)
+
         self.encryption = EncryptionManager(self.config_dir)
         self.config = self._load_config()
 
@@ -208,23 +279,80 @@ class ConfigManager:
                     data['gitlab']['token'])
             self.config_file.write_text(json.dumps(data, indent=2))
         except Exception as e:
-            logger.error(f"Failed to save config: {e}")
+            logger.error(
+                f"!!! CRITICAL: Failed to save config file at {self.config_file}: {e}")
+            raise e
 
     def update_gitlab_config(self, **kwargs):
-        gitlab_config = self.config.model_dump().get('gitlab', {})
-        gitlab_config.update(kwargs)
-        self.config.gitlab = gitlab_config
+        try:
+            current_data = json.loads(self.config_file.read_text(
+            )) if self.config_file.exists() and self.config_file.read_text() else {}
+        except json.JSONDecodeError:
+            current_data = {}
+
+        if 'gitlab' not in current_data or not isinstance(current_data.get('gitlab'), dict):
+            current_data['gitlab'] = {}
+
+        if 'token' in kwargs and not kwargs.get('token'):
+            # If a token is part of the update but is empty/None, remove it.
+            # This handles the case where the user deletes the token from the UI.
+            kwargs.pop('token', None)
+
+        current_data['gitlab'].update(kwargs)
+        new_config_obj = AppConfig(**current_data)
+        self.config = new_config_obj
         self.save_config()
 
     def get_config_summary(self) -> Dict[str, Any]:
         cfg = self.config.model_dump()
         gitlab_cfg = cfg.get('gitlab', {})
         local_cfg = cfg.get('local', {})
-        security_cfg = cfg.get('security', {})
         return {
-            'gitlab_url': gitlab_cfg.get('base_url'), 'project_id': gitlab_cfg.get('project_id'), 'username': gitlab_cfg.get('username'), 'has_token': bool(gitlab_cfg.get('token')), 'repo_path': local_cfg.get('repo_path'),
-            'is_admin': gitlab_cfg.get('username') in security_cfg.get('admin_users', [])
+            'gitlab_url': gitlab_cfg.get('base_url'),
+            'project_id': gitlab_cfg.get('project_id'),
+            'username': gitlab_cfg.get('username'),
+            'has_token': bool(gitlab_cfg.get('token')),
+            'repo_path': local_cfg.get('repo_path'),
+            'is_admin': gitlab_cfg.get('username') in ADMIN_USERS
         }
+# def update_gitlab_config(self, **kwargs):
+#     # 1. Load current config from disk as a plain dictionary to ensure we have a base
+#     try:
+#         current_data = json.loads(self.config_file.read_text(
+#         )) if self.config_file.exists() and self.config_file.read_text() else {}
+#     except json.JSONDecodeError:
+#         current_data = {}
+
+#     # 2. Update the 'gitlab' section within that dictionary with the new form data
+#     if 'gitlab' not in current_data or not isinstance(current_data.get('gitlab'), dict):
+#         current_data['gitlab'] = {}
+
+#     # Don't save an empty token field if one already exists
+#     if 'token' in kwargs and not kwargs['token']:
+#         del kwargs['token']
+
+#     current_data['gitlab'].update(kwargs)
+
+#     # 3. Create a new, clean AppConfig instance from the merged data.
+#     # This is the key step: Pydantic will apply all defaults for any missing sections.
+#     new_config_obj = AppConfig(**current_data)
+
+#     # 4. Replace the application's in-memory config with the new, clean one
+#     self.config = new_config_obj
+
+#     # 5. Save the complete, clean config back to the file
+#     self.save_config()
+
+
+def get_config_summary(self) -> Dict[str, Any]:
+    cfg = self.config.model_dump()
+    gitlab_cfg = cfg.get('gitlab', {})
+    local_cfg = cfg.get('local', {})
+    security_cfg = cfg.get('security', {})
+    return {
+        'gitlab_url': gitlab_cfg.get('base_url'), 'project_id': gitlab_cfg.get('project_id'), 'username': gitlab_cfg.get('username'), 'has_token': bool(gitlab_cfg.get('token')), 'repo_path': local_cfg.get('repo_path'),
+        'is_admin': gitlab_cfg.get('username') in security_cfg.get('admin_users', [])
+    }
 
 
 class GitLabAPI:
@@ -731,10 +859,46 @@ async def get_config():
 @app.post("/config/gitlab")
 async def update_gitlab_config(request: ConfigUpdateRequest):
     if config_manager := app_state.get('config_manager'):
+        try:
+            # --- THIS IS THE FIX ---
+            # Correctly parse the base URL to prevent validation errors
+            base_url_parsed = '/'.join(request.base_url.split('/')[:3])
+            api_url = f"{base_url_parsed}/api/v4/user"
+
+            headers = {"Private-Token": request.token}
+            response = requests.get(api_url, headers=headers, timeout=10)
+            response.raise_for_status()
+
+            gitlab_user_data = response.json()
+            gitlab_username = gitlab_user_data.get("username")
+
+            if gitlab_username != request.username:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Validation Failed: Username '{request.username}' does not match the token owner ('{gitlab_username}')."
+                )
+
+        except HTTPException as e:
+            raise e  # Forward validation errors
+        except requests.exceptions.RequestException as e:
+            logger.error(f"GitLab API validation request failed: {e}")
+            raise HTTPException(
+                status_code=401,
+                detail="Could not validate with GitLab. Check your GitLab URL and Access Token."
+            )
+        except Exception as e:
+            error_type = type(e).__name__
+            logger.error(
+                f"An unexpected {error_type} occurred during config update: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"An internal error occurred: {error_type} - {e}")
+
+        # If validation passes, save the configuration.
         config_manager.update_gitlab_config(
             **request.model_dump(by_alias=False))
         asyncio.create_task(initialize_application())
-        return {"status": "success"}
+        return {"status": "success", "message": "Configuration validated and saved."}
+
     raise HTTPException(
         status_code=500, detail="Configuration manager not found.")
 
@@ -908,28 +1072,48 @@ async def acknowledge_message(request: AckMessageRequest):
 
 @app.post("/files/new_upload")
 async def new_upload(user: str = Form(...), description: str = Form(...), rev: str = Form(...), file: UploadFile = File(...)):
+    # --- ADDED VALIDATION CHECKS ---
+    is_valid_format, error_message = validate_filename_format(file.filename)
+    if not is_valid_format:
+        raise HTTPException(status_code=400, detail=error_message)
+
+    if not await is_valid_file_type(file):
+        allowed_exts = ', '.join(ALLOWED_FILE_TYPES.keys())
+        raise HTTPException(
+            status_code=400, detail=f"Invalid file type. Only {allowed_exts} files are allowed.")
+    # --- END OF VALIDATION ---
+
     try:
         git_repo = app_state.get('git_repo')
         if not git_repo or not app_state['initialized']:
             raise HTTPException(
                 status_code=500, detail="Repository not available.")
-        content, filename_str = await file.read(), file.filename
+
+        content = await file.read()
+        filename_str = file.filename
+
         if find_file_path(filename_str) is not None:
             raise HTTPException(
                 status_code=409, detail=f"File '{filename_str}' already exists. Use the check-in process for existing files.")
+
         if not content:
             raise HTTPException(status_code=400, detail="File is empty.")
+
         git_repo.save_file(filename_str, content)
+
         meta_filename_str = f"{filename_str}.meta.json"
         meta_content = {"description": description, "revision": rev}
         (git_repo.repo_path /
          meta_filename_str).write_text(json.dumps(meta_content, indent=2))
+
         commit_message = f"ADD: {filename_str} (Rev: {rev}) by {user}"
         success = git_repo.commit_and_push(
             [filename_str, meta_filename_str], commit_message, user, f"{user}@example.com")
+
         if success:
             await handle_successful_git_operation()
             return JSONResponse({"status": "success"})
+
         (git_repo.repo_path / meta_filename_str).unlink(missing_ok=True)
         (git_repo.repo_path / filename_str).unlink(missing_ok=True)
         raise HTTPException(
@@ -1001,6 +1185,10 @@ async def checkout_file(filename: str, request: CheckoutRequest):
 
 @app.post("/files/{filename}/checkin")
 async def checkin_file(filename: str, user: str = Form(...), commit_message: str = Form(...), rev_type: str = Form(...), new_major_rev: Optional[str] = Form(None), file: UploadFile = File(...)):
+    if not await is_valid_file_type(file):
+        raise HTTPException(
+            status_code=400, detail=f"Invalid file type. The uploaded file is not a valid {Path(filename).suffix} file.")
+
     try:
         git_repo, metadata_manager = app_state.get(
             'git_repo'), app_state.get('metadata_manager')
@@ -1227,11 +1415,9 @@ async def download_file_version(filename: str, commit_hash: str):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
-    # Pass user to the connection manager
     await manager.connect(websocket, user)
     logger.info(f"WebSocket connected for user: {user}")
 
-    # Initial check for messages upon connection
     if (git_repo := app_state.get('git_repo')):
         user_message_file = git_repo.repo_path / ".messages" / f"{user}.json"
         if user_message_file.exists():
@@ -1242,7 +1428,6 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
             except Exception as e:
                 logger.error(f"Could not send messages to {user}: {e}")
     try:
-        # Send initial file list
         grouped_data = _get_current_file_state()
         await websocket.send_text(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
 
@@ -1250,20 +1435,20 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
             data = await websocket.receive_text()
             if data.startswith("SET_USER:"):
                 new_user = data.split(":", 1)[1]
-                # Update user in app_state and connection manager
                 app_state['current_user'] = new_user
                 manager.active_connections[websocket] = new_user
                 logger.info(f"User for WebSocket changed to: {new_user}")
 
-                # Re-check messages for the new user
-                user_message_file = git_repo.repo_path / \
-                    ".messages" / f"{new_user}.json"
-                if user_message_file.exists():
-                    messages = json.loads(user_message_file.read_text())
-                    if messages:
-                        await websocket.send_text(json.dumps({"type": "NEW_MESSAGES", "payload": messages}))
+                # --- THIS IS THE FIX ---
+                # Added a check here to ensure git_repo exists before using it
+                if (git_repo := app_state.get('git_repo')):
+                    user_message_file = git_repo.repo_path / \
+                        ".messages" / f"{new_user}.json"
+                    if user_message_file.exists():
+                        messages = json.loads(user_message_file.read_text())
+                        if messages:
+                            await websocket.send_text(json.dumps({"type": "NEW_MESSAGES", "payload": messages}))
 
-                # Resend file list for the new user's context
                 grouped_data = _get_current_file_state()
                 await websocket.send_text(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
 

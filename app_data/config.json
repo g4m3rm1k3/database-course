@@ -1,0 +1,22 @@
+{
+  "version": "1.0.0",
+  "gitlab": {
+    "base_url": "https://gitlab.com/g4m3rm1k3-group/test.git",
+    "project_id": "74609002",
+    "username": "g4m3rm1k3",
+    "token": "Z0FBQUFBQm8xZFEzbzhiOGtWTWpwdWQtNEhlU3BhUmQzdWJWczYydUtHMHdGTE9iTjhxczR3d3pNR3FETmRyZEhGU0dCckZxYU5tYVkzZDVCWVpPbFdEanU1ZjRlVUVSRWd5cG5Ma1BKQnVJRFRPc3h2Y3pkMWM5djVROHVZd2dTX0JDSzRidkRZbUlUSFYwUmU1bkVWUkRJUUkyYlIwaVF3PT0="
+  },
+  "local": {},
+  "ui": {},
+  "security": {
+    "admin_users": [
+      "admin",
+      "g4m3rm1k3"
+    ]
+  },
+  "polling": {
+    "enabled": true,
+    "interval_seconds": 15,
+    "check_on_activity": true
+  }
+}

@@ -154,6 +154,7 @@ function renderFiles() {
     const filesInGroup = groupedFiles[groupName];
     if (!Array.isArray(filesInGroup)) return;
 
+    // Group files by the first 7 digits of their filename
     const subGroupedFiles = {};
     filesInGroup.forEach((file) => {
       const sevenDigitPrefix =
@@ -164,6 +165,7 @@ function renderFiles() {
       subGroupedFiles[sevenDigitPrefix].push(file);
     });
 
+    // Filter and count total files after search
     let groupFileCount = 0;
     const filteredSubGroups = {};
     Object.keys(subGroupedFiles).forEach((subGroupName) => {
@@ -183,11 +185,15 @@ function renderFiles() {
     if (groupFileCount === 0) return;
     totalFilesFound += groupFileCount;
 
+    // Create top-level group (by first two digits)
     const detailsEl = document.createElement("details");
     detailsEl.className =
       "file-group group border-t border-primary-300 dark:border-mc-dark-accent";
     detailsEl.dataset.groupName = groupName;
-    if (expandedGroups.includes(groupName)) detailsEl.open = true;
+    // *** CHANGE #1: Force open if there is a search term ***
+    if (expandedGroups.includes(groupName) || searchTerm) {
+      detailsEl.open = true;
+    }
     detailsEl.addEventListener("toggle", saveExpandedState);
 
     const summaryEl = document.createElement("summary");
@@ -198,9 +204,11 @@ function renderFiles() {
     }</span></div><span class="text-sm font-medium text-primary-600 dark:text-primary-300">(${groupFileCount} files)</span>`;
     detailsEl.appendChild(summaryEl);
 
+    // Create container for subgroups
     const subGroupsContainer = document.createElement("div");
     subGroupsContainer.className = "pl-4";
 
+    // Render subgroups (by seven-digit prefix)
     Object.keys(filteredSubGroups)
       .sort()
       .forEach((subGroupName) => {
@@ -210,7 +218,11 @@ function renderFiles() {
         subDetailsEl.className =
           "sub-file-group group border-t border-primary-200 dark:border-primary-600";
         subDetailsEl.dataset.subGroupName = `${groupName}/${subGroupName}`;
-        if (expandedSubGroups.includes(`${groupName}/${subGroupName}`)) {
+        // *** CHANGE #2: Force open if there is a search term ***
+        if (
+          expandedSubGroups.includes(`${groupName}/${subGroupName}`) ||
+          searchTerm
+        ) {
           subDetailsEl.open = true;
         }
         subDetailsEl.addEventListener("toggle", saveExpandedSubState);
@@ -1096,7 +1108,29 @@ document.addEventListener("DOMContentLoaded", function () {
       }
     }
   }, 30000);
-  document.getElementById("searchInput").addEventListener("input", renderFiles);
+
+  // *** NEW: SEARCH FIELD LOGIC WITH CLEAR BUTTON ***
+  const searchInput = document.getElementById("searchInput");
+  const clearSearchBtn = document.getElementById("clearSearchBtn");
+
+  searchInput.addEventListener("input", () => {
+    renderFiles(); // This part is existing and correct
+    // Show or hide the clear button based on input
+    if (searchInput.value.length > 0) {
+      clearSearchBtn.classList.remove("hidden");
+    } else {
+      clearSearchBtn.classList.add("hidden");
+    }
+  });
+
+  clearSearchBtn.addEventListener("click", () => {
+    searchInput.value = ""; // Clear the input
+    clearSearchBtn.classList.add("hidden"); // Hide the button
+    renderFiles(); // Re-render the list
+    searchInput.focus(); // Put the cursor back in the search box
+  });
+  // *** END OF NEW SEARCH LOGIC ***
+
   document.getElementById("collapseAllBtn")?.addEventListener("click", () => {
     document
       .querySelectorAll("#fileList details[open]")
@@ -1256,8 +1290,9 @@ document.addEventListener("DOMContentLoaded", function () {
         gitlab_url: document.getElementById("gitlabUrl").value,
         project_id: document.getElementById("projectId").value,
         username: document.getElementById("username").value,
+        token: document.getElementById("token").value,
       };
-      if (tokenInput.value) formData.token = tokenInput.value;
+
       try {
         debounceNotifications("Saving configuration...", "info");
         const response = await fetch("/config/gitlab", {
