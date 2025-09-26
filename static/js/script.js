@@ -56,7 +56,8 @@ const tooltips = {
   // Settings and configuration
   gitlabUrl: {
     title: "GitLab URL",
-    content: "Enter your GitLab server URL (e.g., https://gitlab.company.com)",
+    content:
+      "Enter your GitLab project URL (e.g., https://gitlab.com/<project>.git)",
     position: "top",
   },
   projectId: {
@@ -99,8 +100,7 @@ const tooltips = {
   },
   newFileDescription: {
     title: "File Description",
-    content:
-      'Brief description of what this file does (e.g., "Main bracket machining program")',
+    content: "Part name per title block",
     position: "top",
   },
   newFileRev: {
@@ -112,7 +112,7 @@ const tooltips = {
   newFileUpload: {
     title: "Select File to Upload",
     content:
-      "Choose your Mastercam file. Follow naming convention: 1234567_PART_NAME.mcx",
+      "Choose your Mastercam file. Follow naming convention: 1234567_MACHINE.mcx",
     position: "top",
   },
   recipientUserSelect: {
@@ -122,7 +122,7 @@ const tooltips = {
     position: "top",
   },
   messageText: {
-    title: "Message Content",
+    title: "Nick message Content",
     content:
       'Type your message. Keep it clear and actionable (e.g., "Please review rev 2.1 before production")',
     position: "top",
@@ -164,7 +164,7 @@ const tooltips = {
     position: "top",
   },
   "cancel-checkout": {
-    title: "Cancel Checkout",
+    title: "Taylor cancel Checkout",
     content:
       "Release the lock without saving changes. Local modifications will be lost.",
     position: "top",
@@ -204,10 +204,10 @@ const tooltips = {
     title: "File Naming Convention",
     content: `Files should follow this pattern:
     • 7-digit job number (1234567)
-    • Descriptive name (BRACKET_MOUNT)
-    • Extension (.mcx, .mcam, etc.)
+    • Machine name (M69)
+    • Extension (.mcam, .vnc, etc.)
     
-    Example: 1234567_BRACKET_MOUNT.mcx`,
+    Example: 1234567_M69.mcx`,
     position: "top",
     multiline: true,
   },
@@ -918,23 +918,26 @@ function positionTooltip(tooltip, targetElement, position) {
 
 // -- Enhanced File Naming Helper --
 function addFileNamingHelper() {
-  // Add naming helper to new file upload
   const newFileInput = document.getElementById("newFileUpload");
+
   if (newFileInput && tooltipsEnabled) {
-    const helper = document.createElement("div");
-    helper.className =
-      "text-sm text-primary-600 dark:text-primary-300 mt-2 p-3 bg-blue-50 dark:bg-blue-900 rounded-md border border-blue-200 dark:border-blue-700";
-    helper.innerHTML = `
-      <div class="flex items-start space-x-2">
-        <i class="fa-solid fa-lightbulb text-blue-600 dark:text-blue-400 mt-0.5"></i>
-        <div>
-          <strong>File Naming Convention:</strong><br>
-          <code class="bg-white dark:bg-gray-800 px-1 rounded">1234567_PART_NAME.mcx</code><br>
-          <small>7-digit job number + descriptive name + extension</small>
+    // Check if helper already exists
+    if (!newFileInput.parentElement.querySelector(".file-naming-helper")) {
+      const helper = document.createElement("div");
+      helper.className =
+        "file-naming-helper text-sm text-blue-700 dark:text-blue-300 mt-2 p-3 bg-blue-50 dark:bg-blue-900 rounded-md border border-blue-200 dark:border-blue-700";
+      helper.innerHTML = `
+        <div class="flex items-start space-x-2">
+          <i class="fa-solid fa-lightbulb text-blue-600 dark:text-blue-400 mt-0.5"></i>
+          <div>
+            <strong>File Naming Convention:</strong><br>
+            <code class="bg-white dark:bg-gray-800 px-1 rounded">1234567_MACHINE.mcam</code><br>
+            <small>7-digit part number  + machine if applicable</small>
+          </div>
         </div>
-      </div>
-    `;
-    newFileInput.parentElement.appendChild(helper);
+      `;
+      newFileInput.parentElement.appendChild(helper);
+    }
   }
 }
 
@@ -1699,78 +1702,78 @@ async function checkinFile(
 }
 
 async function adminOverride(filename) {
-  if (!confirm(`Are you sure you want to override the lock on '${filename}'?`))
-    return;
-  try {
-    const response = await fetch(`/files/${filename}/override`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ admin_user: currentUser }),
-    });
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || "Unknown error");
+  showConfirmModal(
+    `Are you sure you want to override the lock on '${filename}'?`,
+    async () => {
+      try {
+        const response = await fetch(`/files/${filename}/override`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ admin_user: currentUser }),
+        });
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || "Unknown error");
+        }
+      } catch (error) {
+        debounceNotifications(`Override Error: ${error.message}`, "error");
+      }
     }
-  } catch (error) {
-    debounceNotifications(`Override Error: ${error.message}`, "error");
-  }
+  );
 }
 
 async function adminDeleteFile(filename) {
-  if (
-    !confirm(
-      `DANGER!\n\nAre you sure you want to permanently delete '${filename}'?\n\nThis action cannot be undone.`
-    )
-  )
-    return;
-  try {
-    const response = await fetch(`/files/${filename}/delete`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ admin_user: currentUser }),
-    });
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || "An unknown error occurred.");
+  showConfirmModal(
+    `DANGER!<br><br>Are you sure you want to permanently delete '${filename}'?<br><br>This action cannot be undone.`,
+    async () => {
+      try {
+        const response = await fetch(`/files/${filename}/delete`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ admin_user: currentUser }),
+        });
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || "An unknown error occurred.");
+        }
+      } catch (error) {
+        debounceNotifications(`Delete Error: ${error.message}`, "error");
+      }
     }
-  } catch (error) {
-    debounceNotifications(`Delete Error: ${error.message}`, "error");
-  }
+  );
 }
 
 async function revertCheckin(filename, commit_hash) {
-  if (
-    !confirm(
-      `Are you sure you want to revert the check-in for commit ${commit_hash.substring(
-        0,
-        7
-      )}?\n\nThis will create a NEW check-in that undoes the changes from this version.`
-    )
-  )
-    return;
-
-  try {
-    const response = await fetch(`/files/${filename}/revert_commit`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        admin_user: currentUser,
-        commit_hash: commit_hash,
-      }),
-    });
-    const result = await response.json();
-    if (!response.ok) {
-      throw new Error(result.detail || "Failed to revert check-in.");
+  showConfirmModal(
+    `Are you sure you want to revert the check-in for commit ${commit_hash.substring(
+      0,
+      7
+    )}?<br><br>This will create a NEW check-in that undoes the changes from this version.`,
+    async () => {
+      try {
+        const response = await fetch(`/files/${filename}/revert_commit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            admin_user: currentUser,
+            commit_hash: commit_hash,
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.detail || "Failed to revert check-in.");
+        }
+        debounceNotifications(
+          result.message || "Check-in reverted successfully!",
+          "success"
+        );
+        document.querySelector(".js-history-modal")?.remove(); // Close the history modal
+        loadFiles(); // Refresh file list to show the new state
+      } catch (error) {
+        debounceNotifications(`Revert Error: ${error.message}`, "error");
+      }
     }
-    debounceNotifications(
-      result.message || "Check-in reverted successfully!",
-      "success"
-    );
-    document.querySelector(".js-history-modal")?.remove(); // Close the history modal
-    loadFiles(); // Refresh file list to show the new state
-  } catch (error) {
-    debounceNotifications(`Revert Error: ${error.message}`, "error");
-  }
+  );
 }
 
 async function viewFileHistory(filename) {
@@ -2055,31 +2058,30 @@ async function acknowledgeMessage(messageId) {
 }
 
 async function cancelCheckout(filename) {
-  if (
-    !confirm(
-      `Are you sure you want to cancel checkout for '${filename}'? Any local changes will be lost.`
-    )
-  )
-    return;
-  try {
-    const response = await fetch(`/files/${filename}/cancel_checkout`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user: currentUser }),
-    });
-    if (response.ok) {
-      debounceNotifications(
-        `Checkout for '${filename}' canceled successfully!`,
-        "success"
-      );
-      loadFiles();
-    } else {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || "Cancel failed");
+  showConfirmModal(
+    `Are you sure you want to cancel checkout for '${filename}'? Any local changes will be lost.`,
+    async () => {
+      try {
+        const response = await fetch(`/files/${filename}/cancel_checkout`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user: currentUser }),
+        });
+        if (response.ok) {
+          debounceNotifications(
+            `Checkout for '${filename}' canceled successfully!`,
+            "success"
+          );
+          loadFiles();
+        } else {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || "Cancel failed");
+        }
+      } catch (error) {
+        debounceNotifications(`Cancel Error: ${error.message}`, "error");
+      }
     }
-  } catch (error) {
-    debounceNotifications(`Cancel Error: ${error.message}`, "error");
-  }
+  );
 }
 
 function toggleConfigPanel() {
@@ -2392,6 +2394,50 @@ function saveExpandedState() {
       openGroups.push(detailsEl.dataset.groupName);
   });
   localStorage.setItem("expandedGroups", JSON.stringify(openGroups));
+}
+
+// -- New Confirmation Modal Function --
+function showConfirmModal(message, onConfirm, onCancel = () => {}) {
+  message = message.replace(/\n/g, "<br>");
+  const modal = document.createElement("div");
+  modal.className =
+    "fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100]";
+  modal.innerHTML = `
+    <div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-md p-6 bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
+      <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100 mb-4">Confirm Action</h3>
+      <p class="text-primary-700 dark:text-primary-300 mb-6">${message}</p>
+      <div class="flex justify-end space-x-3">
+        <button class="px-4 py-2 bg-gradient-to-r from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 text-primary-900 dark:text-primary-100 rounded-md hover:bg-opacity-80" id="cancelBtn">Cancel</button>
+        <button class="px-4 py-2 bg-gradient-to-r from-red-600 to-red-700 text-white rounded-md hover:bg-opacity-80" id="confirmBtn">Confirm</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const cancelBtn = modal.querySelector("#cancelBtn");
+  const confirmBtn = modal.querySelector("#confirmBtn");
+
+  cancelBtn.addEventListener("click", () => {
+    modal.remove();
+    onCancel();
+  });
+
+  confirmBtn.addEventListener("click", () => {
+    modal.remove();
+    onConfirm();
+  });
+
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) {
+      modal.remove();
+      onCancel();
+    }
+  });
+
+  // Add tooltips if enabled
+  setTimeout(() => {
+    updateTooltipVisibility();
+  }, 100);
 }
 
 document.addEventListener("DOMContentLoaded", function () {
