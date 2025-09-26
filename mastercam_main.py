@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-import test
+import socket
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Form, UploadFile, File, Response
@@ -315,6 +315,7 @@ class ConfigManager:
             'repo_path': local_cfg.get('repo_path'),
             'is_admin': gitlab_cfg.get('username') in ADMIN_USERS
         }
+
 # def update_gitlab_config(self, **kwargs):
 #     # 1. Load current config from disk as a plain dictionary to ensure we have a base
 #     try:
@@ -660,7 +661,7 @@ async def lifespan(app: FastAPI):
     if cfg_manager := app_state.get('config_manager'):
         cfg_manager.save_config()
     logger.info("Application shutting down.")
-app = FastAPI(title="Mastercam GitLab Interface", lifespan=lifespan)
+app = FastAPI(title="Mastercam PDM", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[
                    "*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -831,7 +832,22 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
         grouped_files[group_name].append(file_data)
     return grouped_files
 
-# NEW: Comprehensive update function
+
+def find_available_port(start_port=8000, max_attempts=100):
+    """
+    Finds an open network port by checking ports sequentially.
+    """
+    for port in range(start_port, start_port + max_attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                # Try to bind to the port. If it succeeds, the port is free.
+                s.bind(("127.0.0.1", port))
+                return port
+            except OSError:
+                # This means the port is already in use.
+                logger.warning(
+                    f"Port {port} is already in use, trying next...")
+    raise IOError("Could not find an available port.")
 
 
 async def broadcast_updates():
@@ -1670,10 +1686,23 @@ async def revert_commit(filename: str, request: AdminRevertRequest):
 
 
 def main():
-    port = 8000
-    if not getattr(sys, 'frozen', False):
-        threading.Timer(2.0, lambda: webbrowser.open(
-            f"http://localhost:{port}")).start()
+    """
+    This function replaces your existing main() function.
+    It finds an open port and then launches the web browser.
+    """
+    try:
+        port = find_available_port(8000)
+        logger.info(f"Found available port: {port}")
+    except IOError as e:
+        logger.error(f"{e} Aborting startup.")
+        return  # Exit if no port is found
+
+    # Open the browser after a short delay to give the server time to start.
+    # This will now run for both the script and the final executable.
+    threading.Timer(1.5, lambda: webbrowser.open(
+        f"http://localhost:{port}")).start()
+
+    # Start the Uvicorn server on the dynamically found port
     uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
 
 
