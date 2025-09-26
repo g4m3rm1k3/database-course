@@ -678,33 +678,83 @@ templates = Jinja2Templates(directory=resource_path("templates"))
 
 async def initialize_application():
     global git_monitor
+    app_state['initialized'] = False  # Default to not initialized
+
     try:
         app_state['config_manager'] = ConfigManager()
-        cfg = app_state['config_manager'].config.model_dump()
-        gitlab_cfg = cfg.get('gitlab', {})
-        if all(gitlab_cfg.get(k) for k in ['base_url', 'token', 'project_id']):
-            base_url = '/'.join(gitlab_cfg['base_url'].split('/')[:3])
+        cfg = app_state['config_manager'].config
+        gitlab_cfg = cfg.gitlab
+
+        if all(gitlab_cfg.get(k) for k in ['base_url', 'token', 'project_id', 'username']):
+            # --- NEW: STARTUP VALIDATION BLOCK ---
+            try:
+                logger.info("Validating stored credentials on startup...")
+                base_url_parsed = '/'.join(
+                    gitlab_cfg['base_url'].split('/')[:3])
+                api_url = f"{base_url_parsed}/api/v4/user"
+                headers = {"Private-Token": gitlab_cfg['token']}
+
+                response = requests.get(api_url, headers=headers, timeout=10)
+                response.raise_for_status()
+
+                gitlab_user_data = response.json()
+                real_username = gitlab_user_data.get("username")
+
+                # Compare the username from the config with the one from the GitLab API
+                if real_username != gitlab_cfg['username']:
+                    logger.warning(
+                        f"SECURITY ALERT: Config username ('{gitlab_cfg['username']}') does not match token owner ('{real_username}'). Invalidating session.")
+                    # Invalidate the config in memory by clearing it
+                    app_state['config_manager'].config.gitlab = {}
+                    # This will cause initialization to fail and fall into the except block below
+                    raise ValueError(
+                        "Username in config does not match token owner.")
+
+                logger.info(
+                    f"Startup validation successful for user '{real_username}'.")
+
+            except Exception as e:
+                logger.error(
+                    f"Startup credential validation failed: {e}. Clearing credentials.")
+                # If validation fails for any reason, clear the bad config from memory
+                if 'config_manager' in app_state:
+                    app_state['config_manager'].config.gitlab = {}
+                raise  # Re-raise to fall into the main except block
+            # --- END OF VALIDATION BLOCK ---
+
+            # If validation passes, proceed with normal initialization
             app_state['gitlab_api'] = GitLabAPI(
-                base_url, gitlab_cfg['token'], gitlab_cfg['project_id'])
+                base_url_parsed, gitlab_cfg['token'], gitlab_cfg['project_id'])
+
             if app_state['gitlab_api'].test_connection():
                 logger.info("GitLab connection established.")
-                repo_path = Path(cfg.get('local', {}).get(
+                repo_path = Path(cfg.local.get(
                     'repo_path', Path.home() / 'MastercamGitRepo'))
                 app_state['git_repo'] = GitRepository(
                     repo_path, gitlab_cfg['base_url'], gitlab_cfg['token'])
+
                 if app_state['git_repo'].repo:
                     app_state['metadata_manager'] = MetadataManager(repo_path)
                     git_monitor = GitStateMonitor(app_state['git_repo'])
                     app_state['initialized'] = True
-                    logger.info("Repository synchronized.")
-                    asyncio.create_task(git_polling_task())
+                    logger.info(
+                        "Repository synchronized and application fully initialized.")
+                    # Start the polling task only after successful initialization
+                    if not any(isinstance(t, asyncio.Task) and t.get_name() == 'git_polling_task' for t in asyncio.all_tasks()):
+                        task = asyncio.create_task(git_polling_task())
+                        task.set_name('git_polling_task')
+
     except Exception as e:
-        logger.error(f"Initialization failed: {e}")
+        logger.error(
+            f"Initialization failed or was aborted due to invalid config: {e}")
+
     if not app_state.get('initialized'):
         logger.warning(
-            "Running in limited/demo mode. Check config if this is unexpected.")
-        app_state['metadata_manager'] = MetadataManager(
-            Path(tempfile.gettempdir()) / 'mastercam_git_interface')
+            "Running in limited/unconfigured mode. Please check your settings.")
+        # Ensure a dummy metadata manager exists for basic UI functionality
+        if 'metadata_manager' not in app_state:
+            app_state['metadata_manager'] = MetadataManager(
+                Path(tempfile.gettempdir()) / 'mastercam_git_interface_temp')
 
 
 async def git_polling_task():

@@ -1,5 +1,5 @@
 // ==================================================================
-// 			Mastercam GitLab Interface Script
+// 			Mastercam GitLab Interface Script with Tooltips
 // ==================================================================
 
 // -- Global Variables --
@@ -13,6 +13,930 @@ let maxReconnectAttempts = 5;
 let reconnectTimeout = null;
 let isManualDisconnect = false;
 let lastNotification = { message: null, timestamp: 0 };
+let tooltipsEnabled =
+  localStorage.getItem("tooltipsEnabled") === "true" || false;
+
+// -- Enhanced Tooltip System with HTML Element Support --
+const tooltips = {
+  // Main interface tooltips
+  searchInput: {
+    title: "Search Files",
+    content:
+      "Type to filter files by name or path. Results update as you type.",
+    position: "bottom",
+  },
+  clearSearchBtn: {
+    title: "Clear Search",
+    content: "Click to clear the search field and show all files.",
+    position: "bottom",
+  },
+  dashboardBtn: {
+    title: "Dashboard",
+    content: "View active checkouts and recent activity across all users.",
+    position: "bottom",
+  },
+  collapseAllBtn: {
+    title: "Collapse All Groups",
+    content: "Collapse all file groups to get a cleaner view.",
+    position: "bottom",
+  },
+  globalAdminToggle: {
+    title: "Admin Mode Toggle",
+    content:
+      "Enable admin functions like overriding locks and deleting files. Use with caution.",
+    position: "bottom",
+  },
+  sendMessageBtn: {
+    title: "Send Message",
+    content:
+      "Send notifications to other users about file changes or important updates.",
+    position: "bottom",
+  },
+
+  // Settings and configuration
+  gitlabUrl: {
+    title: "GitLab URL",
+    content: "Enter your GitLab server URL (e.g., https://gitlab.company.com)",
+    position: "top",
+  },
+  projectId: {
+    title: "Project ID",
+    content:
+      "Find this number in your GitLab project settings. Usually displayed prominently on the project page.",
+    position: "top",
+  },
+  username: {
+    title: "GitLab Username",
+    content:
+      "Your GitLab username (not email). This will be used for commits and file locking.",
+    position: "top",
+  },
+  token: {
+    title: "Access Token",
+    content:
+      'Generate a personal access token in GitLab with "api" scope. Keep this secure!',
+    position: "top",
+  },
+
+  // Form elements
+  commitMessage: {
+    title: "Commit Message",
+    content:
+      'Describe what changes you made. Be specific - others will see this in the history. Good example: "Updated tool paths for better surface finish"',
+    position: "top",
+  },
+  checkinFileUpload: {
+    title: "Select Updated File",
+    content:
+      "Choose the modified file from your computer. Filename must match exactly.",
+    position: "top",
+  },
+  newMajorRevInput: {
+    title: "New Major Revision",
+    content:
+      "Enter the new major revision number (e.g., 2, 3, 4). Leave blank for auto-increment.",
+    position: "right",
+  },
+  newFileDescription: {
+    title: "File Description",
+    content:
+      'Brief description of what this file does (e.g., "Main bracket machining program")',
+    position: "top",
+  },
+  newFileRev: {
+    title: "Initial Revision",
+    content:
+      'Starting revision number. Use format like "1.0" for the first version.',
+    position: "top",
+  },
+  newFileUpload: {
+    title: "Select File to Upload",
+    content:
+      "Choose your Mastercam file. Follow naming convention: 1234567_PART_NAME.mcx",
+    position: "top",
+  },
+  recipientUserSelect: {
+    title: "Message Recipient",
+    content:
+      "Choose who will receive your message. They will see it as a notification.",
+    position: "top",
+  },
+  messageText: {
+    title: "Message Content",
+    content:
+      'Type your message. Keep it clear and actionable (e.g., "Please review rev 2.1 before production")',
+    position: "top",
+  },
+
+  // Floating action buttons
+  newFileBtn: {
+    title: "Upload New File",
+    content:
+      "Add a new Mastercam file to the repository with initial revision.",
+    position: "left",
+  },
+  refreshBtn: {
+    title: "Manual Refresh",
+    content: "Force refresh the file list if automatic updates aren't working.",
+    position: "left",
+  },
+  darkModeBtn: {
+    title: "Toggle Dark Mode",
+    content: "Switch between light and dark themes.",
+    position: "left",
+  },
+  configBtn: {
+    title: "Settings Panel",
+    content: "Configure GitLab connection and user preferences.",
+    position: "left",
+  },
+
+  // File action tooltips (dynamically added)
+  checkout: {
+    title: "Checkout File",
+    content:
+      "Lock this file for editing. Others cannot modify it while checked out.",
+    position: "top",
+  },
+  checkin: {
+    title: "Check In File",
+    content: "Upload your changes and unlock the file for others to use.",
+    position: "top",
+  },
+  "cancel-checkout": {
+    title: "Cancel Checkout",
+    content:
+      "Release the lock without saving changes. Local modifications will be lost.",
+    position: "top",
+  },
+  view: {
+    title: "View/Download File",
+    content: "Download the latest version of this file to your computer.",
+    position: "top",
+  },
+  history: {
+    title: "Version History",
+    content:
+      "View all revisions, download previous versions, or revert changes.",
+    position: "top",
+  },
+  override: {
+    title: "Admin Override",
+    content: "Force unlock a file locked by another user (admin only).",
+    position: "top",
+  },
+  delete: {
+    title: "Delete File",
+    content: "Permanently remove this file from the repository (admin only).",
+    position: "top",
+  },
+
+  // Special tooltips for form validation
+  revisionType: {
+    title: "Revision Type",
+    content:
+      "Minor: Small changes (1.1→1.2). Major: Significant changes (1.2→2.0).",
+    position: "right",
+  },
+
+  // File naming convention tooltips
+  fileNaming: {
+    title: "File Naming Convention",
+    content: `Files should follow this pattern:
+    • 7-digit job number (1234567)
+    • Descriptive name (BRACKET_MOUNT)
+    • Extension (.mcx, .mcam, etc.)
+    
+    Example: 1234567_BRACKET_MOUNT.mcx`,
+    position: "top",
+    multiline: true,
+  },
+};
+
+function initTooltipSystem() {
+  // Add tooltip CSS if not already present
+  if (!document.getElementById("tooltip-styles")) {
+    const style = document.createElement("style");
+    style.id = "tooltip-styles";
+    style.textContent = `
+      .tooltip {
+        position: absolute;
+        background: linear-gradient(135deg, #1f2937, #374151);
+        color: white;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1.4;
+        z-index: 9999;
+        opacity: 0;
+        visibility: hidden;
+        transform: scale(0.8);
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        max-width: 280px;
+        word-wrap: break-word;
+        pointer-events: none;
+      }
+      
+      .tooltip.show {
+        opacity: 1;
+        visibility: visible;
+        transform: scale(1);
+      }
+      
+      .tooltip .tooltip-title {
+        font-weight: 600;
+        font-size: 14px;
+        margin-bottom: 4px;
+        color: #fbbf24;
+      }
+      
+      .tooltip .tooltip-content {
+        font-weight: 400;
+      }
+      
+      .tooltip::after {
+        content: '';
+        position: absolute;
+        width: 0;
+        height: 0;
+        border: 6px solid transparent;
+      }
+      
+      .tooltip.position-top::after {
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border-top-color: #1f2937;
+      }
+      
+      .tooltip.position-bottom::after {
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border-bottom-color: #1f2937;
+      }
+      
+      .tooltip.position-left::after {
+        left: 100%;
+        top: 50%;
+        transform: translateY(-50%);
+        border-left-color: #1f2937;
+      }
+      
+      .tooltip.position-right::after {
+        right: 100%;
+        top: 50%;
+        transform: translateY(-50%);
+        border-right-color: #1f2937;
+      }
+
+      .tooltip-enabled {
+        position: relative;
+      }
+
+      .tooltip-enabled::before {
+        content: '?';
+        position: absolute;
+        top: -2px;
+        right: -2px;
+        background: #fbbf24;
+        color: #1f2937;
+        border-radius: 50%;
+        width: 16px;
+        height: 16px;
+        font-size: 10px;
+        font-weight: bold;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 10;
+        pointer-events: none;
+        opacity: 0.8;
+      }
+
+      .tooltip-toggle-btn {
+        position: fixed;
+        top: 20px;
+        left: 20px;
+        z-index: 1000;
+        background: linear-gradient(135deg, #fbbf24, #f59e0b);
+        color: #1f2937;
+        border: none;
+        border-radius: 50%;
+        width: 50px;
+        height: 50px;
+        font-size: 18px;
+        font-weight: bold;
+        cursor: pointer;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        transition: all 0.2s ease;
+      }
+
+      .tooltip-toggle-btn:hover {
+        transform: scale(1.1);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+      }
+
+      .tooltip-toggle-btn.disabled {
+        background: linear-gradient(135deg, #6b7280, #4b5563);
+        color: #9ca3af;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // Create tooltip toggle button
+  if (!document.getElementById("tooltip-toggle")) {
+    const toggleBtn = document.createElement("button");
+    toggleBtn.id = "tooltip-toggle";
+    toggleBtn.className = `tooltip-toggle-btn ${
+      tooltipsEnabled ? "" : "disabled"
+    }`;
+    toggleBtn.innerHTML = "?";
+    toggleBtn.title = "Toggle Help Tooltips";
+    toggleBtn.addEventListener("click", toggleTooltips);
+    document.body.appendChild(toggleBtn);
+  }
+
+  // Initialize tooltips
+  updateTooltipVisibility();
+}
+
+function toggleTooltips() {
+  tooltipsEnabled = !tooltipsEnabled;
+  localStorage.setItem("tooltipsEnabled", tooltipsEnabled.toString());
+
+  const toggleBtn = document.getElementById("tooltip-toggle");
+  if (toggleBtn) {
+    toggleBtn.classList.toggle("disabled", !tooltipsEnabled);
+  }
+
+  updateTooltipVisibility();
+  showNotification(
+    tooltipsEnabled ? "Help tooltips enabled" : "Help tooltips disabled",
+    "info"
+  );
+}
+
+function updateTooltipVisibility() {
+  // Remove existing tooltips and event listeners
+  document.querySelectorAll(".tooltip").forEach((tooltip) => tooltip.remove());
+  document.querySelectorAll("[data-tooltip]").forEach((el) => {
+    el.removeEventListener("mouseenter", showTooltip);
+    el.removeEventListener("mouseleave", hideTooltip);
+    el.removeAttribute("data-tooltip");
+    el.classList.remove("tooltip-enabled");
+  });
+
+  if (!tooltipsEnabled) return;
+
+  // Add tooltips to elements by ID
+  Object.keys(tooltips).forEach((elementId) => {
+    const element = document.getElementById(elementId);
+    if (element) {
+      addTooltipToElement(element, elementId);
+    }
+  });
+
+  // Add tooltips to elements by specific selectors and attributes
+  const elementMappings = [
+    // Floating action buttons (by onclick attributes)
+    {
+      selector: 'button[onclick="showNewFileDialog()"]',
+      tooltip: "newFileBtn",
+    },
+    { selector: 'button[onclick="manualRefresh()"]', tooltip: "refreshBtn" },
+    { selector: 'button[onclick="toggleDarkMode()"]', tooltip: "darkModeBtn" },
+    { selector: 'button[onclick="toggleConfigPanel()"]', tooltip: "configBtn" },
+
+    // Modal close buttons
+    {
+      selector: "button[onclick*=\"classList.add('hidden')\"]",
+      tooltip: "closeBtn",
+    },
+    { selector: 'button[onclick*=".remove()"]', tooltip: "closeBtn" },
+  ];
+
+  elementMappings.forEach((mapping) => {
+    document.querySelectorAll(mapping.selector).forEach((element) => {
+      if (!element.dataset.tooltip) {
+        // Don't override existing tooltips
+        addTooltipToElement(element, mapping.tooltip);
+      }
+    });
+  });
+
+  // Add special tooltips for form fields based on their purpose
+  addFormFieldTooltips();
+
+  // Add tooltips to modal-specific elements
+  addModalTooltips();
+
+  // Add tooltips to dynamically created elements
+  addDynamicTooltips();
+}
+
+function addModalTooltips() {
+  if (!tooltipsEnabled) return;
+
+  // Dashboard modal elements
+  addDashboardTooltips();
+
+  // History modal elements (when they exist)
+  addHistoryModalTooltips();
+
+  // File action tooltips in modals
+  addModalActionTooltips();
+}
+
+function addDashboardTooltips() {
+  // Active checkouts table headers
+  const checkoutsTable = document.querySelector(
+    "#activeCheckoutsContainer table"
+  );
+  if (checkoutsTable) {
+    const headers = checkoutsTable.querySelectorAll("th");
+    headers.forEach((header, index) => {
+      const headerText = header.textContent.toLowerCase();
+      let tooltipKey = "";
+
+      if (headerText.includes("file")) {
+        tooltipKey = "dashboardFileColumn";
+      } else if (headerText.includes("user")) {
+        tooltipKey = "dashboardUserColumn";
+      } else if (headerText.includes("duration")) {
+        tooltipKey = "dashboardDurationColumn";
+      }
+
+      if (tooltipKey && tooltips[tooltipKey]) {
+        addTooltipToElement(header, tooltipKey);
+      }
+    });
+  }
+
+  // Activity filter dropdown
+  const activityFilter = document.getElementById("activityUserFilter");
+  if (activityFilter) {
+    addTooltipToElement(activityFilter, "activityUserFilter");
+  }
+
+  // Close dashboard button
+  const closeDashboard = document.getElementById("closeDashboardBtn");
+  if (closeDashboard) {
+    addTooltipToElement(closeDashboard, "closeDashboardBtn");
+  }
+}
+
+function addHistoryModalTooltips() {
+  // History modal filter inputs
+  const revFilterFrom = document.getElementById("revFilterFrom");
+  const revFilterTo = document.getElementById("revFilterTo");
+
+  if (revFilterFrom) {
+    addTooltipToElement(revFilterFrom, "revFilterFrom");
+  }
+  if (revFilterTo) {
+    addTooltipToElement(revFilterTo, "revFilterTo");
+  }
+
+  // Download buttons in history
+  document
+    .querySelectorAll('.js-history-modal a[href*="/versions/"]')
+    .forEach((downloadBtn) => {
+      addTooltipToElement(downloadBtn, "historyDownload");
+    });
+
+  // Revert buttons in history (admin only)
+  document.querySelectorAll(".js-revert-btn").forEach((revertBtn) => {
+    addTooltipToElement(revertBtn, "historyRevert");
+  });
+}
+
+function addModalActionTooltips() {
+  // Message acknowledgment buttons
+  document.querySelectorAll(".js-ack-btn").forEach((ackBtn) => {
+    addTooltipToElement(ackBtn, "messageAck");
+  });
+
+  // File input elements with specific guidance
+  document.querySelectorAll('input[type="file"]').forEach((fileInput) => {
+    if (fileInput.id === "checkinFileUpload") {
+      // Already handled by ID
+    } else if (fileInput.id === "newFileUpload") {
+      // Already handled by ID
+    } else if (fileInput.accept && fileInput.accept.includes(".mcam")) {
+      addTooltipToElement(fileInput, "mastercamFileInput");
+    }
+  });
+}
+
+// Add modal-specific tooltips to the main tooltips object
+const modalTooltips = {
+  // Dashboard tooltips
+  dashboardFileColumn: {
+    title: "File Column",
+    content:
+      "Shows which files are currently locked by users. Click dashboard to see full details.",
+    position: "bottom",
+  },
+  dashboardUserColumn: {
+    title: "User Column",
+    content:
+      "Shows who has each file checked out. Helps identify who to contact about file access.",
+    position: "bottom",
+  },
+  dashboardDurationColumn: {
+    title: "Duration Column",
+    content:
+      "How long each file has been checked out. Long durations might indicate forgotten checkouts.",
+    position: "bottom",
+  },
+  activityUserFilter: {
+    title: "Filter by User",
+    content:
+      "Show activity for a specific user or all users. Useful for tracking individual contributions.",
+    position: "bottom",
+  },
+  closeDashboardBtn: {
+    title: "Close Dashboard",
+    content: "Return to the main file list view.",
+    position: "left",
+  },
+
+  // History modal tooltips
+  revFilterFrom: {
+    title: "From Revision",
+    content:
+      "Starting revision number for filtering. Shows versions from this revision onwards.",
+    position: "top",
+  },
+  revFilterTo: {
+    title: "To Revision",
+    content:
+      "Ending revision number for filtering. Shows versions up to this revision.",
+    position: "top",
+  },
+  historyDownload: {
+    title: "Download Version",
+    content:
+      "Download this specific version of the file. Useful for comparing or reverting to older versions.",
+    position: "top",
+  },
+  historyRevert: {
+    title: "Revert to Version",
+    content:
+      "Create a new version that undoes changes back to this point. This creates a new commit, doesn't delete history.",
+    position: "top",
+  },
+
+  // Message modal tooltips
+  messageAck: {
+    title: "Acknowledge Message",
+    content: "Mark this message as read and remove it from your notifications.",
+    position: "left",
+  },
+
+  // File input tooltips
+  mastercamFileInput: {
+    title: "Mastercam File Selection",
+    content:
+      "Choose your .mcam or .mcx file. Ensure the filename follows your company's naming convention.",
+    position: "top",
+  },
+
+  // Enhanced form tooltips for modals
+  checkinSubmit: {
+    title: "Submit Check-in",
+    content:
+      "Upload your changes and create a new revision. Others will be able to access the file after this.",
+    position: "top",
+  },
+  uploadSubmit: {
+    title: "Upload New File",
+    content:
+      "Add this file to the repository. Make sure the description is clear for other team members.",
+    position: "top",
+  },
+  configSubmit: {
+    title: "Save Configuration",
+    content:
+      "Test and save your GitLab connection settings. You'll need valid credentials.",
+    position: "top",
+  },
+  messageSubmit: {
+    title: "Send Message",
+    content:
+      "Deliver this notification to the selected user. They'll see it in their message panel.",
+    position: "top",
+  },
+  cancelBtn: {
+    title: "Cancel Action",
+    content:
+      "Close this dialog without making changes. Any entered information will be lost.",
+    position: "top",
+  },
+  closeBtn: {
+    title: "Close",
+    content: "Close this dialog or panel.",
+    position: "top",
+  },
+};
+
+// Merge modal tooltips with the main tooltips object
+Object.assign(tooltips, modalTooltips);
+
+function addFormFieldTooltips() {
+  if (!tooltipsEnabled) return;
+
+  // Revision type radio buttons - add tooltip to the container
+  const revisionContainer = document
+    .querySelector('input[name="rev_type"]')
+    ?.closest(".space-y-2");
+  if (revisionContainer) {
+    addTooltipToElement(revisionContainer, "revisionType");
+  }
+
+  // Add tooltips to submit buttons with context
+  document.querySelectorAll('button[type="submit"]').forEach((button) => {
+    const form = button.closest("form");
+    let tooltipKey = "submitBtn";
+
+    if (form?.id === "checkinForm") {
+      tooltipKey = "checkinSubmit";
+    } else if (form?.id === "newUploadForm") {
+      tooltipKey = "uploadSubmit";
+    } else if (form?.id === "configForm") {
+      tooltipKey = "configSubmit";
+    } else if (form?.id === "sendMessageForm") {
+      tooltipKey = "messageSubmit";
+    }
+
+    addTooltipToElement(button, tooltipKey);
+  });
+
+  // Add tooltips to cancel buttons
+  document.querySelectorAll('button[type="button"]').forEach((button) => {
+    if (button.textContent.includes("Cancel")) {
+      addTooltipToElement(button, "cancelBtn");
+    }
+  });
+}
+
+// Add specific tooltips for different types of submit buttons
+const submitButtonTooltips = {
+  checkinSubmit: {
+    title: "Submit Check-in",
+    content:
+      "Upload your changes and create a new revision. Make sure your commit message is clear!",
+    position: "top",
+  },
+  uploadSubmit: {
+    title: "Upload New File",
+    content:
+      "Add this file to the repository. Double-check the filename follows the naming convention.",
+    position: "top",
+  },
+  configSubmit: {
+    title: "Save Configuration",
+    content:
+      "Save GitLab settings. The system will test the connection automatically.",
+    position: "top",
+  },
+  messageSubmit: {
+    title: "Send Message",
+    content:
+      "Send notification to the selected user. They'll see it immediately if online.",
+    position: "top",
+  },
+  submitBtn: {
+    title: "Submit",
+    content: "Submit this form with the entered information.",
+    position: "top",
+  },
+  cancelBtn: {
+    title: "Cancel",
+    content: "Close this dialog without saving changes.",
+    position: "top",
+  },
+  closeBtn: {
+    title: "Close",
+    content: "Close this dialog or panel.",
+    position: "top",
+  },
+};
+
+// Merge the submit button tooltips with main tooltips
+Object.assign(tooltips, submitButtonTooltips);
+
+function addTooltipToElement(element, tooltipKey) {
+  if (!tooltipsEnabled) return;
+
+  element.dataset.tooltip = tooltipKey;
+  element.classList.add("tooltip-enabled");
+  element.addEventListener("mouseenter", showTooltip);
+  element.addEventListener("mouseleave", hideTooltip);
+}
+
+function addDynamicTooltips() {
+  if (!tooltipsEnabled) return;
+
+  // Add tooltips to file action buttons
+  document.querySelectorAll(".js-checkout-btn").forEach((btn) => {
+    addTooltipToElement(btn, "checkout");
+  });
+
+  document.querySelectorAll(".js-checkin-btn").forEach((btn) => {
+    addTooltipToElement(btn, "checkin");
+  });
+
+  document.querySelectorAll(".js-cancel-checkout-btn").forEach((btn) => {
+    addTooltipToElement(btn, "cancel-checkout");
+  });
+
+  document.querySelectorAll('a[href*="/download"]').forEach((btn) => {
+    addTooltipToElement(btn, "view");
+  });
+
+  document.querySelectorAll(".js-history-btn").forEach((btn) => {
+    addTooltipToElement(btn, "history");
+  });
+
+  document.querySelectorAll(".js-override-btn").forEach((btn) => {
+    addTooltipToElement(btn, "override");
+  });
+
+  document.querySelectorAll(".js-delete-btn").forEach((btn) => {
+    addTooltipToElement(btn, "delete");
+  });
+
+  // Add tooltips to form elements
+  const revisionRadios = document.querySelectorAll('input[name="rev_type"]');
+  revisionRadios.forEach((radio) => {
+    addTooltipToElement(radio.parentElement, "revisionType");
+  });
+}
+
+function showTooltip(event) {
+  if (!tooltipsEnabled) return;
+
+  const tooltipKey = event.currentTarget.dataset.tooltip;
+  const tooltipData = tooltips[tooltipKey];
+
+  if (!tooltipData) return;
+
+  // Remove existing tooltips
+  document.querySelectorAll(".tooltip").forEach((tooltip) => tooltip.remove());
+
+  // Create new tooltip
+  const tooltip = document.createElement("div");
+  tooltip.className = `tooltip position-${tooltipData.position || "top"}`;
+
+  const titleHtml = tooltipData.title
+    ? `<div class="tooltip-title">${tooltipData.title}</div>`
+    : "";
+  const contentHtml = tooltipData.multiline
+    ? tooltipData.content.replace(/\n/g, "<br>")
+    : tooltipData.content;
+
+  tooltip.innerHTML = `${titleHtml}<div class="tooltip-content">${contentHtml}</div>`;
+
+  document.body.appendChild(tooltip);
+
+  // Store reference to target element for repositioning
+  tooltip.targetElement = event.currentTarget;
+  tooltip.preferredPosition = tooltipData.position || "top";
+
+  // Position tooltip
+  positionTooltip(tooltip, event.currentTarget, tooltipData.position || "top");
+
+  // Show tooltip with animation
+  setTimeout(() => tooltip.classList.add("show"), 10);
+
+  // Add scroll listener for repositioning
+  const repositionOnScroll = () => {
+    if (tooltip.parentNode && tooltip.targetElement) {
+      positionTooltip(
+        tooltip,
+        tooltip.targetElement,
+        tooltip.preferredPosition
+      );
+    }
+  };
+
+  window.addEventListener("scroll", repositionOnScroll, { passive: true });
+  window.addEventListener("resize", repositionOnScroll);
+
+  // Store cleanup function
+  tooltip.cleanup = () => {
+    window.removeEventListener("scroll", repositionOnScroll);
+    window.removeEventListener("resize", repositionOnScroll);
+  };
+}
+
+function hideTooltip() {
+  const tooltip = document.querySelector(".tooltip.show");
+  if (tooltip) {
+    tooltip.classList.remove("show");
+    // Clean up event listeners
+    if (tooltip.cleanup) {
+      tooltip.cleanup();
+    }
+    setTimeout(() => tooltip.remove(), 200);
+  }
+}
+
+function positionTooltip(tooltip, targetElement, position) {
+  const rect = targetElement.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const scrollX = window.pageXOffset || document.documentElement.scrollLeft;
+  const scrollY = window.pageYOffset || document.documentElement.scrollTop;
+
+  let left, top;
+
+  // Calculate initial position relative to the document (not viewport)
+  switch (position) {
+    case "top":
+      left = rect.left + scrollX + rect.width / 2 - tooltipRect.width / 2;
+      top = rect.top + scrollY - tooltipRect.height - 10;
+      break;
+    case "bottom":
+      left = rect.left + scrollX + rect.width / 2 - tooltipRect.width / 2;
+      top = rect.bottom + scrollY + 10;
+      break;
+    case "left":
+      left = rect.left + scrollX - tooltipRect.width - 10;
+      top = rect.top + scrollY + rect.height / 2 - tooltipRect.height / 2;
+      break;
+    case "right":
+      left = rect.right + scrollX + 10;
+      top = rect.top + scrollY + rect.height / 2 - tooltipRect.height / 2;
+      break;
+  }
+
+  // Get viewport dimensions
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+
+  // Adjust for viewport boundaries, considering scroll position
+  const minLeft = scrollX + 10;
+  const maxLeft = scrollX + viewportWidth - tooltipRect.width - 10;
+  const minTop = scrollY + 10;
+  const maxTop = scrollY + viewportHeight - tooltipRect.height - 10;
+
+  // If tooltip would go off-screen horizontally, try opposite side
+  if (left < minLeft && (position === "left" || position === "right")) {
+    if (position === "left") {
+      // Switch to right
+      left = rect.right + scrollX + 10;
+    } else {
+      // Switch to left
+      left = rect.left + scrollX - tooltipRect.width - 10;
+    }
+  }
+
+  // If tooltip would go off-screen vertically, try opposite side
+  if (top < minTop && (position === "top" || position === "bottom")) {
+    if (position === "top") {
+      // Switch to bottom
+      top = rect.bottom + scrollY + 10;
+    } else {
+      // Switch to top
+      top = rect.top + scrollY - tooltipRect.height - 10;
+    }
+  }
+
+  // Final boundary check - clamp to viewport
+  left = Math.max(minLeft, Math.min(left, maxLeft));
+  top = Math.max(minTop, Math.min(top, maxTop));
+
+  tooltip.style.left = left + "px";
+  tooltip.style.top = top + "px";
+}
+
+// -- Enhanced File Naming Helper --
+function addFileNamingHelper() {
+  // Add naming helper to new file upload
+  const newFileInput = document.getElementById("newFileUpload");
+  if (newFileInput && tooltipsEnabled) {
+    const helper = document.createElement("div");
+    helper.className =
+      "text-sm text-primary-600 dark:text-primary-300 mt-2 p-3 bg-blue-50 dark:bg-blue-900 rounded-md border border-blue-200 dark:border-blue-700";
+    helper.innerHTML = `
+      <div class="flex items-start space-x-2">
+        <i class="fa-solid fa-lightbulb text-blue-600 dark:text-blue-400 mt-0.5"></i>
+        <div>
+          <strong>File Naming Convention:</strong><br>
+          <code class="bg-white dark:bg-gray-800 px-1 rounded">1234567_PART_NAME.mcx</code><br>
+          <small>7-digit job number + descriptive name + extension</small>
+        </div>
+      </div>
+    `;
+    newFileInput.parentElement.appendChild(helper);
+  }
+}
 
 // -- Notification Debounce --
 function debounceNotifications(message, type, delay = 5000) {
@@ -315,6 +1239,11 @@ function renderFiles() {
   if (totalFilesFound === 0) {
     fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-primary-600 dark:text-primary-300"><i class="fa-solid fa-folder-open text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No files found</h3><p class="mt-2 text-center">No Mastercam files match your search criteria.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-accent to-accent-hover text-white rounded-md hover:bg-opacity-80">Refresh</button></div>`;
   }
+
+  // Re-apply tooltips to newly rendered elements
+  setTimeout(() => {
+    addDynamicTooltips();
+  }, 100);
 }
 
 async function loadConfig() {
@@ -345,9 +1274,11 @@ function updateConnectionStatus(connected) {
       : "Disconnected";
   }
 }
+
 function updateRepoStatus(status) {
   document.getElementById("repoStatus").textContent = status;
 }
+
 function updateConfigDisplay() {
   if (currentConfig) {
     document.getElementById("configStatusText").textContent =
@@ -363,6 +1294,7 @@ function updateConfigDisplay() {
     }
   }
 }
+
 function setupAdminUI() {
   const adminToggle = document.getElementById("globalAdminToggle");
   const sendMsgBtn = document.getElementById("sendMessageBtn");
@@ -454,6 +1386,7 @@ async function checkoutFile(filename) {
     revertFileStateFromLoading(filename);
   }
 }
+
 function setFileStateToLoading(filename) {
   const safeId = `file-${filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
   const fileEl = document.getElementById(safeId);
@@ -465,6 +1398,7 @@ function setFileStateToLoading(filename) {
     }
   }
 }
+
 function revertFileStateFromLoading(filename) {
   const safeId = `file-${filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
   const fileEl = document.getElementById(safeId);
@@ -476,6 +1410,7 @@ function revertFileStateFromLoading(filename) {
     }
   }
 }
+
 function showCheckinDialog(filename) {
   const modal = document.getElementById("checkinModal");
   const form = document.getElementById("checkinForm");
@@ -484,6 +1419,254 @@ function showCheckinDialog(filename) {
   form.dataset.filename = filename;
   form.reset();
   modal.classList.remove("hidden");
+
+  // Add tooltips to modal elements after it's shown
+  setTimeout(() => {
+    addModalTooltips();
+    updateTooltipVisibility();
+  }, 100);
+}
+
+function showNewFileDialog() {
+  const modal = document.getElementById("newUploadModal");
+  const form = document.getElementById("newUploadForm");
+  form.reset();
+  modal.classList.remove("hidden");
+
+  // Add file naming helper and tooltips after modal is shown
+  setTimeout(() => {
+    addFileNamingHelper();
+    addModalTooltips();
+    updateTooltipVisibility();
+  }, 100);
+}
+
+async function openSendMessageModal() {
+  const modal = document.getElementById("sendMessageModal");
+  const userSelect = document.getElementById("recipientUserSelect");
+  try {
+    const response = await fetch("/users");
+    const data = await response.json();
+    if (response.ok && data.users) {
+      userSelect.innerHTML = '<option value="">Select a user...</option>';
+      data.users.forEach((user) => {
+        if (user !== currentUser) {
+          const option = document.createElement("option");
+          option.value = user;
+          option.textContent = user;
+          userSelect.appendChild(option);
+        }
+      });
+    }
+  } catch (error) {
+    debounceNotifications("Could not load user list.", "error");
+  }
+  modal.classList.remove("hidden");
+
+  // Add tooltips to modal elements after it's shown
+  setTimeout(() => {
+    addModalTooltips();
+    updateTooltipVisibility();
+  }, 100);
+}
+
+function openDashboardModal() {
+  const modal = document.getElementById("dashboardModal");
+  if (modal) {
+    modal.classList.remove("hidden");
+    loadAndRenderDashboard().then(() => {
+      // Add tooltips to dashboard elements after content is loaded
+      setTimeout(() => {
+        addDashboardTooltips();
+        updateTooltipVisibility();
+      }, 200);
+    });
+  }
+}
+
+function showFileHistoryModal(historyData) {
+  const modal = document.createElement("div");
+  modal.className =
+    "fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100] js-history-modal";
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) modal.remove();
+  });
+
+  const allRevisions = Array.from(
+    new Set(
+      historyData.history
+        .map((commit) => (commit.revision ? parseFloat(commit.revision) : null))
+        .filter((rev) => rev !== null && !isNaN(rev))
+    )
+  ).sort((a, b) => a - b);
+
+  let historyListHtml = "";
+  if (historyData.history && historyData.history.length > 0) {
+    historyData.history.forEach((commit, index) => {
+      const revisionBadge = commit.revision
+        ? `<span class="font-bold text-xs bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200 px-2 py-1 rounded-full">REV ${commit.revision}</span>`
+        : "";
+
+      let adminActions = "";
+      const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
+
+      if (
+        currentConfig &&
+        currentConfig.is_admin &&
+        index === 0 &&
+        historyData.history.length > 1
+      ) {
+        adminActions = `<button class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold admin-action-btn js-revert-btn ${adminBtnVisibility}" data-filename="${historyData.filename}" data-commit-hash="${commit.commit_hash}"><i class="fa-solid fa-undo"></i><span>Revert</span></button>`;
+      }
+
+      historyListHtml += `<div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95 history-item" data-revision="${
+        commit.revision || ""
+      }">
+        <div class="flex justify-between items-start">
+            <div>
+                <div class="flex items-center space-x-3 text-sm mb-2 flex-wrap gap-y-1">
+                    <span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
+                      0,
+                      8
+                    )}</span>
+                    ${revisionBadge}
+                    <span class="text-primary-600 dark:text-primary-300">${formatDate(
+                      commit.date
+                    )}</span>
+                </div>
+                <div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
+                  commit.message
+                }</div>
+                <div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
+                  commit.author_name
+                }</div>
+            </div>
+            <div class="flex-shrink-0 ml-4 flex items-center space-x-2">
+                ${adminActions}
+                <a href="/files/${historyData.filename}/versions/${
+        commit.commit_hash
+      }" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold">
+                    <i class="fa-solid fa-file-arrow-down"></i><span>Download</span>
+                </a>
+            </div>
+        </div>
+      </div>`;
+    });
+  } else {
+    historyListHtml = `<p class="text-center text-primary-600 dark:text-primary-300">No version history available.</p>`;
+  }
+
+  const revisionFilterHtml =
+    allRevisions.length > 1
+      ? `
+    <div class="flex items-center justify-center space-x-6 mt-4">
+        <div class="flex items-center space-x-2">
+            <label for="revFilterFrom" class="text-sm font-medium text-primary-800 dark:text-primary-200">From Rev:</label>
+            <input type="number" id="revFilterFrom" value="${
+              allRevisions[0]
+            }" min="${allRevisions[0]}" max="${
+          allRevisions[allRevisions.length - 1]
+        }" step="0.1" 
+                   class="w-24 p-1 text-center font-semibold border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
+        </div>
+        <div class="flex items-center space-x-2">
+            <label for="revFilterTo" class="text-sm font-medium text-primary-800 dark:text-primary-200">To Rev:</label>
+            <input type="number" id="revFilterTo" value="${
+              allRevisions[allRevisions.length - 1]
+            }" min="${allRevisions[0]}" max="${
+          allRevisions[allRevisions.length - 1]
+        }" step="0.1" 
+                   class="w-24 p-1 text-center font-semibold border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
+        </div>
+    </div>
+  `
+      : "";
+
+  modal.innerHTML = `<div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-4xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
+    <div class="flex-shrink-0 p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent">
+        <div class="flex justify-between items-center">
+            <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3>
+            <button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.js-history-modal').remove()">
+                <i class="fa-solid fa-xmark text-2xl"></i>
+            </button>
+        </div>
+        
+        ${revisionFilterHtml}
+
+    </div>
+    <div id="historyListContainer" class="overflow-y-auto p-6 space-y-4">
+        ${historyListHtml}
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+
+  // Add tooltips to history modal elements
+  setTimeout(() => {
+    addHistoryModalTooltips();
+    updateTooltipVisibility();
+  }, 100);
+
+  const historyItems = modal.querySelectorAll(".history-item");
+  const fromInput = document.getElementById("revFilterFrom");
+  const toInput = document.getElementById("revFilterTo");
+
+  const applyFilters = () => {
+    const minRev = parseFloat(fromInput.value) || allRevisions[0];
+    const maxRev =
+      parseFloat(toInput.value) || allRevisions[allRevisions.length - 1];
+
+    if (minRev > maxRev) {
+      return;
+    }
+
+    historyItems.forEach((item) => {
+      const itemRevStr = item.dataset.revision;
+      let revMatch = true;
+
+      if (itemRevStr && itemRevStr !== "") {
+        const itemRev = parseFloat(itemRevStr);
+        revMatch = itemRev >= minRev && itemRev <= maxRev;
+      } else {
+        revMatch = false;
+      }
+
+      item.style.display = revMatch ? "" : "none";
+    });
+  };
+
+  if (fromInput && toInput) {
+    fromInput.addEventListener("input", applyFilters);
+    toInput.addEventListener("input", applyFilters);
+    applyFilters();
+  }
+}
+
+function populateAndShowMessagesModal(messages) {
+  const modal = document.getElementById("viewMessagesModal");
+  const container = document.getElementById("messageListContainer");
+  container.innerHTML = "";
+  messages.forEach((msg) => {
+    const msgEl = document.createElement("div");
+    msgEl.className = "p-4 bg-primary-100 dark:bg-mc-dark-accent rounded-lg";
+    msgEl.dataset.messageId = msg.id;
+    msgEl.innerHTML = `<div class="flex justify-between items-start"><div><p class="text-sm text-primary-700 dark:text-primary-300">${
+      msg.message
+    }</p><p class="text-xs text-primary-500 dark:text-primary-400 mt-2">From: <strong>${
+      msg.sender
+    }</strong> at ${formatDate(
+      msg.timestamp
+    )}</p></div><button class="ml-4 px-3 py-1 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 js-ack-btn" data-message-id="${
+      msg.id
+    }">Acknowledge</button></div>`;
+    container.appendChild(msgEl);
+  });
+  modal.classList.remove("hidden");
+
+  // Add tooltips to message modal elements
+  setTimeout(() => {
+    addModalTooltips();
+    updateTooltipVisibility();
+  }, 100);
 }
 
 async function checkinFile(
@@ -532,6 +1715,7 @@ async function adminOverride(filename) {
     debounceNotifications(`Override Error: ${error.message}`, "error");
   }
 }
+
 async function adminDeleteFile(filename) {
   if (
     !confirm(
@@ -610,6 +1794,15 @@ function showFileHistoryModal(historyData) {
   modal.addEventListener("click", (e) => {
     if (e.target === modal) modal.remove();
   });
+
+  const allRevisions = Array.from(
+    new Set(
+      historyData.history
+        .map((commit) => (commit.revision ? parseFloat(commit.revision) : null))
+        .filter((rev) => rev !== null && !isNaN(rev))
+    )
+  ).sort((a, b) => a - b);
+
   let historyListHtml = "";
   if (historyData.history && historyData.history.length > 0) {
     historyData.history.forEach((commit, index) => {
@@ -619,11 +1812,19 @@ function showFileHistoryModal(historyData) {
 
       let adminActions = "";
       const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
-      if (currentConfig && currentConfig.is_admin && index === 0) {
+
+      if (
+        currentConfig &&
+        currentConfig.is_admin &&
+        index === 0 &&
+        historyData.history.length > 1
+      ) {
         adminActions = `<button class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold admin-action-btn js-revert-btn ${adminBtnVisibility}" data-filename="${historyData.filename}" data-commit-hash="${commit.commit_hash}"><i class="fa-solid fa-undo"></i><span>Revert</span></button>`;
       }
 
-      historyListHtml += `<div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95">
+      historyListHtml += `<div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95 history-item" data-revision="${
+        commit.revision || ""
+      }">
         <div class="flex justify-between items-start">
             <div>
                 <div class="flex items-center space-x-3 text-sm mb-2 flex-wrap gap-y-1">
@@ -657,18 +1858,84 @@ function showFileHistoryModal(historyData) {
   } else {
     historyListHtml = `<p class="text-center text-primary-600 dark:text-primary-300">No version history available.</p>`;
   }
-  modal.innerHTML = `<div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-3xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
-    <div class="flex-shrink-0 flex justify-between items-center p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent">
-        <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3>
-        <button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.js-history-modal').remove()">
-            <i class="fa-solid fa-xmark text-2xl"></i>
-        </button>
+
+  const revisionFilterHtml =
+    allRevisions.length > 1
+      ? `
+    <div class="flex items-center justify-center space-x-6 mt-4">
+        <div class="flex items-center space-x-2">
+            <label for="revFilterFrom" class="text-sm font-medium text-primary-800 dark:text-primary-200">From Rev:</label>
+            <input type="number" id="revFilterFrom" value="${
+              allRevisions[0]
+            }" min="${allRevisions[0]}" max="${
+          allRevisions[allRevisions.length - 1]
+        }" step="0.1" 
+                   class="w-24 p-1 text-center font-semibold border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
+        </div>
+        <div class="flex items-center space-x-2">
+            <label for="revFilterTo" class="text-sm font-medium text-primary-800 dark:text-primary-200">To Rev:</label>
+            <input type="number" id="revFilterTo" value="${
+              allRevisions[allRevisions.length - 1]
+            }" min="${allRevisions[0]}" max="${
+          allRevisions[allRevisions.length - 1]
+        }" step="0.1" 
+                   class="w-24 p-1 text-center font-semibold border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
+        </div>
     </div>
-    <div class="overflow-y-auto p-6 space-y-4">
+  `
+      : "";
+
+  modal.innerHTML = `<div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-4xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
+    <div class="flex-shrink-0 p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent">
+        <div class="flex justify-between items-center">
+            <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3>
+            <button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.js-history-modal').remove()">
+                <i class="fa-solid fa-xmark text-2xl"></i>
+            </button>
+        </div>
+        
+        ${revisionFilterHtml}
+
+    </div>
+    <div id="historyListContainer" class="overflow-y-auto p-6 space-y-4">
         ${historyListHtml}
     </div>
   </div>`;
   document.body.appendChild(modal);
+
+  const historyItems = modal.querySelectorAll(".history-item");
+  const fromInput = document.getElementById("revFilterFrom");
+  const toInput = document.getElementById("revFilterTo");
+
+  const applyFilters = () => {
+    const minRev = parseFloat(fromInput.value) || allRevisions[0];
+    const maxRev =
+      parseFloat(toInput.value) || allRevisions[allRevisions.length - 1];
+
+    if (minRev > maxRev) {
+      return;
+    }
+
+    historyItems.forEach((item) => {
+      const itemRevStr = item.dataset.revision;
+      let revMatch = true;
+
+      if (itemRevStr && itemRevStr !== "") {
+        const itemRev = parseFloat(itemRevStr);
+        revMatch = itemRev >= minRev && itemRev <= maxRev;
+      } else {
+        revMatch = false;
+      }
+
+      item.style.display = revMatch ? "" : "none";
+    });
+  };
+
+  if (fromInput && toInput) {
+    fromInput.addEventListener("input", applyFilters);
+    toInput.addEventListener("input", applyFilters);
+    applyFilters();
+  }
 }
 
 function showNewFileDialog() {
@@ -676,7 +1943,14 @@ function showNewFileDialog() {
   const form = document.getElementById("newUploadForm");
   form.reset();
   modal.classList.remove("hidden");
+
+  // Add file naming helper and tooltips after modal is shown
+  setTimeout(() => {
+    addFileNamingHelper();
+    updateTooltipVisibility();
+  }, 100);
 }
+
 async function uploadNewFile(file, description, rev) {
   try {
     const formData = new FormData();
@@ -718,6 +1992,7 @@ async function openSendMessageModal() {
   }
   modal.classList.remove("hidden");
 }
+
 async function sendMessage(recipient, message) {
   try {
     const response = await fetch("/messages/send", {
@@ -736,6 +2011,7 @@ async function sendMessage(recipient, message) {
     debounceNotifications(`Send Error: ${error.message}`, "error");
   }
 }
+
 function populateAndShowMessagesModal(messages) {
   const modal = document.getElementById("viewMessagesModal");
   const container = document.getElementById("messageListContainer");
@@ -757,6 +2033,7 @@ function populateAndShowMessagesModal(messages) {
   });
   modal.classList.remove("hidden");
 }
+
 async function acknowledgeMessage(messageId) {
   try {
     const response = await fetch("/messages/acknowledge", {
@@ -808,6 +2085,7 @@ async function cancelCheckout(filename) {
 function toggleConfigPanel() {
   document.getElementById("configPanel").classList.toggle("translate-x-full");
 }
+
 function toggleDarkMode() {
   const htmlEl = document.documentElement;
   if (htmlEl.classList.contains("dark")) {
@@ -818,6 +2096,7 @@ function toggleDarkMode() {
     localStorage.setItem("theme", "dark");
   }
 }
+
 function applyThemePreference() {
   const savedTheme = localStorage.getItem("theme");
   if (
@@ -829,6 +2108,7 @@ function applyThemePreference() {
     document.documentElement.classList.remove("dark");
   }
 }
+
 function showNotification(message, type = "info") {
   const notification = document.createElement("div");
   let bgColor;
@@ -859,6 +2139,7 @@ function showNotification(message, type = "info") {
     setTimeout(() => notification.remove(), 300);
   }, 4000);
 }
+
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return "0 Bytes";
   const k = 1024;
@@ -911,15 +2192,31 @@ async function loadAndRenderDashboard() {
   const activityFeedContainer = document.getElementById(
     "activityFeedContainer"
   );
-
   const loadingSpinner = `<div class="flex justify-center items-center py-12"><div class="animate-spin rounded-full h-12 w-12 border-4 border-primary-400 dark:border-mc-dark-accent border-t-accent"></div></div>`;
-  activeCheckoutsContainer.innerHTML = loadingSpinner;
-  activityFeedContainer.innerHTML = loadingSpinner;
 
-  await Promise.all([
-    loadAndRenderActiveCheckouts(),
-    loadAndRenderActivityFeed(),
-  ]);
+  activeCheckoutsContainer.innerHTML = loadingSpinner;
+
+  // --- NEW: Admin-only logic for the activity feed ---
+  if (currentConfig && currentConfig.is_admin) {
+    // Admin view: show both columns
+    activityFeedContainer.style.display = "flex";
+    activeCheckoutsContainer.classList.remove("w-full");
+    activeCheckoutsContainer.classList.add("md:w-1/2");
+    activityFeedContainer.innerHTML = loadingSpinner;
+
+    await Promise.all([
+      loadAndRenderActiveCheckouts(),
+      loadAndRenderActivityFeed(),
+    ]);
+  } else {
+    // Regular user view: hide activity feed and expand active checkouts
+    activityFeedContainer.innerHTML = "";
+    activityFeedContainer.style.display = "none";
+    activeCheckoutsContainer.classList.remove("md:w-1/2");
+    activeCheckoutsContainer.classList.add("w-full");
+
+    await loadAndRenderActiveCheckouts();
+  }
 }
 
 async function loadAndRenderActiveCheckouts() {
@@ -937,7 +2234,6 @@ async function loadAndRenderActiveCheckouts() {
                 <p>No files are currently checked out.</p>
             </div>`;
     } else {
-      // *** FIX: Added a wrapper div for horizontal scrolling ***
       contentHtml += `<div class="overflow-x-auto flex-grow">
                 <table class="min-w-full divide-y divide-primary-300 dark:divide-mc-dark-accent">
                     <thead class="bg-primary-100 dark:bg-mc-dark-accent">
@@ -977,12 +2273,27 @@ async function loadAndRenderActivityFeed() {
     if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
     const data = await response.json();
 
-    let contentHtml = `<h4 class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-4 flex-shrink-0">Recent Activity</h4>`;
+    // --- NEW: Create user filter dropdown ---
+    const users = Array.from(
+      new Set(data.activities.map((act) => act.user))
+    ).sort();
+    const filterHtml = `
+          <div class="relative mb-4 flex-shrink-0">
+            <label for="activityUserFilter" class="text-sm font-medium text-primary-800 dark:text-primary-200 mr-2">Filter by User:</label>
+            <select id="activityUserFilter" class="w-full sm:w-auto p-2 border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
+              <option value="all">All Users</option>
+              ${users
+                .map((user) => `<option value="${user}">${user}</option>`)
+                .join("")}
+            </select>
+          </div>
+        `;
 
+    let activityListHtml =
+      '<div id="activity-list" class="space-y-4 flex-grow overflow-y-auto">';
     if (data.activities.length === 0) {
-      contentHtml += `<p class="text-center text-primary-600 dark:text-primary-300 py-8">No recent activity found.</p>`;
+      activityListHtml += `<p class="text-center text-primary-600 dark:text-primary-300 py-8">No recent activity found.</p>`;
     } else {
-      contentHtml += '<div class="space-y-4 flex-grow overflow-y-auto">';
       data.activities.forEach((item) => {
         const iconMap = {
           CHECK_IN: { icon: "fa-upload", color: "text-blue-500" },
@@ -994,8 +2305,6 @@ async function loadAndRenderActivityFeed() {
           icon: "fa-question-circle",
           color: "text-gray-500",
         };
-
-        // *** FIX: Corrected grammar for event types ***
         const verbMap = {
           CHECK_IN: "checked in",
           CHECK_OUT: "checked out",
@@ -1004,8 +2313,10 @@ async function loadAndRenderActivityFeed() {
         };
         const verb = verbMap[item.event_type] || "interacted with";
 
-        contentHtml += `
-                    <div class="flex items-start space-x-3">
+        activityListHtml += `
+                    <div class="flex items-start space-x-3 activity-item" data-user="${
+                      item.user
+                    }">
                         <div class="pt-1"><i class="fa-solid ${icon} ${color}"></i></div>
                         <div>
                             <p class="text-sm text-primary-800 dark:text-primary-200">
@@ -1022,9 +2333,28 @@ async function loadAndRenderActivityFeed() {
                         </div>
                     </div>`;
       });
-      contentHtml += "</div>";
     }
-    container.innerHTML = contentHtml;
+    activityListHtml += "</div>";
+
+    container.innerHTML = `
+            <h4 class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-2 flex-shrink-0">Recent Activity</h4>
+            ${filterHtml}
+            ${activityListHtml}
+        `;
+
+    // --- NEW: Add event listener for the filter ---
+    const userFilter = document.getElementById("activityUserFilter");
+    const activityItems = container.querySelectorAll(".activity-item");
+    userFilter.addEventListener("change", () => {
+      const selectedUser = userFilter.value;
+      activityItems.forEach((item) => {
+        if (selectedUser === "all" || item.dataset.user === selectedUser) {
+          item.style.display = "flex";
+        } else {
+          item.style.display = "none";
+        }
+      });
+    });
   } catch (error) {
     container.innerHTML = `<h4 class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-4">Recent Activity</h4><p class="text-center text-red-500">Error: ${error.message}</p>`;
   }
@@ -1068,7 +2398,12 @@ document.addEventListener("DOMContentLoaded", function () {
   applyThemePreference();
   loadConfig();
   loadFiles();
+
+  // Initialize tooltip system
+  initTooltipSystem();
+
   setTimeout(() => connectWebSocket(), 1000);
+
   document.querySelectorAll('input[name="rev_type"]').forEach((radio) => {
     radio.addEventListener("change", (e) => {
       const majorRevField = document.getElementById("newMajorRevInput");
@@ -1087,13 +2422,16 @@ document.addEventListener("DOMContentLoaded", function () {
       }
     });
   });
+
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && ws && ws.readyState !== WebSocket.OPEN) {
       if (reconnectAttempts < maxReconnectAttempts) connectWebSocket();
     }
   });
+
   window.addEventListener("beforeunload", () => disconnectWebSocket());
   window.manualRefresh = manualRefresh;
+
   setInterval(async () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       try {
@@ -1109,13 +2447,12 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   }, 30000);
 
-  // *** NEW: SEARCH FIELD LOGIC WITH CLEAR BUTTON ***
+  // Search field logic with clear button
   const searchInput = document.getElementById("searchInput");
   const clearSearchBtn = document.getElementById("clearSearchBtn");
 
   searchInput.addEventListener("input", () => {
-    renderFiles(); // This part is existing and correct
-    // Show or hide the clear button based on input
+    renderFiles();
     if (searchInput.value.length > 0) {
       clearSearchBtn.classList.remove("hidden");
     } else {
@@ -1124,12 +2461,11 @@ document.addEventListener("DOMContentLoaded", function () {
   });
 
   clearSearchBtn.addEventListener("click", () => {
-    searchInput.value = ""; // Clear the input
-    clearSearchBtn.classList.add("hidden"); // Hide the button
-    renderFiles(); // Re-render the list
-    searchInput.focus(); // Put the cursor back in the search box
+    searchInput.value = "";
+    clearSearchBtn.classList.add("hidden");
+    renderFiles();
+    searchInput.focus();
   });
-  // *** END OF NEW SEARCH LOGIC ***
 
   document.getElementById("collapseAllBtn")?.addEventListener("click", () => {
     document
@@ -1217,6 +2553,7 @@ document.addEventListener("DOMContentLoaded", function () {
       debounceNotifications("Please complete all required fields.", "error");
     }
   });
+
   document
     .getElementById("cancelCheckin")
     .addEventListener("click", () =>
@@ -1244,6 +2581,7 @@ document.addEventListener("DOMContentLoaded", function () {
       debounceNotifications("Please complete all fields.", "error");
     }
   });
+
   document
     .getElementById("cancelNewUpload")
     .addEventListener("click", () =>
