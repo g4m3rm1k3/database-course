@@ -182,7 +182,7 @@ def validate_filename_format(filename: str) -> tuple[bool, str]:
         return False, f"Filename (before extension) cannot exceed {MAX_LENGTH} characters."
 
     # Check 2: Format using Regular Expression
-    pattern = re.compile(r"^\d{7}_[a-zA-Z]{1,3}\d{1,3}$")
+    pattern = re.compile(r"^\d{7,}(_[a-zA-Z]{1,3}\d{1,3})?$")
     if not pattern.match(stem):
         return False, "Filename must follow the format: 7digits_1-3letters_1-3numbers (e.g., 1234567_AB123)."
 

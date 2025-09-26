@@ -1430,19 +1430,19 @@ function showCheckinDialog(filename) {
   }, 100);
 }
 
-function showNewFileDialog() {
-  const modal = document.getElementById("newUploadModal");
-  const form = document.getElementById("newUploadForm");
-  form.reset();
-  modal.classList.remove("hidden");
+// function showNewFileDialog() {
+//   const modal = document.getElementById("newUploadModal");
+//   const form = document.getElementById("newUploadForm");
+//   form.reset();
+//   modal.classList.remove("hidden");
 
-  // Add file naming helper and tooltips after modal is shown
-  setTimeout(() => {
-    addFileNamingHelper();
-    addModalTooltips();
-    updateTooltipVisibility();
-  }, 100);
-}
+//   // Add file naming helper and tooltips after modal is shown
+//   setTimeout(() => {
+//     addFileNamingHelper();
+//     addModalTooltips();
+//     updateTooltipVisibility();
+//   }, 100);
+// }
 
 async function openSendMessageModal() {
   const modal = document.getElementById("sendMessageModal");
