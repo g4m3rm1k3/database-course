@@ -60,76 +60,98 @@ ALLOWED_FILE_TYPES = {
 
 
 class FileInfo(BaseModel):
-    filename: str
-    path: str
-    status: str
-    locked_by: Optional[str] = None
-    locked_at: Optional[str] = None
-    size: Optional[int] = None
-    modified_at: Optional[str] = None
-    description: Optional[str] = None
-    revision: Optional[str] = None
+    filename: str = Field(..., description="The name of the file")
+    path: str = Field(...,
+                      description="The relative path of the file in the repository")
+    status: str = Field(
+        ..., description="File status: 'locked', 'unlocked', or 'checked_out_by_user'")
+    locked_by: Optional[str] = Field(
+        None, description="Username of the user who has the file locked")
+    locked_at: Optional[str] = Field(
+        None, description="ISO timestamp when the file was locked")
+    size: Optional[int] = Field(None, description="File size in bytes")
+    modified_at: Optional[str] = Field(
+        None, description="ISO timestamp of last modification")
+    description: Optional[str] = Field(
+        None, description="File description from metadata")
+    revision: Optional[str] = Field(
+        None, description="Current revision number (e.g., '1.5')")
 
 
 class CheckoutInfo(BaseModel):
-    filename: str
-    path: str
-    locked_by: str
-    locked_at: str
-    duration_seconds: float
+    filename: str = Field(..., description="Name of the checked out file")
+    path: str = Field(..., description="Repository path of the file")
+    locked_by: str = Field(...,
+                           description="User who has the file checked out")
+    locked_at: str = Field(...,
+                           description="ISO timestamp when checkout occurred")
+    duration_seconds: float = Field(
+        ..., description="How long the file has been checked out in seconds")
 
 
 class DashboardStats(BaseModel):
-    active_checkouts: List[CheckoutInfo]
+    active_checkouts: List[CheckoutInfo] = Field(
+        ..., description="List of currently checked out files")
 
 
 class CheckoutRequest(BaseModel):
-    user: str
+    user: str = Field(..., description="Username requesting the checkout")
 
 
 class AdminOverrideRequest(BaseModel):
-    admin_user: str
+    admin_user: str = Field(...,
+                            description="Admin username performing the override")
 
 
 class AdminDeleteRequest(BaseModel):
-    admin_user: str
+    admin_user: str = Field(...,
+                            description="Admin username performing the deletion")
 
 
 class SendMessageRequest(BaseModel):
-    recipient: str
-    message: str
-    sender: str
+    recipient: str = Field(...,
+                           description="Username of the message recipient")
+    message: str = Field(..., description="Message content to send")
+    sender: str = Field(..., description="Username of the message sender")
 
 
 class AckMessageRequest(BaseModel):
-    message_id: str
-    user: str
+    message_id: str = Field(...,
+                            description="Unique identifier of the message to acknowledge")
+    user: str = Field(..., description="Username acknowledging the message")
 
 
 class ConfigUpdateRequest(BaseModel):
-    base_url: str = Field(alias="gitlab_url")
-    project_id: str
-    username: str
-    token: str
+    base_url: str = Field(
+        alias="gitlab_url", description="GitLab instance URL (e.g., https://gitlab.example.com)")
+    project_id: str = Field(..., description="GitLab project ID")
+    username: str = Field(..., description="GitLab username")
+    token: str = Field(..., description="GitLab personal access token")
 
 
 class AdminRevertRequest(BaseModel):
-    admin_user: str
-    commit_hash: str
+    admin_user: str = Field(...,
+                            description="Admin username performing the revert")
+    commit_hash: str = Field(..., description="Git commit hash to revert")
 
 
 class ActivityItem(BaseModel):
-    event_type: str
-    filename: str
-    user: str
-    timestamp: str
-    commit_hash: str
-    message: str
-    revision: Optional[str] = None
+    event_type: str = Field(
+        ..., description="Type of activity: CHECK_IN, CHECK_OUT, CANCEL, OVERRIDE")
+    filename: str = Field(..., description="Name of the file involved")
+    user: str = Field(..., description="Username who performed the action")
+    timestamp: str = Field(..., description="ISO timestamp of the activity")
+    commit_hash: str = Field(...,
+                             description="Git commit hash associated with the activity")
+    message: str = Field(...,
+                         description="Commit message or activity description")
+    revision: Optional[str] = Field(
+        None, description="File revision if applicable")
 
 
 class ActivityFeed(BaseModel):
-    activities: List[ActivityItem]
+    activities: List[ActivityItem] = Field(...,
+                                           description="List of recent activities")
 
 
 class AppConfig(BaseModel):
@@ -140,6 +162,37 @@ class AppConfig(BaseModel):
     security: dict = Field(default_factory=lambda: {"admin_users": ["admin"]})
     polling: dict = Field(default_factory=lambda: {
                           "enabled": True, "interval_seconds": 15, "check_on_activity": True})
+
+
+class StandardResponse(BaseModel):
+    status: str = Field(...,
+                        description="Response status: 'success' or 'error'")
+    message: Optional[str] = Field(None, description="Human-readable message")
+
+
+class ConfigSummary(BaseModel):
+    gitlab_url: Optional[str] = Field(
+        None, description="Configured GitLab URL")
+    project_id: Optional[str] = Field(
+        None, description="Configured GitLab project ID")
+    username: Optional[str] = Field(
+        None, description="Configured GitLab username")
+    has_token: bool = Field(...,
+                            description="Whether a GitLab token is configured")
+    repo_path: Optional[str] = Field(None, description="Local repository path")
+    is_admin: bool = Field(...,
+                           description="Whether the current user has admin privileges")
+
+
+class UserList(BaseModel):
+    users: List[str] = Field(...,
+                             description="List of usernames from Git history")
+
+
+class FileHistory(BaseModel):
+    filename: str = Field(..., description="Name of the file")
+    history: List[Dict[str, Any]
+                  ] = Field(..., description="List of historical commits for this file")
 
 # --- Core Application Classes & Functions ---
 
@@ -661,7 +714,110 @@ async def lifespan(app: FastAPI):
     if cfg_manager := app_state.get('config_manager'):
         cfg_manager.save_config()
     logger.info("Application shutting down.")
-app = FastAPI(title="Mastercam PDM", lifespan=lifespan)
+
+tags_metadata = [
+    {
+        "name": "Configuration",
+        "description": "System configuration and GitLab integration settings"
+    },
+    {
+        "name": "File Management",
+        "description": "Core file operations including upload, download, checkout, and check-in"
+    },
+    {
+        "name": "Admin",
+        "description": "Administrative operations requiring elevated privileges"
+    },
+    {
+        "name": "Version Control",
+        "description": "Git version control operations and file history"
+    },
+    {
+        "name": "Dashboard",
+        "description": "Dashboard data and statistics"
+    },
+    {
+        "name": "Statistics",
+        "description": "System statistics and metrics"
+    },
+    {
+        "name": "Activity Tracking",
+        "description": "Activity feeds and audit trails"
+    },
+    {
+        "name": "User Management",
+        "description": "User-related operations and information"
+    },
+    {
+        "name": "Messaging",
+        "description": "Inter-user messaging system"
+    },
+    {
+        "name": "Repository Management",
+        "description": "Git repository operations and synchronization"
+    },
+    {
+        "name": "Web Interface",
+        "description": "Web interface endpoints"
+    }
+]
+
+
+app = FastAPI(
+    title="Mastercam GitLab Interface",
+    description="""
+    A comprehensive file management system that integrates Mastercam files with GitLab version control.
+    
+    ## Features
+    
+    * **File Management**: Upload, download, and manage Mastercam (.mcam) files
+    * **Version Control**: Full Git integration with GitLab for file versioning
+    * **Lock System**: Prevent concurrent edits with file checkout/checkin workflow
+    * **Real-time Updates**: WebSocket-based live updates across all connected clients
+    * **Admin Controls**: Administrative override and file management capabilities
+    * **Activity Tracking**: Complete audit trail of all file operations
+    
+    ## Authentication
+    
+    This system uses GitLab personal access tokens for authentication and authorization.
+    Admin users have additional privileges for file management and system administration.
+    
+    ## File Naming Convention
+    
+    Files must follow the format: `7digits_1-3letters_1-3numbers.ext`
+    - Example: `1234567_AB123.mcam`
+    - Maximum 15 characters before extension
+    - Supported extensions: `.mcam`, `.vnc`
+    
+    ## Workflow
+    
+    1. **Upload**: Add new files to the repository
+    2. **Checkout**: Lock a file for exclusive editing
+    3. **Edit**: Make changes locally in Mastercam
+    4. **Check-in**: Upload modified file with automatic versioning
+    5. **History**: Track all changes and versions
+    
+    ## Real-time Features
+    
+    The system provides real-time updates via WebSocket connections:
+    - File lock status changes
+    - New file additions
+    - Check-in/checkout activities
+    - Administrative messages
+    """,
+    version="1.0.0",
+    contact={
+        "name": "Mastercam PDM Support",
+        "email": "michael.mclean@sigsauer.com",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+    openapi_tags=tags_metadata,
+    lifespan=lifespan
+)
+
 app.add_middleware(CORSMiddleware, allow_origins=[
                    "*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -1304,7 +1460,36 @@ async def checkin_file(filename: str, user: str = Form(...), commit_message: str
             status_code=500, detail=f"An internal error occurred: {e}")
 
 
-@app.post("/files/{filename}/override")
+@app.post(
+    "/files/{filename}/override",
+    summary="Admin Override File Lock",
+    description="""
+    **Admin Only:** Forcibly removes a file lock regardless of who owns it.
+    
+    **Use Cases:**
+    - User is offline and others need access to the file
+    - System maintenance or emergency access required
+    - Resolving stuck locks from system errors
+    
+    **Audit Trail:**
+    - All overrides are logged in Git commit history
+    - Includes admin username and timestamp
+    - Provides full accountability for administrative actions
+    
+    **Safety Features:**
+    - Requires admin privileges (verified against admin user list)
+    - Creates permanent record in repository history
+    - Notifies all connected users of the override
+    """,
+    response_model=StandardResponse,
+    responses={
+        200: {"description": "Lock overridden successfully"},
+        403: {"description": "Permission denied - admin access required"},
+        404: {"description": "File not found"},
+        500: {"description": "Override failed"}
+    },
+    tags=["Admin", "File Management"]
+)
 async def admin_override(filename: str, request: AdminOverrideRequest):
     try:
         cfg_manager = app_state.get('config_manager')
@@ -1382,7 +1567,42 @@ async def cancel_checkout(filename: str, request: CheckoutRequest):
             status_code=500, detail=f"An internal error occurred: {e}")
 
 
-@app.delete("/files/{filename}/delete")
+@app.delete(
+    "/files/{filename}/delete",
+    summary="Admin Delete File",
+    description="""
+    **Admin Only:** Permanently deletes a file from the repository.
+    
+    **⚠️ WARNING:** This action is irreversible through the normal interface.
+    Files can only be recovered through Git history operations.
+    
+    **Safety Checks:**
+    - Requires admin privileges
+    - Prevents deletion of files currently checked out
+    - Creates audit trail in Git history
+    
+    **What Gets Deleted:**
+    - The main file (e.g., `example.mcam`)
+    - Associated metadata file (e.g., `example.mcam.meta.json`)
+    - Any existing lock files
+    
+    **Process:**
+    1. Verifies admin privileges
+    2. Checks file exists and is not locked
+    3. Removes all associated files
+    4. Commits deletion to Git with clear audit message
+    5. Notifies all connected clients
+    """,
+    response_model=StandardResponse,
+    responses={
+        200: {"description": "File deleted successfully"},
+        403: {"description": "Permission denied - admin access required"},
+        404: {"description": "File not found"},
+        409: {"description": "File is currently checked out"},
+        500: {"description": "Deletion failed"}
+    },
+    tags=["Admin", "File Management"]
+)
 async def admin_delete_file(filename: str, request: AdminDeleteRequest):
     try:
         cfg_manager, git_repo, metadata_manager = app_state.get(
@@ -1429,7 +1649,32 @@ async def admin_delete_file(filename: str, request: AdminDeleteRequest):
             status_code=500, detail=f"An internal error occurred: {e}")
 
 
-@app.get("/files/{filename}/download")
+@app.get(
+    "/files/{filename}/download",
+    summary="Download File",
+    description="""
+    Downloads the current version of a file from the repository.
+    
+    **Features:**
+    - Serves the latest committed version
+    - Sets appropriate headers for file download
+    - Works with any file type in the repository
+    
+    **Use Cases:**
+    - Download files for local editing in Mastercam
+    - Create local backups
+    - Share files with external collaborators
+    
+    The response includes proper Content-Disposition headers to trigger
+    a download in web browsers.
+    """,
+    response_class=Response,
+    responses={
+        200: {"description": "File downloaded successfully", "content": {"application/octet-stream": {}}},
+        404: {"description": "File not found"}
+    },
+    tags=["File Management"]
+)
 async def download_file(filename: str):
     git_repo, file_path = app_state.get('git_repo'), find_file_path(filename)
     if not git_repo or not file_path:
@@ -1440,7 +1685,37 @@ async def download_file(filename: str):
     return Response(content, media_type='application/octet-stream', headers={'Content-Disposition': f'attachment; filename="{filename}"'})
 
 
-@app.get("/files/{filename}/history")
+@app.get(
+    "/files/{filename}/history",
+    summary="Get File History",
+    description="""
+    Retrieves the complete Git history for a specific file.
+    
+    **Information Included:**
+    - Git commit hash for each version
+    - Author name and email
+    - Commit timestamp
+    - Commit message
+    - File revision number (from metadata)
+    
+    **Limitations:**
+    - Limited to last 10 commits for performance
+    - Only shows commits that affected the specified file
+    - Includes both file content changes and metadata updates
+    
+    **Use Cases:**
+    - Track who made changes and when
+    - Understand the evolution of a file
+    - Identify specific versions for rollback
+    - Audit trail for compliance
+    """,
+    response_model=FileHistory,
+    responses={
+        200: {"description": "File history retrieved successfully"},
+        404: {"description": "File not found"}
+    },
+    tags=["File Management", "Version Control"]
+)
 async def get_file_history(filename: str):
     try:
         file_path = find_file_path(filename)
@@ -1454,7 +1729,35 @@ async def get_file_history(filename: str):
             status_code=500, detail=f"An internal error occurred: {e}")
 
 
-@app.get("/files/{filename}/versions/{commit_hash}")
+@app.get(
+    "/files/{filename}/versions/{commit_hash}",
+    summary="Download Specific File Version",
+    description="""
+    Downloads a specific historical version of a file by Git commit hash.
+    
+    **Version Identification:**
+    - Use the commit hash from the file history endpoint
+    - Both full and abbreviated commit hashes are accepted
+    - File must have existed at the specified commit
+    
+    **Download Naming:**
+    - Files are renamed to include version information
+    - Format: `originalname_rev_1234567.ext`
+    - This prevents confusion with current versions
+    
+    **Use Cases:**
+    - Compare different versions
+    - Recover from unwanted changes
+    - Access specific revision for reference
+    - Emergency rollback scenarios
+    """,
+    response_class=Response,
+    responses={
+        200: {"description": "File version downloaded successfully", "content": {"application/octet-stream": {}}},
+        404: {"description": "File or version not found"}
+    },
+    tags=["File Management", "Version Control"]
+)
 async def download_file_version(filename: str, commit_hash: str):
     try:
         git_repo = app_state.get('git_repo')
@@ -1479,8 +1782,34 @@ async def download_file_version(filename: str, commit_hash: str):
             status_code=500, detail=f"An internal error occurred: {e}")
 
 
-@app.websocket("/ws")
+@app.websocket(
+    "/ws",
+    name="WebSocket Connection"
+)
 async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
+    """
+    **Real-time WebSocket connection for live updates.**
+
+    **Capabilities:**
+    - Real-time file list updates
+    - Instant lock status changes
+    - Message notifications
+    - System-wide activity broadcasts
+
+    **Message Types Sent:**
+    - `FILE_LIST_UPDATED`: Complete file list with current status
+    - `NEW_MESSAGES`: Messages for the connected user
+
+    **Message Types Received:**
+    - `SET_USER:username`: Changes the user context for this connection
+    - `REFRESH_FILES`: Requests immediate file list update
+
+    **Connection Management:**
+    - Automatic reconnection handling
+    - User context switching
+    - Graceful disconnection cleanup
+    """
+
     await manager.connect(websocket, user)
     logger.info(f"WebSocket connected for user: {user}")
 
@@ -1598,7 +1927,44 @@ async def get_activity_feed():
             status_code=500, detail="Could not generate activity feed.")
 
 
-@app.post("/files/{filename}/revert_commit")
+@app.post(
+    "/files/{filename}/revert_commit",
+    summary="Admin Revert File to Previous Version",
+    description="""
+    **Admin Only:** Reverts a file to the state it was in before a specific commit.
+    
+    **⚠️ Important:** This creates a new commit that undoes the changes,
+    preserving the complete Git history while reverting the file content.
+    
+    **Process:**
+    1. Identifies the commit to revert
+    2. Checks out the file state from the parent commit
+    3. Creates a new commit with the reverted content
+    4. Maintains complete audit trail
+    
+    **Safety Features:**
+    - Requires admin privileges
+    - Prevents revert if file is currently checked out
+    - Cannot revert the initial commit of a file
+    - Preserves all Git history
+    
+    **Use Cases:**
+    - Undo problematic changes
+    - Recover from accidental modifications
+    - Rollback after discovering issues
+    - Emergency recovery procedures
+    """,
+    response_model=StandardResponse,
+    responses={
+        200: {"description": "Commit reverted successfully"},
+        400: {"description": "Cannot revert initial commit"},
+        403: {"description": "Permission denied - admin access required"},
+        404: {"description": "File not found"},
+        409: {"description": "File currently checked out"},
+        500: {"description": "Revert failed"}
+    },
+    tags=["Admin", "Version Control"]
+)
 async def revert_commit(filename: str, request: AdminRevertRequest):
     """
     Admin action to revert a file's content to the state before a specific commit.
@@ -1687,8 +2053,8 @@ async def revert_commit(filename: str, request: AdminRevertRequest):
 
 def main():
     """
-    This function replaces your existing main() function.
-    It finds an open port and then launches the web browser.
+    Main entry point for the application.
+    Finds an available port and launches the web interface.
     """
     try:
         port = find_available_port(8000)
