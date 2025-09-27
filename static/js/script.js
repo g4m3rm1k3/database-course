@@ -1,5 +1,5 @@
 // ==================================================================
-// 			Mastercam GitLab Interface Script with Tooltips
+//			Mastercam GitLab Interface Script with Tooltips
 // ==================================================================
 
 // -- Global Variables --
@@ -122,7 +122,7 @@ const tooltips = {
     position: "top",
   },
   messageText: {
-    title: "Nick message Content",
+    title: "Message Content",
     content:
       'Type your message. Keep it clear and actionable (e.g., "Please review rev 2.1 before production")',
     position: "top",
@@ -151,7 +151,7 @@ const tooltips = {
     position: "left",
   },
 
-  // File action tooltips (dynamically added)
+  // File action tooltips
   checkout: {
     title: "Checkout File",
     content:
@@ -164,7 +164,7 @@ const tooltips = {
     position: "top",
   },
   "cancel-checkout": {
-    title: "Taylor cancel Checkout",
+    title: "Cancel Checkout",
     content:
       "Release the lock without saving changes. Local modifications will be lost.",
     position: "top",
@@ -190,8 +190,85 @@ const tooltips = {
     content: "Permanently remove this file from the repository (admin only).",
     position: "top",
   },
+  "view-master": {
+    title: "View Master File",
+    content:
+      "Scroll to and highlight the master file that this link points to.",
+    position: "top",
+  },
+  "remove-link": {
+    title: "Remove Link",
+    content:
+      "Delete this link file without affecting the master file it points to (admin only).",
+    position: "top",
+  },
 
-  // Special tooltips for form validation
+  // File data element tooltips
+  fileSize: {
+    title: "File Size",
+    content:
+      "The size of this file on disk. Larger files take longer to download.",
+    position: "top",
+  },
+  filePath: {
+    title: "File Path",
+    content: "The location of this file in the GitLab repository structure.",
+    position: "top",
+  },
+  fileModified: {
+    title: "Last Modified",
+    content: "When this file was last changed. Updated with each check-in.",
+    position: "top",
+  },
+  fileLocked: {
+    title: "Lock Information",
+    content: "Shows who has this file checked out and when they locked it.",
+    position: "top",
+  },
+  fileRevision: {
+    title: "Current Revision",
+    content: "The version number of this file. Increments with each check-in.",
+    position: "top",
+  },
+  fileDescription: {
+    title: "File Description",
+    content: "Part description as entered when the file was first uploaded.",
+    position: "top",
+  },
+  linkTarget: {
+    title: "Link Target",
+    content:
+      "Shows which master file this link points to. Links share the same content but have separate revision histories.",
+    position: "top",
+  },
+
+  // Dashboard tooltips
+  dashboardFileColumn: {
+    title: "File Column",
+    content:
+      "Shows which files are currently locked by users. Click to view details.",
+    position: "bottom",
+  },
+  dashboardUserColumn: {
+    title: "User Column",
+    content:
+      "Shows who has each file checked out. Helps identify who to contact about file access.",
+    position: "bottom",
+  },
+  dashboardDurationColumn: {
+    title: "Duration Column",
+    content:
+      "How long each file has been checked out. Long durations might indicate forgotten checkouts.",
+    position: "bottom",
+  },
+  activityUserFilter: {
+    title: "Filter by User",
+    content:
+      "Show activity for a specific user or all users. Useful for tracking individual contributions.",
+    position: "bottom",
+  },
+
+  // Form validation tooltips
   revisionType: {
     title: "Revision Type",
     content:
@@ -199,17 +276,40 @@ const tooltips = {
     position: "right",
   },
 
-  // File naming convention tooltips
-  fileNaming: {
-    title: "File Naming Convention",
-    content: `Files should follow this pattern:
-    • 7-digit job number (1234567)
-    • Machine name (M69)
-    • Extension (.mcam, .vnc, etc.)
-    
-    Example: 1234567_M69.mcx`,
+  // Submit button tooltips
+  checkinSubmit: {
+    title: "Submit Check-in",
+    content:
+      "Upload your changes and create a new revision. Make sure your commit message is clear!",
     position: "top",
-    multiline: true,
+  },
+  uploadSubmit: {
+    title: "Upload New File",
+    content:
+      "Add this file to the repository. Double-check the filename follows the naming convention.",
+    position: "top",
+  },
+  configSubmit: {
+    title: "Save Configuration",
+    content:
+      "Save GitLab settings. The system will test the connection automatically.",
+    position: "top",
+  },
+  messageSubmit: {
+    title: "Send Message",
+    content:
+      "Send notification to the selected user. They'll see it immediately if online.",
+    position: "top",
+  },
+  cancelBtn: {
+    title: "Cancel",
+    content: "Close this dialog without saving changes.",
+    position: "top",
+  },
+  closeBtn: {
+    title: "Close",
+    content: "Close this dialog or panel.",
+    position: "top",
   },
 };
 
@@ -401,9 +501,8 @@ function updateTooltipVisibility() {
     }
   });
 
-  // Add tooltips to elements by specific selectors and attributes
+  // Add tooltips to floating action buttons
   const elementMappings = [
-    // Floating action buttons (by onclick attributes)
     {
       selector: 'button[onclick="showNewFileDialog()"]',
       tooltip: "newFileBtn",
@@ -411,346 +510,76 @@ function updateTooltipVisibility() {
     { selector: 'button[onclick="manualRefresh()"]', tooltip: "refreshBtn" },
     { selector: 'button[onclick="toggleDarkMode()"]', tooltip: "darkModeBtn" },
     { selector: 'button[onclick="toggleConfigPanel()"]', tooltip: "configBtn" },
-
-    // Modal close buttons
-    {
-      selector: "button[onclick*=\"classList.add('hidden')\"]",
-      tooltip: "closeBtn",
-    },
-    { selector: 'button[onclick*=".remove()"]', tooltip: "closeBtn" },
   ];
 
   elementMappings.forEach((mapping) => {
     document.querySelectorAll(mapping.selector).forEach((element) => {
       if (!element.dataset.tooltip) {
-        // Don't override existing tooltips
         addTooltipToElement(element, mapping.tooltip);
       }
     });
   });
 
-  // Add special tooltips for form fields based on their purpose
-  addFormFieldTooltips();
+  // Add data element tooltips
+  addDataElementTooltips();
 
-  // Add tooltips to modal-specific elements
-  addModalTooltips();
-
-  // Add tooltips to dynamically created elements
+  // Add dynamic tooltips for action buttons
   addDynamicTooltips();
 }
 
-function addModalTooltips() {
+function addDataElementTooltips() {
   if (!tooltipsEnabled) return;
 
-  // Dashboard modal elements
-  addDashboardTooltips();
-
-  // History modal elements (when they exist)
-  addHistoryModalTooltips();
-
-  // File action tooltips in modals
-  addModalActionTooltips();
-}
-
-function addDashboardTooltips() {
-  // Active checkouts table headers
-  const checkoutsTable = document.querySelector(
-    "#activeCheckoutsContainer table"
-  );
-  if (checkoutsTable) {
-    const headers = checkoutsTable.querySelectorAll("th");
-    headers.forEach((header, index) => {
-      const headerText = header.textContent.toLowerCase();
-      let tooltipKey = "";
-
-      if (headerText.includes("file")) {
-        tooltipKey = "dashboardFileColumn";
-      } else if (headerText.includes("user")) {
-        tooltipKey = "dashboardUserColumn";
-      } else if (headerText.includes("duration")) {
-        tooltipKey = "dashboardDurationColumn";
-      }
-
-      if (tooltipKey && tooltips[tooltipKey]) {
-        addTooltipToElement(header, tooltipKey);
-      }
-    });
-  }
-
-  // Activity filter dropdown
-  const activityFilter = document.getElementById("activityUserFilter");
-  if (activityFilter) {
-    addTooltipToElement(activityFilter, "activityUserFilter");
-  }
-
-  // Close dashboard button
-  const closeDashboard = document.getElementById("closeDashboardBtn");
-  if (closeDashboard) {
-    addTooltipToElement(closeDashboard, "closeDashboardBtn");
-  }
-}
-
-function addHistoryModalTooltips() {
-  // History modal filter inputs
-  const revFilterFrom = document.getElementById("revFilterFrom");
-  const revFilterTo = document.getElementById("revFilterTo");
-
-  if (revFilterFrom) {
-    addTooltipToElement(revFilterFrom, "revFilterFrom");
-  }
-  if (revFilterTo) {
-    addTooltipToElement(revFilterTo, "revFilterTo");
-  }
-
-  // Download buttons in history
+  // Add tooltips to file data elements using CSS selectors and data attributes
   document
-    .querySelectorAll('.js-history-modal a[href*="/versions/"]')
-    .forEach((downloadBtn) => {
-      addTooltipToElement(downloadBtn, "historyDownload");
+    .querySelectorAll('[class*="fa-file"], [class*="fa-hard-drive"]')
+    .forEach((icon) => {
+      const parent = icon.parentElement;
+      if (parent && parent.textContent.includes("Size:")) {
+        addTooltipToElement(parent, "fileSize");
+      } else if (parent && parent.textContent.includes("Path:")) {
+        addTooltipToElement(parent, "filePath");
+      }
     });
 
-  // Revert buttons in history (admin only)
-  document.querySelectorAll(".js-revert-btn").forEach((revertBtn) => {
-    addTooltipToElement(revertBtn, "historyRevert");
-  });
-}
-
-function addModalActionTooltips() {
-  // Message acknowledgment buttons
-  document.querySelectorAll(".js-ack-btn").forEach((ackBtn) => {
-    addTooltipToElement(ackBtn, "messageAck");
+  document.querySelectorAll('[class*="fa-clock"]').forEach((icon) => {
+    const parent = icon.parentElement;
+    if (parent && parent.textContent.includes("Modified:")) {
+      addTooltipToElement(parent, "fileModified");
+    }
   });
 
-  // File input elements with specific guidance
-  document.querySelectorAll('input[type="file"]').forEach((fileInput) => {
-    if (fileInput.id === "checkinFileUpload") {
-      // Already handled by ID
-    } else if (fileInput.id === "newFileUpload") {
-      // Already handled by ID
-    } else if (fileInput.accept && fileInput.accept.includes(".mcam")) {
-      addTooltipToElement(fileInput, "mastercamFileInput");
+  document.querySelectorAll('[class*="fa-lock"]').forEach((icon) => {
+    const parent = icon.parentElement;
+    if (parent && parent.textContent.includes("Locked by:")) {
+      addTooltipToElement(parent, "fileLocked");
+    }
+  });
+
+  document.querySelectorAll('[class*="fa-link"]').forEach((icon) => {
+    const parent = icon.parentElement;
+    if (parent && parent.textContent.includes("Points to:")) {
+      addTooltipToElement(parent, "linkTarget");
+    }
+  });
+
+  // Add tooltips to revision badges
+  document.querySelectorAll("span").forEach((span) => {
+    if (span.textContent.match(/REV \d+\.\d+/)) {
+      addTooltipToElement(span, "fileRevision");
+    }
+  });
+
+  // Add tooltips to file descriptions (italic text under filenames)
+  document.querySelectorAll(".italic").forEach((desc) => {
+    if (
+      desc.classList.contains("text-gray-700") ||
+      desc.classList.contains("dark:text-gray-300")
+    ) {
+      addTooltipToElement(desc, "fileDescription");
     }
   });
 }
-
-// Add modal-specific tooltips to the main tooltips object
-const modalTooltips = {
-  // Dashboard tooltips
-  dashboardFileColumn: {
-    title: "File Column",
-    content:
-      "Shows which files are currently locked by users. Click dashboard to see full details.",
-    position: "bottom",
-  },
-  dashboardUserColumn: {
-    title: "User Column",
-    content:
-      "Shows who has each file checked out. Helps identify who to contact about file access.",
-    position: "bottom",
-  },
-  dashboardDurationColumn: {
-    title: "Duration Column",
-    content:
-      "How long each file has been checked out. Long durations might indicate forgotten checkouts.",
-    position: "bottom",
-  },
-  activityUserFilter: {
-    title: "Filter by User",
-    content:
-      "Show activity for a specific user or all users. Useful for tracking individual contributions.",
-    position: "bottom",
-  },
-  closeDashboardBtn: {
-    title: "Close Dashboard",
-    content: "Return to the main file list view.",
-    position: "left",
-  },
-
-  // History modal tooltips
-  revFilterFrom: {
-    title: "From Revision",
-    content:
-      "Starting revision number for filtering. Shows versions from this revision onwards.",
-    position: "top",
-  },
-  revFilterTo: {
-    title: "To Revision",
-    content:
-      "Ending revision number for filtering. Shows versions up to this revision.",
-    position: "top",
-  },
-  historyDownload: {
-    title: "Download Version",
-    content:
-      "Download this specific version of the file. Useful for comparing or reverting to older versions.",
-    position: "top",
-  },
-  historyRevert: {
-    title: "Revert to Version",
-    content:
-      "Create a new version that undoes changes back to this point. This creates a new commit, doesn't delete history.",
-    position: "top",
-  },
-
-  // Message modal tooltips
-  messageAck: {
-    title: "Acknowledge Message",
-    content: "Mark this message as read and remove it from your notifications.",
-    position: "left",
-  },
-
-  // File input tooltips
-  mastercamFileInput: {
-    title: "Mastercam File Selection",
-    content:
-      "Choose your .mcam or .mcx file. Ensure the filename follows your company's naming convention.",
-    position: "top",
-  },
-
-  // Enhanced form tooltips for modals
-  checkinSubmit: {
-    title: "Submit Check-in",
-    content:
-      "Upload your changes and create a new revision. Others will be able to access the file after this.",
-    position: "top",
-  },
-  uploadSubmit: {
-    title: "Upload New File",
-    content:
-      "Add this file to the repository. Make sure the description is clear for other team members.",
-    position: "top",
-  },
-  configSubmit: {
-    title: "Save Configuration",
-    content:
-      "Test and save your GitLab connection settings. You'll need valid credentials.",
-    position: "top",
-  },
-  messageSubmit: {
-    title: "Send Message",
-    content:
-      "Deliver this notification to the selected user. They'll see it in their message panel.",
-    position: "top",
-  },
-  cancelBtn: {
-    title: "Cancel Action",
-    content:
-      "Close this dialog without making changes. Any entered information will be lost.",
-    position: "top",
-  },
-  closeBtn: {
-    title: "Close",
-    content: "Close this dialog or panel.",
-    position: "top",
-  },
-};
-
-const linkTooltips = {
-  "view-master": {
-    title: "View Master File",
-    content:
-      "Scroll to and highlight the master file that this link points to.",
-    position: "top",
-  },
-  "link-info": {
-    title: "Link Information",
-    content:
-      "View detailed information about this link and its relationship to the master file.",
-    position: "top",
-  },
-  "remove-link": {
-    title: "Remove Link",
-    content:
-      "Delete this link file without affecting the master file it points to (admin only).",
-    position: "top",
-  },
-};
-
-// Merge modal tooltips with the main tooltips object
-Object.assign(tooltips, modalTooltips, linkTooltips);
-
-function addFormFieldTooltips() {
-  if (!tooltipsEnabled) return;
-
-  // Revision type radio buttons - add tooltip to the container
-  const revisionContainer = document
-    .querySelector('input[name="rev_type"]')
-    ?.closest(".space-y-2");
-  if (revisionContainer) {
-    addTooltipToElement(revisionContainer, "revisionType");
-  }
-
-  // Add tooltips to submit buttons with context
-  document.querySelectorAll('button[type="submit"]').forEach((button) => {
-    const form = button.closest("form");
-    let tooltipKey = "submitBtn";
-
-    if (form?.id === "checkinForm") {
-      tooltipKey = "checkinSubmit";
-    } else if (form?.id === "newUploadForm") {
-      tooltipKey = "uploadSubmit";
-    } else if (form?.id === "configForm") {
-      tooltipKey = "configSubmit";
-    } else if (form?.id === "sendMessageForm") {
-      tooltipKey = "messageSubmit";
-    }
-
-    addTooltipToElement(button, tooltipKey);
-  });
-
-  // Add tooltips to cancel buttons
-  document.querySelectorAll('button[type="button"]').forEach((button) => {
-    if (button.textContent.includes("Cancel")) {
-      addTooltipToElement(button, "cancelBtn");
-    }
-  });
-}
-
-// Add specific tooltips for different types of submit buttons
-const submitButtonTooltips = {
-  checkinSubmit: {
-    title: "Submit Check-in",
-    content:
-      "Upload your changes and create a new revision. Make sure your commit message is clear!",
-    position: "top",
-  },
-  uploadSubmit: {
-    title: "Upload New File",
-    content:
-      "Add this file to the repository. Double-check the filename follows the naming convention.",
-    position: "top",
-  },
-  configSubmit: {
-    title: "Save Configuration",
-    content:
-      "Save GitLab settings. The system will test the connection automatically.",
-    position: "top",
-  },
-  messageSubmit: {
-    title: "Send Message",
-    content:
-      "Send notification to the selected user. They'll see it immediately if online.",
-    position: "top",
-  },
-  submitBtn: {
-    title: "Submit",
-    content: "Submit this form with the entered information.",
-    position: "top",
-  },
-  cancelBtn: {
-    title: "Cancel",
-    content: "Close this dialog without saving changes.",
-    position: "top",
-  },
-  closeBtn: {
-    title: "Close",
-    content: "Close this dialog or panel.",
-    position: "top",
-  },
-};
-
-// Merge the submit button tooltips with main tooltips
-Object.assign(tooltips, submitButtonTooltips);
 
 function addTooltipToElement(element, tooltipKey) {
   if (!tooltipsEnabled) return;
@@ -789,20 +618,11 @@ function addDynamicTooltips() {
     addTooltipToElement(btn, "override");
   });
 
-  document.querySelectorAll(".js-delete-btn").forEach((btn) => {
-    addTooltipToElement(btn, "delete");
-  });
-
-  // Link-specific action tooltips
   document.querySelectorAll(".js-view-master-btn").forEach((btn) => {
     addTooltipToElement(btn, "view-master");
   });
 
-  document.querySelectorAll(".js-link-info-btn").forEach((btn) => {
-    addTooltipToElement(btn, "link-info");
-  });
-
-  // Admin delete buttons for links have different tooltip text
+  // Admin delete buttons - check if it's a link or regular file for different tooltip
   document.querySelectorAll(".js-delete-btn").forEach((btn) => {
     const filename = btn.dataset.filename;
     const safeId = `file-${filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
@@ -894,7 +714,7 @@ function positionTooltip(tooltip, targetElement, position) {
 
   let left, top;
 
-  // Calculate initial position relative to the document (not viewport)
+  // Calculate initial position relative to the document
   switch (position) {
     case "top":
       left = rect.left + scrollX + rect.width / 2 - tooltipRect.width / 2;
@@ -918,33 +738,11 @@ function positionTooltip(tooltip, targetElement, position) {
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
 
-  // Adjust for viewport boundaries, considering scroll position
+  // Adjust for viewport boundaries
   const minLeft = scrollX + 10;
   const maxLeft = scrollX + viewportWidth - tooltipRect.width - 10;
   const minTop = scrollY + 10;
   const maxTop = scrollY + viewportHeight - tooltipRect.height - 10;
-
-  // If tooltip would go off-screen horizontally, try opposite side
-  if (left < minLeft && (position === "left" || position === "right")) {
-    if (position === "left") {
-      // Switch to right
-      left = rect.right + scrollX + 10;
-    } else {
-      // Switch to left
-      left = rect.left + scrollX - tooltipRect.width - 10;
-    }
-  }
-
-  // If tooltip would go off-screen vertically, try opposite side
-  if (top < minTop && (position === "top" || position === "bottom")) {
-    if (position === "top") {
-      // Switch to bottom
-      top = rect.bottom + scrollY + 10;
-    } else {
-      // Switch to top
-      top = rect.top + scrollY - tooltipRect.height - 10;
-    }
-  }
 
   // Final boundary check - clamp to viewport
   left = Math.max(minLeft, Math.min(left, maxLeft));
@@ -952,31 +750,6 @@ function positionTooltip(tooltip, targetElement, position) {
 
   tooltip.style.left = left + "px";
   tooltip.style.top = top + "px";
-}
-
-// -- Enhanced File Naming Helper --
-function addFileNamingHelper() {
-  const newFileInput = document.getElementById("newFileUpload");
-
-  if (newFileInput && tooltipsEnabled) {
-    // Check if helper already exists
-    if (!newFileInput.parentElement.querySelector(".file-naming-helper")) {
-      const helper = document.createElement("div");
-      helper.className =
-        "file-naming-helper text-sm text-blue-700 dark:text-blue-300 mt-2 p-3 bg-blue-50 dark:bg-blue-900 rounded-md border border-blue-200 dark:border-blue-700";
-      helper.innerHTML = `
-        <div class="flex items-start space-x-2">
-          <i class="fa-solid fa-lightbulb text-blue-600 dark:text-blue-400 mt-0.5"></i>
-          <div>
-            <strong>File Naming Convention:</strong><br>
-            <code class="bg-white dark:bg-gray-800 px-1 rounded">1234567_MACHINE.mcam</code><br>
-            <small>7-digit part number  + machine if applicable</small>
-          </div>
-        </div>
-      `;
-      newFileInput.parentElement.appendChild(helper);
-    }
-  }
 }
 
 // -- Notification Debounce --
@@ -993,7 +766,7 @@ function debounceNotifications(message, type, delay = 5000) {
   showNotification(message, type);
 }
 
-// -- Improved WebSocket Management --
+// -- WebSocket Management --
 function connectWebSocket() {
   if (reconnectTimeout) {
     clearTimeout(reconnectTimeout);
@@ -1004,6 +777,7 @@ function connectWebSocket() {
     window.location.host
   }/ws?user=${encodeURIComponent(currentUser)}`;
   ws = new WebSocket(wsUrl);
+
   ws.onopen = function () {
     console.log("WebSocket connected successfully");
     updateConnectionStatus(true);
@@ -1011,9 +785,11 @@ function connectWebSocket() {
     ws.send(`SET_USER:${currentUser}`);
     ws.send("REFRESH_FILES");
   };
+
   ws.onmessage = function (event) {
     handleWebSocketMessage(event.data);
   };
+
   ws.onclose = function (event) {
     updateConnectionStatus(false);
     if (isManualDisconnect) {
@@ -1033,6 +809,7 @@ function connectWebSocket() {
       );
     }
   };
+
   ws.onerror = function (error) {
     console.error("WebSocket error:", error);
     updateConnectionStatus(false);
@@ -1053,7 +830,6 @@ function handleWebSocketMessage(message) {
     const data = JSON.parse(message);
     if (data.type === "FILE_LIST_UPDATED") {
       groupedFiles = data.payload || {};
-      // *** FIX: Check if dashboard modal is hidden before re-rendering file list ***
       const dashboardModal = document.getElementById("dashboardModal");
       if (dashboardModal && dashboardModal.classList.contains("hidden")) {
         renderFiles();
@@ -1065,7 +841,6 @@ function handleWebSocketMessage(message) {
     }
   } catch (error) {
     console.error("Error handling WebSocket message:", error);
-    console.log("Received non-JSON WebSocket message:", message);
   }
 }
 
@@ -1092,7 +867,54 @@ async function loadFiles() {
   }
 }
 
-// Updated file rendering section to properly display linked files
+// Function to scroll to and highlight the master file
+function viewMasterFile(masterFilename) {
+  const safeId = `file-${masterFilename.replace(/[^a-zA-Z0-9]/g, "-")}`;
+  const masterFileElement = document.getElementById(safeId);
+
+  if (masterFileElement) {
+    // Expand any parent groups that might contain the master file
+    let parentDetails = masterFileElement.closest("details");
+    while (parentDetails) {
+      parentDetails.open = true;
+      parentDetails = parentDetails.parentElement.closest("details");
+    }
+
+    // Smooth scroll to the master file
+    masterFileElement.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+    });
+
+    // Add a temporary highlight effect
+    masterFileElement.classList.add(
+      "bg-yellow-100",
+      "dark:bg-yellow-900",
+      "ring-2",
+      "ring-yellow-400",
+      "ring-opacity-75"
+    );
+
+    // Remove highlight after 3 seconds
+    setTimeout(() => {
+      masterFileElement.classList.remove(
+        "bg-yellow-100",
+        "dark:bg-yellow-900",
+        "ring-2",
+        "ring-yellow-400",
+        "ring-opacity-75"
+      );
+    }, 3000);
+
+    debounceNotifications(`Located master file: ${masterFilename}`, "success");
+  } else {
+    debounceNotifications(
+      `Master file "${masterFilename}" not found in current view. Try refreshing or clearing search filters.`,
+      "error"
+    );
+  }
+}
+
 function renderFiles() {
   const fileListEl = document.getElementById("fileList");
   const searchTerm = document.getElementById("searchInput").value.toLowerCase();
@@ -1245,19 +1067,11 @@ function renderFiles() {
 
           // Enhanced file display with link indicators
           const linkBadge = file.is_link
-            ? `
-            <span class="text-xs font-bold px-2.5 py-1 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" title="Linked to: ${file.master_file}">
-              <i class="fa-solid fa-link"></i> Linked
-            </span>
-          `
+            ? `<span class="text-xs font-bold px-2.5 py-1 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" title="Linked to: ${file.master_file}"><i class="fa-solid fa-link"></i> Linked</span>`
             : "";
 
           const revisionBadge = file.revision
-            ? `
-            <span class="text-xs font-semibold px-2.5 py-1 rounded-full bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200">
-              REV ${file.revision}
-            </span>
-          `
+            ? `<span class="text-xs font-semibold px-2.5 py-1 rounded-full bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200">REV ${file.revision}</span>`
             : "";
 
           fileEl.innerHTML = `
@@ -1344,8 +1158,64 @@ function renderFiles() {
   // Re-apply tooltips to newly rendered elements
   setTimeout(() => {
     addDynamicTooltips();
+    addDataElementTooltips();
   }, 100);
 }
+
+function getActionButtons(file) {
+  const btnClass =
+    "flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold";
+  let buttons = "";
+
+  // Handle linked files differently - they should only have limited actions
+  if (file.is_link) {
+    // Linked files only get "View Master" and "History" buttons
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-purple-600 to-purple-700 text-white hover:bg-opacity-80 js-view-master-btn" data-filename="${file.filename}" data-master-file="${file.master_file}"><i class="fa-solid fa-link"></i><span>View Master</span></button>`;
+
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
+
+    // Admin delete button for links (removes the link, not the master file)
+    if (currentConfig && currentConfig.is_admin && isAdminModeEnabled) {
+      buttons += `<button class="${btnClass} bg-gradient-to-r from-red-600 to-red-700 text-white hover:bg-opacity-80 js-delete-btn" data-filename="${file.filename}"><i class="fa-solid fa-trash-can"></i><span>Remove Link</span></button>`;
+    }
+
+    return buttons;
+  }
+
+  // Regular file logic
+  let viewBtnHtml = `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80"><i class="fa-solid fa-eye"></i><span>View</span></a>`;
+
+  if (file.status === "unlocked") {
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-green-600 to-green-700 text-white hover:bg-opacity-80 js-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
+  } else if (file.status === "checked_out_by_user") {
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:bg-opacity-80 js-checkin-btn" data-filename="${file.filename}"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-yellow-600 to-yellow-700 text-white hover:bg-opacity-80 js-cancel-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-times"></i><span>Cancel Checkout</span></button>`;
+    viewBtnHtml = viewBtnHtml.replace(
+      '<i class="fa-solid fa-eye"></i><span>View</span>',
+      '<i class="fa-solid fa-file-arrow-down"></i><span>Download</span>'
+    );
+  }
+
+  buttons = viewBtnHtml + buttons;
+  buttons += `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
+
+  if (currentConfig && currentConfig.is_admin) {
+    const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
+
+    if (file.status === "locked" && file.locked_by !== currentUser) {
+      const overrideBtnClasses =
+        "bg-gradient-to-r from-yellow-400 to-yellow-500 text-yellow-900";
+      buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${overrideBtnClasses} hover:bg-opacity-80 js-override-btn" data-filename="${file.filename}"><i class="fa-solid fa-unlock"></i><span>Override</span></button>`;
+    }
+
+    const deleteBtnClasses =
+      "bg-gradient-to-r from-red-600 to-red-700 text-white";
+    buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${deleteBtnClasses} hover:bg-opacity-80 js-delete-btn" data-filename="${file.filename}"><i class="fa-solid fa-trash-can"></i><span>Delete</span></button>`;
+  }
+
+  return buttons;
+}
+
 async function loadConfig() {
   try {
     const response = await fetch("/config");
@@ -1431,44 +1301,6 @@ function setupAdminUI() {
   }
 }
 
-function getActionButtons(file) {
-  const btnClass =
-    "flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold";
-  let buttons = "";
-
-  let viewBtnHtml = `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80"><i class="fa-solid fa-eye"></i><span>View</span></a>`;
-
-  if (file.status === "unlocked") {
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-green-600 to-green-700 text-white hover:bg-opacity-80 js-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
-  } else if (file.status === "checked_out_by_user") {
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:bg-opacity-80 js-checkin-btn" data-filename="${file.filename}"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-yellow-600 to-yellow-700 text-white hover:bg-opacity-80 js-cancel-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-times"></i><span>Cancel Checkout</span></button>`;
-    viewBtnHtml = viewBtnHtml.replace(
-      '<i class="fa-solid fa-eye"></i><span>View</span>',
-      '<i class="fa-solid fa-file-arrow-down"></i><span>Download</span>'
-    );
-  }
-
-  buttons = viewBtnHtml + buttons;
-  buttons += `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
-
-  if (currentConfig && currentConfig.is_admin) {
-    const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
-
-    if (file.status === "locked" && file.locked_by !== currentUser) {
-      const overrideBtnClasses =
-        "bg-gradient-to-r from-yellow-400 to-yellow-500 text-yellow-900";
-      buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${overrideBtnClasses} hover:bg-opacity-80 js-override-btn" data-filename="${file.filename}"><i class="fa-solid fa-unlock"></i><span>Override</span></button>`;
-    }
-
-    const deleteBtnClasses =
-      "bg-gradient-to-r from-red-600 to-red-700 text-white";
-    buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${deleteBtnClasses} hover:bg-opacity-80 js-delete-btn" data-filename="${file.filename}"><i class="fa-solid fa-trash-can"></i><span>Delete</span></button>`;
-  }
-
-  return buttons;
-}
-
 async function checkoutFile(filename) {
   setFileStateToLoading(filename);
   try {
@@ -1522,123 +1354,125 @@ function showCheckinDialog(filename) {
 
   // Add tooltips to modal elements after it's shown
   setTimeout(() => {
-    addModalTooltips();
     updateTooltipVisibility();
   }, 100);
 }
 
-function validateSingleInput(input) {
-  if (!input) return;
-
-  const value = input.value.trim();
-  let isValid = true;
-
-  if (input.hasAttribute("required") && value === "") {
-    isValid = false;
-  }
-
-  if (input.id === "newFileRev" && value !== "" && !/^\d+\.\d+$/.test(value)) {
-    isValid = false;
-  }
-
-  addValidationClass(input, isValid);
-}
-
-function setupNewUploadModal() {
-  // Upload type radio button handlers
-  const uploadTypeRadios = document.querySelectorAll(
-    'input[name="uploadType"]'
-  );
-  uploadTypeRadios.forEach((radio) => {
-    radio.addEventListener("change", updateUploadTypeView);
-  });
-
-  // Form submission handler
-  // const newUploadForm = document.getElementById("newUploadForm");
-  // if (newUploadForm) {
-  //   newUploadForm.removeEventListener("submit", handleFormSubmission); // Remove any existing listeners
-  //   newUploadForm.addEventListener("submit", handleFormSubmission);
-  // }
-
-  // Cancel button handler
-  const cancelBtn = document.getElementById("cancelNewUpload");
-  if (cancelBtn) {
-    cancelBtn.addEventListener("click", () => {
-      document.getElementById("newUploadModal").classList.add("hidden");
-    });
-  }
-
-  // Real-time validation handlers
-  const inputs = document.querySelectorAll("#newUploadForm input[required]");
-  inputs.forEach((input) => {
-    input.addEventListener("blur", function () {
-      validateSingleInput(this);
-    });
-
-    input.addEventListener("input", function () {
-      // Clear validation state on input
-      this.classList.remove(
-        "border-red-500",
-        "border-green-500",
-        "ring-red-500",
-        "ring-green-500",
-        "ring-2",
-        "ring-opacity-25"
-      );
-    });
-  });
-
-  // Special validation for revision field
-  const revInput = document.getElementById("newFileRev");
-  if (revInput) {
-    revInput.addEventListener("blur", function () {
-      const value = this.value.trim();
-      const isValid = value !== "" && /^\d+\.\d+$/.test(value);
-      addValidationClass(this, isValid);
-    });
-  }
-}
-
-async function openSendMessageModal() {
-  const modal = document.getElementById("sendMessageModal");
-  const userSelect = document.getElementById("recipientUserSelect");
+async function checkinFile(
+  filename,
+  file,
+  commitMessage,
+  rev_type,
+  new_major_rev
+) {
   try {
-    const response = await fetch("/users");
-    const data = await response.json();
-    if (response.ok && data.users) {
-      userSelect.innerHTML = '<option value="">Select a user...</option>';
-      data.users.forEach((user) => {
-        if (user !== currentUser) {
-          const option = document.createElement("option");
-          option.value = user;
-          option.textContent = user;
-          userSelect.appendChild(option);
-        }
-      });
+    const formData = new FormData();
+    formData.append("user", currentUser);
+    formData.append("file", file);
+    formData.append("commit_message", commitMessage);
+    formData.append("rev_type", rev_type);
+    if (new_major_rev) {
+      formData.append("new_major_rev", new_major_rev);
+    }
+    const response = await fetch(`/files/${filename}/checkin`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "Unknown error during check-in");
     }
   } catch (error) {
-    debounceNotifications("Could not load user list.", "error");
+    debounceNotifications(`Check-in Error: ${error.message}`, "error");
   }
-  modal.classList.remove("hidden");
-
-  // Add tooltips to modal elements after it's shown
-  setTimeout(() => {
-    addModalTooltips();
-    updateTooltipVisibility();
-  }, 100);
 }
 
-function openDashboardModal() {
-  const modal = document.getElementById("dashboardModal");
-  if (modal) {
-    modal.classList.remove("hidden");
-    loadAndRenderDashboard().then(() => {
-      // Add tooltips to dashboard elements after content is loaded
-      setTimeout(() => {
-        addDashboardTooltips();
-        updateTooltipVisibility();
-      }, 200);
-    });
+async function adminOverride(filename) {
+  showConfirmModal(
+    `Are you sure you want to override the lock on '${filename}'?`,
+    async () => {
+      try {
+        const response = await fetch(`/files/${filename}/override`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ admin_user: currentUser }),
+        });
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || "Unknown error");
+        }
+      } catch (error) {
+        debounceNotifications(`Override Error: ${error.message}`, "error");
+      }
+    }
+  );
+}
+
+async function adminDeleteFile(filename) {
+  showConfirmModal(
+    `DANGER!<br><br>Are you sure you want to permanently delete '${filename}'?<br><br>This action cannot be undone.`,
+    async () => {
+      try {
+        const response = await fetch(`/files/${filename}/delete`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ admin_user: currentUser }),
+        });
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.detail || "An unknown error occurred.");
+        }
+      } catch (error) {
+        debounceNotifications(`Delete Error: ${error.message}`, "error");
+      }
+    }
+  );
+}
+
+async function revertCheckin(filename, commit_hash) {
+  showConfirmModal(
+    `Are you sure you want to revert the check-in for commit ${commit_hash.substring(
+      0,
+      7
+    )}?<br><br>This will create a NEW check-in that undoes the changes from this version.`,
+    async () => {
+      try {
+        const response = await fetch(`/files/${filename}/revert_commit`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            admin_user: currentUser,
+            commit_hash: commit_hash,
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.detail || "Failed to revert check-in.");
+        }
+        debounceNotifications(
+          result.message || "Check-in reverted successfully!",
+          "success"
+        );
+        document.querySelector(".js-history-modal")?.remove();
+        loadFiles();
+      } catch (error) {
+        debounceNotifications(`Revert Error: ${error.message}`, "error");
+      }
+    }
+  );
+}
+
+async function viewFileHistory(filename) {
+  try {
+    const response = await fetch(`/files/${filename}/history`);
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.detail || "Failed to load history");
+    }
+    const result = await response.json();
+    showFileHistoryModal(result);
+  } catch (error) {
+    debounceNotifications(`History Error: ${error.message}`, "error");
   }
 }
 
@@ -1748,21 +1582,13 @@ function showFileHistoryModal(historyData) {
                 <i class="fa-solid fa-xmark text-2xl"></i>
             </button>
         </div>
-        
         ${revisionFilterHtml}
-
     </div>
     <div id="historyListContainer" class="overflow-y-auto p-6 space-y-4">
         ${historyListHtml}
     </div>
   </div>`;
   document.body.appendChild(modal);
-
-  // Add tooltips to history modal elements
-  setTimeout(() => {
-    addHistoryModalTooltips();
-    updateTooltipVisibility();
-  }, 100);
 
   const historyItems = modal.querySelectorAll(".history-item");
   const fromInput = document.getElementById("revFilterFrom");
@@ -1799,303 +1625,6 @@ function showFileHistoryModal(historyData) {
   }
 }
 
-function populateAndShowMessagesModal(messages) {
-  const modal = document.getElementById("viewMessagesModal");
-  const container = document.getElementById("messageListContainer");
-  container.innerHTML = "";
-  messages.forEach((msg) => {
-    const msgEl = document.createElement("div");
-    msgEl.className = "p-4 bg-primary-100 dark:bg-mc-dark-accent rounded-lg";
-    msgEl.dataset.messageId = msg.id;
-    msgEl.innerHTML = `<div class="flex justify-between items-start"><div><p class="text-sm text-primary-700 dark:text-primary-300">${
-      msg.message
-    }</p><p class="text-xs text-primary-500 dark:text-primary-400 mt-2">From: <strong>${
-      msg.sender
-    }</strong> at ${formatDate(
-      msg.timestamp
-    )}</p></div><button class="ml-4 px-3 py-1 bg-green-600 text-white text-sm rounded-md hover:bg-green-700 js-ack-btn" data-message-id="${
-      msg.id
-    }">Acknowledge</button></div>`;
-    container.appendChild(msgEl);
-  });
-  modal.classList.remove("hidden");
-
-  // Add tooltips to message modal elements
-  setTimeout(() => {
-    addModalTooltips();
-    updateTooltipVisibility();
-  }, 100);
-}
-
-async function checkinFile(
-  filename,
-  file,
-  commitMessage,
-  rev_type,
-  new_major_rev
-) {
-  try {
-    const formData = new FormData();
-    formData.append("user", currentUser);
-    formData.append("file", file);
-    formData.append("commit_message", commitMessage);
-    formData.append("rev_type", rev_type);
-    if (new_major_rev) {
-      formData.append("new_major_rev", new_major_rev);
-    }
-    const response = await fetch(`/files/${filename}/checkin`, {
-      method: "POST",
-      body: formData,
-    });
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || "Unknown error during check-in");
-    }
-  } catch (error) {
-    debounceNotifications(`Check-in Error: ${error.message}`, "error");
-  }
-}
-
-async function adminOverride(filename) {
-  showConfirmModal(
-    `Are you sure you want to override the lock on '${filename}'?`,
-    async () => {
-      try {
-        const response = await fetch(`/files/${filename}/override`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ admin_user: currentUser }),
-        });
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.detail || "Unknown error");
-        }
-      } catch (error) {
-        debounceNotifications(`Override Error: ${error.message}`, "error");
-      }
-    }
-  );
-}
-
-async function adminDeleteFile(filename) {
-  showConfirmModal(
-    `DANGER!<br><br>Are you sure you want to permanently delete '${filename}'?<br><br>This action cannot be undone.`,
-    async () => {
-      try {
-        const response = await fetch(`/files/${filename}/delete`, {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ admin_user: currentUser }),
-        });
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.detail || "An unknown error occurred.");
-        }
-      } catch (error) {
-        debounceNotifications(`Delete Error: ${error.message}`, "error");
-      }
-    }
-  );
-}
-
-async function revertCheckin(filename, commit_hash) {
-  showConfirmModal(
-    `Are you sure you want to revert the check-in for commit ${commit_hash.substring(
-      0,
-      7
-    )}?<br><br>This will create a NEW check-in that undoes the changes from this version.`,
-    async () => {
-      try {
-        const response = await fetch(`/files/${filename}/revert_commit`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            admin_user: currentUser,
-            commit_hash: commit_hash,
-          }),
-        });
-        const result = await response.json();
-        if (!response.ok) {
-          throw new Error(result.detail || "Failed to revert check-in.");
-        }
-        debounceNotifications(
-          result.message || "Check-in reverted successfully!",
-          "success"
-        );
-        document.querySelector(".js-history-modal")?.remove(); // Close the history modal
-        loadFiles(); // Refresh file list to show the new state
-      } catch (error) {
-        debounceNotifications(`Revert Error: ${error.message}`, "error");
-      }
-    }
-  );
-}
-
-async function viewFileHistory(filename) {
-  try {
-    const response = await fetch(`/files/${filename}/history`);
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.detail || "Failed to load history");
-    }
-    const result = await response.json();
-    showFileHistoryModal(result);
-  } catch (error) {
-    debounceNotifications(`History Error: ${error.message}`, "error");
-  }
-}
-
-// function showFileHistoryModal(historyData) {
-//   const modal = document.createElement("div");
-//   modal.className =
-//     "fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100] js-history-modal";
-//   modal.addEventListener("click", (e) => {
-//     if (e.target === modal) modal.remove();
-//   });
-
-//   const allRevisions = Array.from(
-//     new Set(
-//       historyData.history
-//         .map((commit) => (commit.revision ? parseFloat(commit.revision) : null))
-//         .filter((rev) => rev !== null && !isNaN(rev))
-//     )
-//   ).sort((a, b) => a - b);
-
-//   let historyListHtml = "";
-//   if (historyData.history && historyData.history.length > 0) {
-//     historyData.history.forEach((commit, index) => {
-//       const revisionBadge = commit.revision
-//         ? `<span class="font-bold text-xs bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200 px-2 py-1 rounded-full">REV ${commit.revision}</span>`
-//         : "";
-
-//       let adminActions = "";
-//       const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
-
-//       if (
-//         currentConfig &&
-//         currentConfig.is_admin &&
-//         index === 0 &&
-//         historyData.history.length > 1
-//       ) {
-//         adminActions = `<button class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold admin-action-btn js-revert-btn ${adminBtnVisibility}" data-filename="${historyData.filename}" data-commit-hash="${commit.commit_hash}"><i class="fa-solid fa-undo"></i><span>Revert</span></button>`;
-//       }
-
-//       historyListHtml += `<div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95 history-item" data-revision="${
-//         commit.revision || ""
-//       }">
-//         <div class="flex justify-between items-start">
-//             <div>
-//                 <div class="flex items-center space-x-3 text-sm mb-2 flex-wrap gap-y-1">
-//                     <span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
-//                       0,
-//                       8
-//                     )}</span>
-//                     ${revisionBadge}
-//                     <span class="text-primary-600 dark:text-primary-300">${formatDate(
-//                       commit.date
-//                     )}</span>
-//                 </div>
-//                 <div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
-//                   commit.message
-//                 }</div>
-//                 <div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
-//                   commit.author_name
-//                 }</div>
-//             </div>
-//             <div class="flex-shrink-0 ml-4 flex items-center space-x-2">
-//                 ${adminActions}
-//                 <a href="/files/${historyData.filename}/versions/${
-//         commit.commit_hash
-//       }" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold">
-//                     <i class="fa-solid fa-file-arrow-down"></i><span>Download</span>
-//                 </a>
-//             </div>
-//         </div>
-//       </div>`;
-//     });
-//   } else {
-//     historyListHtml = `<p class="text-center text-primary-600 dark:text-primary-300">No version history available.</p>`;
-//   }
-
-//   const revisionFilterHtml =
-//     allRevisions.length > 1
-//       ? `
-//     <div class="flex items-center justify-center space-x-6 mt-4">
-//         <div class="flex items-center space-x-2">
-//             <label for="revFilterFrom" class="text-sm font-medium text-primary-800 dark:text-primary-200">From Rev:</label>
-//             <input type="number" id="revFilterFrom" value="${
-//               allRevisions[0]
-//             }" min="${allRevisions[0]}" max="${
-//           allRevisions[allRevisions.length - 1]
-//         }" step="0.1"
-//                    class="w-24 p-1 text-center font-semibold border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
-//         </div>
-//         <div class="flex items-center space-x-2">
-//             <label for="revFilterTo" class="text-sm font-medium text-primary-800 dark:text-primary-200">To Rev:</label>
-//             <input type="number" id="revFilterTo" value="${
-//               allRevisions[allRevisions.length - 1]
-//             }" min="${allRevisions[0]}" max="${
-//           allRevisions[allRevisions.length - 1]
-//         }" step="0.1"
-//                    class="w-24 p-1 text-center font-semibold border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
-//         </div>
-//     </div>
-//   `
-//       : "";
-
-//   modal.innerHTML = `<div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-4xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
-//     <div class="flex-shrink-0 p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent">
-//         <div class="flex justify-between items-center">
-//             <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3>
-//             <button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.js-history-modal').remove()">
-//                 <i class="fa-solid fa-xmark text-2xl"></i>
-//             </button>
-//         </div>
-
-//         ${revisionFilterHtml}
-
-//     </div>
-//     <div id="historyListContainer" class="overflow-y-auto p-6 space-y-4">
-//         ${historyListHtml}
-//     </div>
-//   </div>`;
-//   document.body.appendChild(modal);
-
-//   const historyItems = modal.querySelectorAll(".history-item");
-//   const fromInput = document.getElementById("revFilterFrom");
-//   const toInput = document.getElementById("revFilterTo");
-
-//   const applyFilters = () => {
-//     const minRev = parseFloat(fromInput.value) || allRevisions[0];
-//     const maxRev =
-//       parseFloat(toInput.value) || allRevisions[allRevisions.length - 1];
-
-//     if (minRev > maxRev) {
-//       return;
-//     }
-
-//     historyItems.forEach((item) => {
-//       const itemRevStr = item.dataset.revision;
-//       let revMatch = true;
-
-//       if (itemRevStr && itemRevStr !== "") {
-//         const itemRev = parseFloat(itemRevStr);
-//         revMatch = itemRev >= minRev && itemRev <= maxRev;
-//       } else {
-//         revMatch = false;
-//       }
-
-//       item.style.display = revMatch ? "" : "none";
-//     });
-//   };
-
-//   if (fromInput && toInput) {
-//     fromInput.addEventListener("input", applyFilters);
-//     toInput.addEventListener("input", applyFilters);
-//     applyFilters();
-//   }
-// }
-
 function showNewFileDialog() {
   const modal = document.getElementById("newUploadModal");
   const form = document.getElementById("newUploadForm");
@@ -2118,7 +1647,6 @@ function showNewFileDialog() {
 
   // Add tooltips after modal is shown
   setTimeout(() => {
-    addFileNamingHelper();
     updateTooltipVisibility();
   }, 100);
 }
@@ -2132,7 +1660,7 @@ function updateUploadTypeView() {
   if (selectedValue === "link") {
     fileContainer.classList.add("hidden");
     linkContainer.classList.remove("hidden");
-    populateMasterFileList(); // Populate the datalist when switching to link mode
+    populateMasterFileList();
   } else {
     fileContainer.classList.remove("hidden");
     linkContainer.classList.add("hidden");
@@ -2163,25 +1691,19 @@ async function uploadNewFile(formData) {
     const result = await response.json();
 
     if (!response.ok) {
-      // Parse specific error types for better user feedback
       let errorMessage = result.detail || "Upload failed";
 
-      // Handle specific error cases
       if (response.status === 409) {
-        // File already exists
         errorMessage = `❌ ${errorMessage}\n\nTip: Try a different filename or check if a similar file/link already exists.`;
       } else if (response.status === 404) {
-        // Master file not found (for links)
         errorMessage = `❌ ${errorMessage}\n\nTip: Make sure the master file exists and is spelled correctly.`;
       } else if (response.status === 400) {
-        // Validation errors
         errorMessage = `❌ ${errorMessage}`;
       }
 
       throw new Error(errorMessage);
     }
 
-    // Success handling
     debounceNotifications(
       `✅ ${result.message || "Action completed successfully!"}`,
       "success"
@@ -2198,18 +1720,14 @@ async function uploadNewFile(formData) {
     document.getElementById("uploadTypeFile").checked = true;
     updateUploadTypeView();
   } catch (error) {
-    // Enhanced error display
     let displayError = error.message;
 
-    // If it's a network error, provide helpful guidance
     if (error.name === "TypeError" || error.message.includes("fetch")) {
       displayError =
         "❌ Network Error: Could not connect to server.\n\nPlease check your connection and try again.";
     }
 
     debounceNotifications(displayError, "error");
-
-    // Keep the modal open so user can fix issues
     console.error("Upload error:", error);
   } finally {
     // Reset button state
@@ -2243,6 +1761,10 @@ async function openSendMessageModal() {
     debounceNotifications("Could not load user list.", "error");
   }
   modal.classList.remove("hidden");
+
+  setTimeout(() => {
+    updateTooltipVisibility();
+  }, 100);
 }
 
 async function sendMessage(recipient, message) {
@@ -2284,6 +1806,10 @@ function populateAndShowMessagesModal(messages) {
     container.appendChild(msgEl);
   });
   modal.classList.remove("hidden");
+
+  setTimeout(() => {
+    updateTooltipVisibility();
+  }, 100);
 }
 
 async function acknowledgeMessage(messageId) {
@@ -2418,49 +1944,6 @@ function formatDate(dateString) {
   }
 }
 
-function handleFormSubmission(e) {
-  e.preventDefault();
-
-  const form = e.target;
-  const formData = new FormData();
-  formData.append("user", currentUser);
-
-  const description = form.querySelector("#newFileDescription").value.trim();
-  const rev = form.querySelector("#newFileRev").value.trim();
-  const uploadType =
-    form.querySelector('input[name="uploadType"]:checked')?.value || "file";
-
-  // Client-side validation
-  const validation = validateUploadForm(form);
-
-  if (!validation.isValid) {
-    debounceNotifications(
-      `Please fix the following errors:\n• ${validation.errors.join("\n• ")}`,
-      "error"
-    );
-    return;
-  }
-
-  // Add common fields
-  formData.append("description", description);
-  formData.append("rev", rev);
-
-  if (uploadType === "link") {
-    const newLinkFilename = form.querySelector("#newLinkFilename").value.trim();
-    const linkToMaster = form.querySelector("#linkToMaster").value.trim();
-
-    formData.append("is_link_creation", "true");
-    formData.append("new_link_filename", newLinkFilename);
-    formData.append("link_to_master", linkToMaster);
-  } else {
-    const fileInput = form.querySelector("#newFileUpload");
-    formData.append("is_link_creation", "false");
-    formData.append("file", fileInput.files[0]);
-  }
-
-  uploadNewFile(formData);
-}
-
 function formatDuration(totalSeconds) {
   if (totalSeconds < 60) {
     return `${Math.round(totalSeconds)}s`;
@@ -2490,9 +1973,7 @@ async function loadAndRenderDashboard() {
 
   activeCheckoutsContainer.innerHTML = loadingSpinner;
 
-  // --- NEW: Admin-only logic for the activity feed ---
   if (currentConfig && currentConfig.is_admin) {
-    // Admin view: show both columns
     activityFeedContainer.style.display = "flex";
     activeCheckoutsContainer.classList.remove("w-full");
     activeCheckoutsContainer.classList.add("md:w-1/2");
@@ -2503,7 +1984,6 @@ async function loadAndRenderDashboard() {
       loadAndRenderActivityFeed(),
     ]);
   } else {
-    // Regular user view: hide activity feed and expand active checkouts
     activityFeedContainer.innerHTML = "";
     activityFeedContainer.style.display = "none";
     activeCheckoutsContainer.classList.remove("md:w-1/2");
@@ -2567,7 +2047,6 @@ async function loadAndRenderActivityFeed() {
     if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
     const data = await response.json();
 
-    // --- NEW: Create user filter dropdown ---
     const users = Array.from(
       new Set(data.activities.map((act) => act.user))
     ).sort();
@@ -2636,7 +2115,6 @@ async function loadAndRenderActivityFeed() {
             ${activityListHtml}
         `;
 
-    // --- NEW: Add event listener for the filter ---
     const userFilter = document.getElementById("activityUserFilter");
     const activityItems = container.querySelectorAll(".activity-item");
     userFilter.addEventListener("change", () => {
@@ -2658,7 +2136,11 @@ function openDashboardModal() {
   const modal = document.getElementById("dashboardModal");
   if (modal) {
     modal.classList.remove("hidden");
-    loadAndRenderDashboard();
+    loadAndRenderDashboard().then(() => {
+      setTimeout(() => {
+        updateTooltipVisibility();
+      }, 200);
+    });
   }
 }
 
@@ -2678,10 +2160,8 @@ function validateUploadForm(form) {
   const uploadType =
     form.querySelector('input[name="uploadType"]:checked')?.value || "file";
 
-  // Clear previous validation
   clearFormValidation();
 
-  // Description validation
   const descInput = form.querySelector("#newFileDescription");
   if (!description) {
     errors.push("Description is required");
@@ -2695,7 +2175,6 @@ function validateUploadForm(form) {
     addValidationClass(descInput, true);
   }
 
-  // Revision validation
   const revInput = form.querySelector("#newFileRev");
   if (!rev) {
     errors.push("Revision is required");
@@ -2735,7 +2214,6 @@ function validateUploadForm(form) {
       addValidationClass(linkMasterInput, true);
     }
 
-    // Check if user is trying to link to themselves
     if (newLinkFilename === linkToMaster) {
       errors.push("A link cannot point to itself");
       addValidationClass(linkNameInput, false);
@@ -2751,7 +2229,6 @@ function validateUploadForm(form) {
     } else {
       addValidationClass(fileInput, true);
 
-      // Additional file validation
       const file = fileInput.files[0];
       const maxSize = 100 * 1024 * 1024; // 100MB
       if (file.size > maxSize) {
@@ -2768,7 +2245,6 @@ function validateUploadForm(form) {
 function addValidationClass(element, isValid) {
   if (!element) return;
 
-  // Remove existing classes
   element.classList.remove(
     "border-red-500",
     "border-green-500",
@@ -2832,18 +2308,16 @@ function populateMasterFileList() {
   const datalist = document.getElementById("masterFileList");
   if (!datalist) return;
 
-  datalist.innerHTML = ""; // Clear old options
+  datalist.innerHTML = "";
 
-  // Create a flat list of all physical files (not links)
   if (!groupedFiles || Object.keys(groupedFiles).length === 0) {
-    return; // No files available
+    return;
   }
 
   const physicalFiles = Object.values(groupedFiles)
     .flat()
-    .filter((file) => !file.is_link); // Only include real files, not links
+    .filter((file) => !file.is_link);
 
-  // Use a Set to ensure unique filenames
   const uniqueFilenames = new Set(physicalFiles.map((file) => file.filename));
 
   uniqueFilenames.forEach((filename) => {
@@ -2853,7 +2327,6 @@ function populateMasterFileList() {
   });
 }
 
-// -- New Confirmation Modal Function --
 function showConfirmModal(message, onConfirm, onCancel = () => {}) {
   message = message.replace(/\n/g, "<br>");
   const modal = document.createElement("div");
@@ -2891,12 +2364,12 @@ function showConfirmModal(message, onConfirm, onCancel = () => {}) {
     }
   });
 
-  // Add tooltips if enabled
   setTimeout(() => {
     updateTooltipVisibility();
   }, 100);
 }
 
+// -- DOM Content Loaded Event Handler --
 document.addEventListener("DOMContentLoaded", function () {
   applyThemePreference();
   loadConfig();
@@ -2904,10 +2377,10 @@ document.addEventListener("DOMContentLoaded", function () {
 
   // Initialize tooltip system
   initTooltipSystem();
-  setupNewUploadModal();
 
   setTimeout(() => connectWebSocket(), 1000);
 
+  // Revision type radio button handlers
   document.querySelectorAll('input[name="rev_type"]').forEach((radio) => {
     radio.addEventListener("change", (e) => {
       const majorRevField = document.getElementById("newMajorRevInput");
@@ -2927,6 +2400,14 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   });
 
+  // Upload type radio button handlers
+  const uploadTypeRadios = document.querySelectorAll(
+    'input[name="uploadType"]'
+  );
+  uploadTypeRadios.forEach((radio) => {
+    radio.addEventListener("change", updateUploadTypeView);
+  });
+
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && ws && ws.readyState !== WebSocket.OPEN) {
       if (reconnectAttempts < maxReconnectAttempts) connectWebSocket();
@@ -2936,6 +2417,7 @@ document.addEventListener("DOMContentLoaded", function () {
   window.addEventListener("beforeunload", () => disconnectWebSocket());
   window.manualRefresh = manualRefresh;
 
+  // Fallback refresh for when WebSocket is not working
   setInterval(async () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       try {
@@ -2996,22 +2478,30 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
+  // Main click event listener for file actions
   document.addEventListener("click", (e) => {
     const fileListButton = e.target.closest("#fileList button, #fileList a");
     if (fileListButton && fileListButton.dataset.filename) {
       const filename = fileListButton.dataset.filename;
-      if (fileListButton.classList.contains("js-checkout-btn"))
+
+      if (fileListButton.classList.contains("js-checkout-btn")) {
         checkoutFile(filename);
-      else if (fileListButton.classList.contains("js-checkin-btn"))
+      } else if (fileListButton.classList.contains("js-checkin-btn")) {
         showCheckinDialog(filename);
-      else if (fileListButton.classList.contains("js-cancel-checkout-btn"))
+      } else if (fileListButton.classList.contains("js-cancel-checkout-btn")) {
         cancelCheckout(filename);
-      else if (fileListButton.classList.contains("js-override-btn"))
+      } else if (fileListButton.classList.contains("js-override-btn")) {
         adminOverride(filename);
-      else if (fileListButton.classList.contains("js-delete-btn"))
+      } else if (fileListButton.classList.contains("js-delete-btn")) {
         adminDeleteFile(filename);
-      else if (fileListButton.classList.contains("js-history-btn"))
+      } else if (fileListButton.classList.contains("js-history-btn")) {
         viewFileHistory(filename);
+      } else if (fileListButton.classList.contains("js-view-master-btn")) {
+        const masterFile = fileListButton.dataset.masterFile;
+        if (masterFile) {
+          viewMasterFile(masterFile);
+        }
+      }
     }
 
     const revertButton = e.target.closest(".js-revert-btn");
@@ -3021,6 +2511,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   });
 
+  // Check-in form submission
   const checkinForm = document.getElementById("checkinForm");
   checkinForm.addEventListener("submit", function (e) {
     e.preventDefault();
@@ -3064,8 +2555,8 @@ document.addEventListener("DOMContentLoaded", function () {
       document.getElementById("checkinModal").classList.add("hidden")
     );
 
+  // New upload form submission
   const newUploadForm = document.getElementById("newUploadForm");
-  // Replace your existing 'newUploadForm.addEventListener("submit", ...)' with this
   newUploadForm.addEventListener("submit", function (e) {
     e.preventDefault();
     const formData = new FormData();
@@ -3079,7 +2570,6 @@ document.addEventListener("DOMContentLoaded", function () {
       'input[name="uploadType"]:checked'
     ).value;
 
-    // --- NEW VALIDATION LOGIC ---
     if (!description || !rev) {
       debounceNotifications(
         "Please fill out the Description and Revision fields.",
@@ -3105,7 +2595,6 @@ document.addEventListener("DOMContentLoaded", function () {
       formData.append("new_link_filename", newLinkFilename);
       formData.append("link_to_master", linkToMaster);
     } else {
-      // 'file' upload type
       const fileInput = document.getElementById("newFileUpload");
       if (fileInput.files.length === 0) {
         debounceNotifications("Please select a file to upload.", "error");
@@ -3115,12 +2604,10 @@ document.addEventListener("DOMContentLoaded", function () {
       formData.append("file", fileInput.files[0]);
     }
 
-    // If all validation passes, proceed
     formData.append("description", description);
     formData.append("rev", rev);
 
     uploadNewFile(formData);
-    document.getElementById("newUploadModal").classList.add("hidden");
   });
 
   document
@@ -3129,12 +2616,14 @@ document.addEventListener("DOMContentLoaded", function () {
       document.getElementById("newUploadModal").classList.add("hidden")
     );
 
+  // Send message form
   const sendMessageForm = document.getElementById("sendMessageForm");
   document
     .getElementById("cancelSendMessage")
     .addEventListener("click", () =>
       document.getElementById("sendMessageModal").classList.add("hidden")
     );
+
   sendMessageForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const recipient = document.getElementById("recipientUserSelect").value;
@@ -3151,6 +2640,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   });
 
+  // Message acknowledgment
   const messageListContainer = document.getElementById("messageListContainer");
   messageListContainer.addEventListener("click", (e) => {
     const ackButton = e.target.closest(".js-ack-btn");
@@ -3160,6 +2650,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   });
 
+  // Configuration form
   document
     .getElementById("configForm")
     .addEventListener("submit", async function (e) {

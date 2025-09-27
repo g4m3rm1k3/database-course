@@ -53,7 +53,8 @@ ALLOWED_FILE_TYPES = {
             b'\x89HDF\x01\x02\x03\x04'  # Example signature for the HLE version
         ]
     },
-    ".vnc": {"signature": None}
+    ".vnc": {"signature": None},
+    ".emcam": {"signature": None},
 }
 
 # --- Pydantic Data Models ---
@@ -943,7 +944,8 @@ def find_file_path(filename: str) -> Optional[str]:
         for file_data in git_repo.list_files("*.link"):
             link_name = file_data['name'].replace('.link', '')
             if link_name == filename:
-                return filename  # Return the virtual filename for links
+                # Return the virtual filename for links (NOT the .link path)
+                return filename
 
     return None
 
@@ -960,7 +962,8 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
 
     # 1. Get all real .mcam files and map them by name for quick lookup
     mcam_files_raw = git_repo.list_files("*.mcam")
-    master_files_map = {file_data['name']                        : file_data for file_data in mcam_files_raw}
+    master_files_map = {file_data['name']
+        : file_data for file_data in mcam_files_raw}
 
     # This list will hold both real and virtual (linked) files
     all_files_to_process = list(master_files_map.values())
@@ -978,17 +981,19 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
             master_filename = link_content.get("master_file")
 
             if master_filename and master_filename in master_files_map:
-                master_file_data = master_files_map[master_filename]
+                # DON'T copy from master - create a clean virtual file entry
+                virtual_file_name = link_file_data['name'].replace('.link', '')
 
-                # Create a virtual file entry that inherits from its master
-                virtual_file = master_file_data.copy()
-
-                # Overwrite key properties to represent the link itself
-                virtual_file['name'] = link_file_data['name'].replace(
-                    '.link', '')
-                virtual_file['path'] = virtual_file['name']  # Path is virtual
-                virtual_file['is_link'] = True
-                virtual_file['master_file'] = master_filename
+                # Create a minimal virtual file entry with its own properties
+                virtual_file = {
+                    'name': virtual_file_name,
+                    'path': virtual_file_name,  # Virtual path
+                    'size': 0,  # Links have no size
+                    # Use link file's timestamp
+                    'modified_at': link_file_data['modified_at'],
+                    'is_link': True,
+                    'master_file': master_filename
+                }
 
                 all_files_to_process.append(virtual_file)
         except Exception as e:
@@ -1001,9 +1006,13 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
         'config_manager').config.gitlab.get('username', 'demo_user')
 
     for file_data in all_files_to_process:
-        # For metadata and locks, linked files should use their master's path
-        path_for_meta = file_data['master_file'] if file_data.get(
-            'is_link') else file_data['path']
+        # CRITICAL FIX: For linked files, use the LINK's metadata, not the master's
+        if file_data.get('is_link'):
+            # Use the link's own name for metadata lookup
+            path_for_meta = file_data['name']  # Use link name, not master file
+        else:
+            # Regular files use their actual path
+            path_for_meta = file_data['path']
 
         meta_path = git_repo.repo_path / f"{path_for_meta}.meta.json"
         description, revision = None, None
@@ -1017,6 +1026,7 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
 
         file_data['description'], file_data['revision'] = description, revision
 
+        # CRITICAL FIX: For lock info, also use the link's name for linked files
         lock_info = metadata_manager.get_lock_info(path_for_meta)
         status, locked_by, locked_at = "unlocked", None, None
         if lock_info:
@@ -1529,23 +1539,40 @@ async def checkout_file(filename: str, request: CheckoutRequest):
         if not git_repo or not metadata_manager:
             raise HTTPException(
                 status_code=500, detail="Repository not initialized.")
+
         git_repo.pull()
+
+        # 🔒 Prevent checkout of link files
+        link_file_path = f"{filename}.link"
+        is_link = (git_repo.repo_path / link_file_path).exists()
+        if is_link:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot checkout link files. Use 'View Master' to access the source file."
+            )
+
         file_path = find_file_path(filename)
         if not file_path:
             raise HTTPException(status_code=404, detail="File not found")
+
+        # 🔑 Check existing lock
         existing_lock = metadata_manager.get_lock_info(file_path)
         if existing_lock:
             if existing_lock.get('user') == request.user:
+                # Refresh existing lock
                 refreshed = metadata_manager.refresh_lock(
                     file_path, request.user)
                 if not refreshed:
                     raise HTTPException(
                         status_code=500, detail="Failed to refresh existing lock.")
+
                 relative_lock_path_str = str(refreshed.relative_to(
                     git_repo.repo_path)).replace(os.sep, '/')
                 commit_message = f"REFRESH LOCK: {filename} by {request.user}"
+
                 success = git_repo.commit_and_push(
-                    [relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com")
+                    [relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com"
+                )
                 if success:
                     await handle_successful_git_operation()
                     return JSONResponse({"status": "success", "message": "Lock refreshed."})
@@ -1555,21 +1582,29 @@ async def checkout_file(filename: str, request: CheckoutRequest):
             else:
                 raise HTTPException(
                     status_code=409, detail="File is already locked by another user.")
+
+        # 🆕 Create new lock
         lock_file_path = metadata_manager.create_lock(file_path, request.user)
         if not lock_file_path:
             raise HTTPException(
                 status_code=500, detail="Failed to create lock file.")
+
         relative_lock_path_str = str(lock_file_path.relative_to(
             git_repo.repo_path)).replace(os.sep, '/')
         commit_message = f"LOCK: {filename} by {request.user}"
+
         success = git_repo.commit_and_push(
-            [relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com")
+            [relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com"
+        )
         if success:
             await handle_successful_git_operation()
             return JSONResponse({"status": "success"})
+
+        # Roll back lock if push fails
         metadata_manager.release_lock(file_path)
         raise HTTPException(
             status_code=500, detail="Failed to push lock file.")
+
     except Exception as e:
         logger.error(
             f"An unexpected error occurred in checkout_file: {e}", exc_info=True)
@@ -1579,6 +1614,16 @@ async def checkout_file(filename: str, request: CheckoutRequest):
 
 @app.post("/files/{filename}/checkin")
 async def checkin_file(filename: str, user: str = Form(...), commit_message: str = Form(...), rev_type: str = Form(...), new_major_rev: Optional[str] = Form(None), file: UploadFile = File(...)):
+    # Check if this is a link file first
+    git_repo = app_state.get('git_repo')
+    if git_repo:
+        link_file_path = f"{filename}.link"
+        is_link = (git_repo.repo_path / link_file_path).exists()
+
+        if is_link:
+            raise HTTPException(
+                status_code=400, detail="Cannot check in link files. Links are virtual placeholders.")
+
     if not await is_valid_file_type(file):
         raise HTTPException(
             status_code=400, detail=f"Invalid file type. The uploaded file is not a valid {Path(filename).suffix} file.")
@@ -1980,17 +2025,11 @@ async def get_file_history(filename: str):
         is_link = (git_repo.repo_path / link_file_path).exists()
 
         if is_link:
-            # For link files, show the history of the .link file and its metadata
-            history = git_repo.get_file_history(link_file_path, limit=10)
-            # Also get metadata history
+            # For link files, show the history of the LINK's metadata only
+            # We don't want the .link file history since it rarely changes
             meta_history = git_repo.get_file_history(
                 f"{filename}.meta.json", limit=10)
-
-            # Combine and sort by date
-            combined_history = history + meta_history
-            combined_history.sort(key=lambda x: x['date'], reverse=True)
-
-            return {"filename": f"{filename} (Link)", "history": combined_history[:10]}
+            return {"filename": f"{filename} (Link)", "history": meta_history}
         else:
             # Regular file logic
             file_path = find_file_path(filename)

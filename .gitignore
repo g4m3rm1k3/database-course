@@ -9,6 +9,7 @@
 /node_modules
 /build
 /dist
+./app_data
 # In your main .gitignore file
 
 # --- Add these lines at the very bottom ---
