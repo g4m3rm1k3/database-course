@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mastercam GitLab Interface</title>
+    <link rel="stylesheet" href="/static/css/tailwind.css" />
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
+    />
+    <style>
+      .selected-upload-type {
+        border-color: #fbbf24 !important; /* Corresponds to Tailwind 'border-accent' */
+        color: #fbbf24 !important; /* Corresponds to Tailwind 'text-accent' */
+      }
+      /* Custom validation classes using Tailwind colors */
+      .invalid-input {
+        @apply border-red-500 ring-red-500 ring-2 ring-opacity-25;
+      }
+
+      .valid-input {
+        @apply border-green-500 ring-green-500 ring-2 ring-opacity-25;
+      }
+
+      /* Ensure amber colors work consistently */
+      .text-accent {
+        @apply text-amber-500;
+      }
+
+      .bg-accent {
+        @apply bg-amber-500;
+      }
+
+      .border-accent {
+        @apply border-amber-500;
+      }
+
+      .from-accent {
+        @apply from-amber-500;
+      }
+
+      .to-accent-hover {
+        @apply to-amber-600;
+      }
+
+      /* File input button styling */
+      input[type="file"]::file-selector-button {
+        @apply mr-4 py-2 px-4 rounded-md border-0 text-sm font-semibold bg-gradient-to-r from-amber-400 to-amber-500 text-gray-800 cursor-pointer transition-colors;
+      }
+
+      input[type="file"]::file-selector-button:hover {
+        @apply from-amber-500 to-amber-600;
+      }
+    </style>
+  </head>
+  <body
+    class="font-sans bg-mc-light-bg dark:bg-mc-dark-bg text-mc-text-light dark:text-mc-text-dark flex flex-col items-center p-4 min-h-screen transition-colors duration-300"
+  >
+    <div class="container mx-auto max-w-7xl">
+      <div
+        class="bg-white dark:bg-mc-dark-bg rounded-xl shadow-lg p-6 mb-6 bg-gradient-to-b from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent"
+      >
+        <h1 class="text-3xl sm:text-4xl font-bold text-center text-accent">
+          MasterCam PDM
+        </h1>
+        <p class="text-center text-primary-600 dark:text-primary-300 mt-2">
+          CAM file management
+        </p>
+      </div>
+      <div
+        class="bg-white dark:bg-mc-dark-bg rounded-xl shadow-lg p-4 mb-6 flex flex-col sm:flex-row justify-between items-center space-y-3 sm:space-y-0 bg-opacity-95"
+      >
+        <div class="flex items-center space-x-2">
+          <div
+            id="connectionStatus"
+            class="w-3 h-3 rounded-full animate-pulse bg-green-600 dark:bg-green-400"
+          ></div>
+          <span
+            id="connectionText"
+            class="text-sm text-primary-800 dark:text-primary-200"
+            >Connected</span
+          >
+        </div>
+        <div class="flex items-center space-x-2">
+          <i
+            class="fa-solid fa-user text-primary-600 dark:text-primary-300"
+          ></i>
+          <span class="text-sm text-primary-800 dark:text-primary-200"
+            >User:
+            <span id="currentUser" class="font-semibold text-accent"
+              >demo_user</span
+            ></span
+          >
+        </div>
+        <div class="flex items-center space-x-2">
+          <i
+            class="fa-solid fa-code-branch text-primary-600 dark:text-primary-300"
+          ></i>
+          <span class="text-sm text-primary-800 dark:text-primary-200"
+            >Repository:
+            <span id="repoStatus" class="font-semibold text-accent"
+              >Ready</span
+            ></span
+          >
+        </div>
+      </div>
+      <div
+        class="bg-white dark:bg-mc-dark-bg rounded-xl shadow-lg p-6 overflow-hidden bg-opacity-95"
+      >
+        <div
+          class="flex flex-col sm:flex-row justify-between items-center mb-6 space-y-4 sm:space-y-0"
+        >
+          <!-- ** UPDATED SEARCH FIELD WITH CLEAR BUTTON ** -->
+          <div class="relative flex-1 w-full sm:max-w-md">
+            <i
+              class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-primary-500 dark:text-primary-400 pointer-events-none"
+            ></i>
+            <input
+              type="text"
+              id="searchInput"
+              placeholder="Search files..."
+              class="w-full px-4 pl-10 pr-10 py-2 border border-primary-400 dark:border-mc-dark-accent rounded-full focus:outline-none focus:ring-2 focus:ring-accent bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 transition-colors bg-opacity-90"
+            />
+            <button
+              id="clearSearchBtn"
+              class="absolute right-4 top-1/2 -translate-y-1/2 text-primary-500 hover:text-primary-800 dark:text-primary-400 dark:hover:text-primary-100 hidden"
+            >
+              <i class="fa-solid fa-xmark"></i>
+            </button>
+          </div>
+          <div id="headerActions" class="flex items-center space-x-2">
+            <button
+              id="globalAdminToggle"
+              class="hidden flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold bg-gradient-to-r from-gray-200 to-gray-300 text-gray-800 dark:from-gray-600 dark:to-gray-700 dark:text-gray-100"
+            >
+              <i class="fa-solid fa-user-shield"></i>
+              <span>Admin Mode</span>
+            </button>
+            <button
+              id="sendMessageBtn"
+              class="hidden flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-purple-600 to-purple-700 text-white dark:from-purple-500 dark:to-purple-600 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold"
+            >
+              <i class="fa-solid fa-envelope"></i>
+              <span>Send Message</span>
+            </button>
+            <button
+              id="dashboardBtn"
+              class="flex items-center space-x-2 px-4 py-2 bg-gradient-to-r from-teal-500 to-cyan-600 text-white rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold"
+            >
+              <i class="fa-solid fa-chart-line"></i>
+              <span>Dashboard</span>
+            </button>
+            <button
+              id="collapseAllBtn"
+              class="flex items-center space-x-2 px-4 py-2 bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-600 dark:text-gray-100 dark:hover:bg-gray-500 rounded-md transition-colors text-sm font-semibold"
+            >
+              <i class="fa-solid fa-compress"></i>
+              <span>Collapse All</span>
+            </button>
+            <button
+              class="flex items-center space-x-2 px-6 py-2 bg-gradient-to-r from-mc-light-accent to-primary-300 dark:from-mc-dark-accent dark:to-primary-700 text-primary-800 dark:text-primary-200 rounded-full hover:bg-opacity-80 transition-colors"
+              onclick="toggleConfigPanel()"
+            >
+              <i class="fa-solid fa-gear"></i>
+              <span>Settings</span>
+            </button>
+          </div>
+        </div>
+        <div
+          id="fileList"
+          class="divide-y divide-primary-300 dark:divide-mc-dark-accent"
+        >
+          <div
+            class="flex justify-center items-center py-12 text-primary-600 dark:text-primary-300"
+          >
+            <div
+              class="animate-spin rounded-full h-12 w-12 border-4 border-primary-400 dark:border-mc-dark-accent border-t-accent"
+            ></div>
+          </div>
+        </div>
+        <div id="fileListContainer">
+          <div
+            id="fileList"
+            class="divide-y divide-primary-300 dark:divide-mc-dark-accent"
+          ></div>
+        </div>
+
+        <div id="dashboardView" class="hidden"></div>
+      </div>
+    </div>
+
+    <div
+      id="configPanel"
+      class="fixed inset-y-0 right-0 w-full max-w-md transform translate-x-full transition-transform duration-300 bg-white dark:bg-mc-dark-bg shadow-lg p-6 z-50 overflow-y-auto bg-opacity-95"
+    >
+      <div
+        class="flex justify-between items-center pb-4 mb-4 border-b border-primary-300 dark:border-mc-dark-accent"
+      >
+        <h3 class="text-2xl font-semibold text-primary-900 dark:text-accent">
+          Settings
+        </h3>
+        <button
+          class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent"
+          onclick="toggleConfigPanel()"
+        >
+          <i class="fa-solid fa-xmark text-2xl"></i>
+        </button>
+      </div>
+      <form id="configForm" class="space-y-4">
+        <div>
+          <label
+            for="gitlabUrl"
+            class="block text-sm font-medium text-primary-800 dark:text-primary-200"
+            >GitLab URL</label
+          >
+          <input
+            type="url"
+            id="gitlabUrl"
+            required
+            class="mt-1 block w-full rounded-md border-primary-400 dark:border-mc-dark-accent shadow-sm focus:border-accent dark:focus:border-accent focus:ring focus:ring-accent focus:ring-opacity-50 bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 bg-opacity-90"
+          />
+        </div>
+        <div>
+          <label
+            for="projectId"
+            class="block text-sm font-medium text-primary-800 dark:text-primary-200"
+            >Project ID</label
+          >
+          <input
+            type="text"
+            id="projectId"
+            required
+            class="mt-1 block w-full rounded-md border-primary-400 dark:border-mc-dark-accent shadow-sm focus:border-accent dark:focus:border-accent focus:ring focus:ring-accent focus:ring-opacity-50 bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 bg-opacity-90"
+          />
+        </div>
+        <div>
+          <label
+            for="username"
+            class="block text-sm font-medium text-primary-800 dark:text-primary-200"
+            >Username</label
+          >
+          <input
+            type="text"
+            id="username"
+            autocomplete="username"
+            required
+            class="mt-1 block w-full rounded-md border-primary-400 dark:border-mc-dark-accent shadow-sm focus:border-accent dark:focus:border-accent focus:ring focus:ring-accent focus:ring-opacity-50 bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 bg-opacity-90"
+          />
+        </div>
+        <div>
+          <label
+            for="token"
+            class="block text-sm font-medium text-primary-800 dark:text-primary-200"
+            >Access Token</label
+          >
+          <input
+            type="password"
+            id="token"
+            autocomplete="current-password"
+            class="mt-1 block w-full rounded-md border-primary-400 dark:border-mc-dark-accent shadow-sm focus:border-accent dark:focus:border-accent focus:ring focus:ring-accent focus:ring-opacity-50 bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 bg-opacity-90"
+          />
+        </div>
+        <button
+          type="submit"
+          class="w-full flex justify-center items-center space-x-2 py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gradient-to-r from-accent to-accent-hover hover:bg-opacity-80 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-accent"
+        >
+          <i class="fa-solid fa-floppy-disk"></i>
+          <span>Save Configuration</span>
+        </button>
+      </form>
+      <div
+        class="mt-8 pt-4 border-t border-primary-300 dark:border-mc-dark-accent"
+      >
+        <h4
+          class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-2"
+        >
+          Current Status
+        </h4>
+        <p class="text-sm text-primary-700 dark:text-primary-300">
+          <strong>Status:</strong>
+          <span id="configStatusText" class="font-medium text-accent"
+            >Not configured</span
+          >
+        </p>
+        <p class="text-sm text-primary-700 dark:text-primary-300 mt-1">
+          <strong>Repository:</strong>
+          <span id="configRepoText" class="font-medium text-accent"
+            >Not available</span
+          >
+        </p>
+      </div>
+    </div>
+
+    <div class="fixed bottom-4 right-4 flex flex-col items-end space-y-2 z-40">
+      <button
+        class="bg-gradient-to-r from-accent to-accent-hover text-white rounded-full shadow-lg p-2 hover:bg-opacity-80 transition-colors h-12 w-12 flex items-center justify-center"
+        title="Upload New File"
+        onclick="showNewFileDialog()"
+      >
+        <i class="fa-solid fa-cloud-arrow-up text-lg"></i>
+      </button>
+      <button
+        class="bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-full shadow-lg p-2 hover:bg-opacity-80 transition-colors h-12 w-12 flex items-center justify-center"
+        title="Refresh"
+        onclick="manualRefresh()"
+      >
+        <i class="fa-solid fa-arrows-rotate text-lg"></i>
+      </button>
+      <button
+        class="bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-full shadow-lg p-2 hover:bg-opacity-80 transition-colors h-12 w-12 flex items-center justify-center"
+        title="Toggle Dark Mode"
+        onclick="toggleDarkMode()"
+      >
+        <i class="fa-solid fa-moon text-lg"></i>
+      </button>
+    </div>
+
+    <input
+      id="newFileUploadInput"
+      name="file"
+      type="file"
+      required
+      class="hidden"
+      accept=".mcam,.vnc"
+      class="w-full text-sm text-primary-600 dark:text-primary-300 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-accent file:to-accent-hover file:text-white hover:file:bg-opacity-80"
+    />
+
+    <div
+      id="checkinModal"
+      class="fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100] hidden"
+    >
+      <div
+        class="bg-white dark:bg-mc-dark-bg rounded-xl shadow-lg p-6 w-full max-w-lg bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent"
+      >
+        <form id="checkinForm">
+          <h3
+            id="checkinModalTitle"
+            class="text-xl font-semibold text-primary-900 dark:text-accent mb-4"
+          >
+            Check In File
+          </h3>
+          <div class="mb-4">
+            <label
+              for="commitMessage"
+              class="block text-sm font-medium text-primary-800 dark:text-primary-200 mb-1"
+              >Describe your changes:</label
+            >
+            <textarea
+              id="commitMessage"
+              name="commitMessage"
+              rows="3"
+              required
+              class="w-full p-2 border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent bg-opacity-90"
+            ></textarea>
+          </div>
+          <div class="mb-4">
+            <label
+              for="checkinFileUpload"
+              class="block text-sm font-medium text-primary-800 dark:text-primary-200 mb-1"
+              >Upload the updated file:</label
+            >
+            <input
+              id="checkinFileUpload"
+              name="file"
+              type="file"
+              required
+              class="w-full text-sm text-primary-600 dark:text-primary-300 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-blue-600 file:to-blue-700 file:text-white hover:file:bg-opacity-80 dark:file:bg-gradient-to-r dark:file:from-blue-500 dark:file:to-blue-600 dark:file:text-white"
+            />
+          </div>
+          <div class="mb-6">
+            <label
+              class="block text-sm font-medium text-primary-800 dark:text-primary-200 mb-2"
+              >Revision Increment:</label
+            >
+            <div class="space-y-2">
+              <label class="flex items-center space-x-2">
+                <input
+                  type="radio"
+                  name="rev_type"
+                  value="minor"
+                  checked
+                  class="text-accent focus:ring-accent"
+                />
+                <span class="text-primary-800 dark:text-primary-200"
+                  >Minor (e.g., 1.1 -> 1.2)</span
+                >
+              </label>
+              <div class="flex items-center space-x-2">
+                <label class="flex items-center space-x-2">
+                  <input
+                    type="radio"
+                    name="rev_type"
+                    value="major"
+                    class="text-accent focus:ring-accent"
+                  />
+                  <span class="text-primary-800 dark:text-primary-200"
+                    >Major:</span
+                  >
+                </label>
+                <input
+                  type="text"
+                  id="newMajorRevInput"
+                  placeholder="e.g., 5"
+                  pattern="[0-9]*"
+                  disabled
+                  class="w-24 p-1 border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                <span class="text-sm text-primary-600 dark:text-primary-400"
+                  >(Set a specific major rev, e.g., 5.0)</span
+                >
+              </div>
+            </div>
+          </div>
+          <div class="flex justify-end space-x-4">
+            <button
+              type="button"
+              id="cancelCheckin"
+              class="px-4 py-2 rounded-md font-semibold bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-600 dark:text-gray-100 dark:hover:bg-gray-500"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              class="px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 text-white dark:from-blue-500 dark:to-blue-600 rounded-md hover:bg-opacity-80 font-semibold"
+            >
+              Submit Check-in
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div
+      id="newUploadModal"
+      class="fixed inset-0 bg-gray-900 bg-opacity-80 flex items-center justify-center p-4 z-[100] hidden"
+    >
+      <div
+        class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 w-full max-w-lg"
+      >
+        <form id="newUploadForm" class="space-y-4">
+          <h3 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+            Add New File
+          </h3>
+
+          <!-- Upload Type Selection with proper yellow accent -->
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <input
+                type="radio"
+                id="uploadTypeFile"
+                name="uploadType"
+                value="file"
+                class="hidden peer"
+                checked
+              />
+              <label
+                for="uploadTypeFile"
+                class="block p-3 text-center rounded-lg border-2 border-gray-300 dark:border-gray-600 cursor-pointer peer-checked:border-amber-400 peer-checked:text-amber-600 peer-checked:bg-amber-50 dark:peer-checked:bg-amber-900/20 dark:peer-checked:border-amber-400 dark:peer-checked:text-amber-400 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              >
+                <i class="fa-solid fa-file-arrow-up text-xl mb-1"></i>
+                <div class="font-semibold">Upload New File</div>
+              </label>
+            </div>
+            <div>
+              <input
+                type="radio"
+                id="uploadTypeLink"
+                name="uploadType"
+                value="link"
+                class="hidden peer"
+              />
+              <label
+                for="uploadTypeLink"
+                class="block p-3 text-center rounded-lg border-2 border-gray-300 dark:border-gray-600 cursor-pointer peer-checked:border-amber-400 peer-checked:text-amber-600 peer-checked:bg-amber-50 dark:peer-checked:bg-amber-900/20 dark:peer-checked:border-amber-400 dark:peer-checked:text-amber-400 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              >
+                <i class="fa-solid fa-link text-xl mb-1"></i>
+                <div class="font-semibold">Create a Link</div>
+              </label>
+            </div>
+          </div>
+
+          <!-- File Upload Container -->
+          <div id="fileUploadContainer">
+            <label
+              for="newFileUpload"
+              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Mastercam File <span class="text-red-500">*</span>
+            </label>
+            <input
+              type="file"
+              id="newFileUpload"
+              name="file"
+              accept=".mcam,.vnc"
+              class="mt-1 block w-full text-sm text-gray-600 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-amber-400 file:to-amber-500 file:text-gray-800 hover:file:from-amber-500 hover:file:to-amber-600"
+            />
+            <div
+              class="mt-2 p-3 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-md"
+            >
+              <p class="text-xs text-blue-700 dark:text-blue-300">
+                <i class="fa-solid fa-info-circle mr-1"></i>
+                <strong>Naming Convention:</strong> 7-digit number + machine
+                (e.g., 1234567_M69.mcam)
+              </p>
+            </div>
+          </div>
+
+          <!-- Link Creation Container -->
+          <div id="linkCreateContainer" class="hidden space-y-4">
+            <div>
+              <label
+                for="newLinkFilename"
+                class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                New Link Name <span class="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                id="newLinkFilename"
+                name="new_link_filename"
+                placeholder="e.g., 1234567_M70"
+                class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-amber-500 dark:focus:border-amber-400 focus:ring-amber-500 dark:focus:ring-amber-400 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Name for the new linked file (without extension)
+              </p>
+            </div>
+
+            <div>
+              <label
+                for="linkToMaster"
+                class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                Link to Master File <span class="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                id="linkToMaster"
+                name="link_to_master"
+                list="masterFileList"
+                placeholder="Start typing to see available files..."
+                class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-amber-500 dark:focus:border-amber-400 focus:ring-amber-500 dark:focus:ring-amber-400 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Select the master file this link should point to
+              </p>
+            </div>
+          </div>
+
+          <!-- Common Fields -->
+          <div>
+            <label
+              for="newFileDescription"
+              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Description <span class="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              id="newFileDescription"
+              name="description"
+              placeholder="Part name per title block"
+              required
+              class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-amber-500 dark:focus:border-amber-400 focus:ring-amber-500 dark:focus:ring-amber-400 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            />
+          </div>
+
+          <div>
+            <label
+              for="newFileRev"
+              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Initial Revision <span class="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              id="newFileRev"
+              name="rev"
+              placeholder="1.0"
+              required
+              pattern="^\d+\.\d+$"
+              class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-amber-500 dark:focus:border-amber-400 focus:ring-amber-500 dark:focus:ring-amber-400 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+            />
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Use format like "1.0" for the first version
+            </p>
+          </div>
+
+          <div class="flex justify-end space-x-3 pt-4">
+            <button
+              type="button"
+              id="cancelNewUpload"
+              class="px-4 py-2 bg-gray-300 hover:bg-gray-400 dark:bg-gray-600 dark:hover:bg-gray-500 text-gray-800 dark:text-gray-100 rounded-md transition-colors font-semibold"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              class="px-4 py-2 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-gray-800 rounded-md transition-colors font-semibold flex items-center"
+            >
+              <span id="submitBtnText">Create</span>
+              <i
+                id="submitSpinner"
+                class="fa-solid fa-spinner fa-spin ml-2 hidden"
+              ></i>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div
+      id="sendMessageModal"
+      class="fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100] hidden"
+    >
+      <div
+        class="bg-white dark:bg-mc-dark-bg rounded-xl shadow-lg p-6 w-full max-w-lg bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent"
+      >
+        <form id="sendMessageForm">
+          <h3
+            class="text-xl font-semibold text-primary-900 dark:text-accent mb-4"
+          >
+            Send Message
+          </h3>
+          <div class="mb-4">
+            <label
+              for="recipientUserSelect"
+              class="block text-sm font-medium text-primary-800 dark:text-primary-200 mb-1"
+              >Recipient:</label
+            >
+            <select
+              id="recipientUserSelect"
+              class="w-full p-2 border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent bg-opacity-90"
+            >
+              <option value="">Select a user...</option>
+            </select>
+          </div>
+          <div class="mb-6">
+            <label
+              for="messageText"
+              class="block text-sm font-medium text-primary-800 dark:text-primary-200 mb-1"
+              >Message:</label
+            >
+            <textarea
+              id="messageText"
+              rows="4"
+              class="w-full p-2 border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent bg-opacity-90"
+            ></textarea>
+          </div>
+          <div class="flex justify-end space-x-4">
+            <button
+              type="button"
+              id="cancelSendMessage"
+              class="px-4 py-2 rounded-md font-semibold bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-600 dark:text-gray-100 dark:hover:bg-gray-500"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              class="px-4 py-2 bg-gradient-to-r from-accent to-accent-hover text-white rounded-md hover:bg-opacity-80 font-semibold"
+            >
+              Send
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div
+      id="viewMessagesModal"
+      class="fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100] hidden"
+    >
+      <div
+        class="bg-white dark:bg-mc-dark-bg rounded-xl shadow-lg p-6 w-full max-w-lg bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent"
+      >
+        <h3
+          class="text-xl font-semibold text-primary-900 dark:text-accent mb-4"
+        >
+          Your Messages
+        </h3>
+        <div
+          id="messageListContainer"
+          class="space-y-4 max-h-96 overflow-y-auto"
+        ></div>
+        <div class="flex justify-end mt-4">
+          <button
+            onclick="document.getElementById('viewMessagesModal').classList.add('hidden')"
+            class="px-4 py-2 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+    <div
+      id="dashboardModal"
+      class="fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100] hidden"
+    >
+      <div
+        class="bg-white dark:bg-mc-dark-bg rounded-xl shadow-lg w-full max-w-4xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent"
+      >
+        <div
+          class="flex-shrink-0 flex justify-between items-center p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent"
+        >
+          <h3 class="text-xl font-semibold text-primary-900 dark:text-accent">
+            <i class="fa-solid fa-chart-line mr-2"></i>Activity Dashboard
+          </h3>
+          <button
+            id="closeDashboardBtn"
+            class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent"
+          >
+            <i class="fa-solid fa-xmark text-2xl"></i>
+          </button>
+        </div>
+
+        <div
+          id="dashboardContent"
+          class="flex-grow min-h-0 p-6 flex flex-col md:flex-row md:space-x-6"
+        >
+          <div
+            id="activeCheckoutsContainer"
+            class="md:w-1/2 flex flex-col"
+          ></div>
+          <div
+            id="activityFeedContainer"
+            class="md:w-1/2 flex flex-col mt-6 md:mt-0 md:border-l md:pl-6 border-primary-300 dark:border-mc-dark-accent"
+          ></div>
+        </div>
+      </div>
+    </div>
+    <datalist id="masterFileList"></datalist>
+
+    <script src="/static/js/script.js"></script>
+  </body>
+</html>

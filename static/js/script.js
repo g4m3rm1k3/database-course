@@ -419,7 +419,7 @@ function initTooltipSystem() {
 
       .tooltip-toggle-btn {
         position: fixed;
-        top: 20px;
+        top: 50px;
         left: 20px;
         z-index: 1000;
         background: linear-gradient(135deg, #fbbf24, #f59e0b);
@@ -1246,7 +1246,13 @@ function updateConnectionStatus(connected) {
 }
 
 function updateRepoStatus(status) {
-  document.getElementById("repoStatus").textContent = status;
+  // Find the element by its ID
+  const el = document.getElementById("repoStatus");
+
+  // IMPORTANT: Only update the text if the element was actually found
+  if (el) {
+    el.textContent = status;
+  }
 }
 
 function updateConfigDisplay() {
@@ -1886,34 +1892,77 @@ function applyThemePreference() {
   }
 }
 
+// function showNotification(message, type = "info") {
+//   const notification = document.createElement("div");
+//   let bgColor;
+//   const isDarkMode = document.documentElement.classList.contains("dark");
+//   switch (type) {
+//     case "success":
+//       bgColor = isDarkMode
+//         ? "bg-gradient-to-r from-green-900 to-green-800"
+//         : "bg-gradient-to-r from-green-600 to-green-700";
+//       break;
+//     case "error":
+//       bgColor = isDarkMode
+//         ? "bg-gradient-to-r from-red-900 to-red-800"
+//         : "bg-gradient-to-r from-red-600 to-red-700";
+//       break;
+//     default:
+//       bgColor = isDarkMode
+//         ? "bg-gradient-to-r from-accent-hover to-accent"
+//         : "bg-gradient-to-r from-accent to-accent-hover";
+//       break;
+//   }
+//   notification.className = `fixed bottom-4 right-4 z-[1000] p-4 rounded-lg shadow-lg text-white transform transition-transform duration-300 translate-x-full ${bgColor} bg-opacity-90`;
+//   notification.textContent = message;
+//   document.body.appendChild(notification);
+//   setTimeout(() => notification.classList.remove("translate-x-full"), 100);
+//   setTimeout(() => {
+//     notification.classList.add("translate-x-full");
+//     setTimeout(() => notification.remove(), 300);
+//   }, 4000);
+// }
+
 function showNotification(message, type = "info") {
+  // Find the dedicated container for notifications
+  const container = document.getElementById("notification-container");
+  if (!container) {
+    // Fallback if the container isn't found for some reason
+    console.error("Notification container not found!");
+    return;
+  }
+
   const notification = document.createElement("div");
   let bgColor;
   const isDarkMode = document.documentElement.classList.contains("dark");
+
   switch (type) {
     case "success":
-      bgColor = isDarkMode
-        ? "bg-gradient-to-r from-green-900 to-green-800"
-        : "bg-gradient-to-r from-green-600 to-green-700";
+      bgColor = isDarkMode ? "bg-green-800" : "bg-green-600";
       break;
     case "error":
-      bgColor = isDarkMode
-        ? "bg-gradient-to-r from-red-900 to-red-800"
-        : "bg-gradient-to-r from-red-600 to-red-700";
+      bgColor = isDarkMode ? "bg-red-800" : "bg-red-600";
       break;
     default:
-      bgColor = isDarkMode
-        ? "bg-gradient-to-r from-accent-hover to-accent"
-        : "bg-gradient-to-r from-accent to-accent-hover";
+      bgColor = isDarkMode ? "bg-accent-hover" : "bg-accent";
       break;
   }
-  notification.className = `fixed top-4 right-4 z-[1000] p-4 rounded-lg shadow-lg text-white transform transition-transform duration-300 translate-x-full ${bgColor} bg-opacity-90`;
+
+  // The notification itself no longer needs positioning classes, only appearance classes.
+  notification.className = `p-4 rounded-lg shadow-lg text-white transform transition-transform duration-300 translate-x-full ${bgColor} bg-opacity-95`;
   notification.textContent = message;
-  document.body.appendChild(notification);
+
+  // Add the new notification to our fixed container
+  container.appendChild(notification);
+
+  // Animate it into view
   setTimeout(() => notification.classList.remove("translate-x-full"), 100);
+
+  // Set a timer to remove it
   setTimeout(() => {
     notification.classList.add("translate-x-full");
-    setTimeout(() => notification.remove(), 300);
+    // Wait for the slide-out animation to finish before removing from the DOM
+    notification.addEventListener("transitionend", () => notification.remove());
   }, 4000);
 }
 
