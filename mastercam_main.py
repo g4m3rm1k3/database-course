@@ -76,6 +76,10 @@ class FileInfo(BaseModel):
         None, description="File description from metadata")
     revision: Optional[str] = Field(
         None, description="Current revision number (e.g., '1.5')")
+    is_link: bool = Field(
+        False, description="True if this is a linked/virtual file")
+    master_file: Optional[str] = Field(
+        None, description="The master file this link points to")
 
 
 class CheckoutInfo(BaseModel):
@@ -207,16 +211,25 @@ async def is_valid_file_type(file: UploadFile) -> bool:
         return False
 
     config = ALLOWED_FILE_TYPES[file_extension]
-    signature = config.get("signature")
+    # Corrected key from "signature" to "signatures"
+    signatures = config.get("signatures")
 
-    # If no signature is defined, we trust the extension
-    if signature is None:
+    # If no signatures are defined for this type, we trust the extension
+    if not signatures:
         return True
 
-    # Read the first few bytes of the file to check the signature
     try:
-        file_header = await file.read(len(signature))
-        return file_header == signature
+        # Find the length of the longest signature to know how much to read
+        max_len = max(len(s) for s in signatures)
+        file_header = await file.read(max_len)
+
+        # Check if the file header starts with ANY of the valid signatures
+        for s in signatures:
+            if file_header.startswith(s):
+                return True
+
+        # If no signature matched
+        return False
     finally:
         # IMPORTANT: Reset the file pointer so it can be read again later
         await file.seek(0)
@@ -346,10 +359,11 @@ class ConfigManager:
         if 'gitlab' not in current_data or not isinstance(current_data.get('gitlab'), dict):
             current_data['gitlab'] = {}
 
-        if 'token' in kwargs and not kwargs.get('token'):
-            # If a token is part of the update but is empty/None, remove it.
-            # This handles the case where the user deletes the token from the UI.
-            kwargs.pop('token', None)
+        # If a token is part of the update but is empty/None, we should still allow it to be cleared.
+        # The logic should handle storing an empty token if that's the intent.
+        # However, if the key is just missing from kwargs, we don't want to disturb an existing token.
+        if 'token' in kwargs and kwargs.get('token') is None:
+            kwargs['token'] = ""  # Explicitly set to empty string if None
 
         current_data['gitlab'].update(kwargs)
         new_config_obj = AppConfig(**current_data)
@@ -360,42 +374,18 @@ class ConfigManager:
         cfg = self.config.model_dump()
         gitlab_cfg = cfg.get('gitlab', {})
         local_cfg = cfg.get('local', {})
+        # --- THIS IS THE FIX ---
+        # Reads from the 'security' section of the config, not the global list
+        security_cfg = cfg.get('security', {})
+
         return {
             'gitlab_url': gitlab_cfg.get('base_url'),
             'project_id': gitlab_cfg.get('project_id'),
             'username': gitlab_cfg.get('username'),
             'has_token': bool(gitlab_cfg.get('token')),
             'repo_path': local_cfg.get('repo_path'),
-            'is_admin': gitlab_cfg.get('username') in ADMIN_USERS
+            'is_admin': gitlab_cfg.get('username') in security_cfg.get('admin_users', [])
         }
-
-# def update_gitlab_config(self, **kwargs):
-#     # 1. Load current config from disk as a plain dictionary to ensure we have a base
-#     try:
-#         current_data = json.loads(self.config_file.read_text(
-#         )) if self.config_file.exists() and self.config_file.read_text() else {}
-#     except json.JSONDecodeError:
-#         current_data = {}
-
-#     # 2. Update the 'gitlab' section within that dictionary with the new form data
-#     if 'gitlab' not in current_data or not isinstance(current_data.get('gitlab'), dict):
-#         current_data['gitlab'] = {}
-
-#     # Don't save an empty token field if one already exists
-#     if 'token' in kwargs and not kwargs['token']:
-#         del kwargs['token']
-
-#     current_data['gitlab'].update(kwargs)
-
-#     # 3. Create a new, clean AppConfig instance from the merged data.
-#     # This is the key step: Pydantic will apply all defaults for any missing sections.
-#     new_config_obj = AppConfig(**current_data)
-
-#     # 4. Replace the application's in-memory config with the new, clean one
-#     self.config = new_config_obj
-
-#     # 5. Save the complete, clean config back to the file
-#     self.save_config()
 
 
 def get_config_summary(self) -> Dict[str, Any]:
@@ -939,10 +929,22 @@ async def git_polling_task():
 
 
 def find_file_path(filename: str) -> Optional[str]:
+    """
+    Find the path for a file, checking both regular files and link files.
+    For link files, this returns the virtual path (just the filename).
+    """
     if git_repo := app_state.get('git_repo'):
+        # First check for regular files
         for file_data in git_repo.list_files("*.mcam"):
             if file_data['name'] == filename:
                 return file_data['path']
+
+        # Then check for link files
+        for file_data in git_repo.list_files("*.link"):
+            link_name = file_data['name'].replace('.link', '')
+            if link_name == filename:
+                return filename  # Return the virtual filename for links
+
     return None
 
 
@@ -955,37 +957,87 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
         git_repo.pull()
     except Exception as e:
         logger.warning(f"Failed to pull latest changes: {e}")
-    repo_files, grouped_files = git_repo.list_files("*.mcam"), {}
-    current_user = app_state.get('current_user', 'demo_user')
-    for file_data in repo_files:
-        meta_path = git_repo.repo_path / f"{file_data['path']}.meta.json"
+
+    # 1. Get all real .mcam files and map them by name for quick lookup
+    mcam_files_raw = git_repo.list_files("*.mcam")
+    master_files_map = {file_data['name']                        : file_data for file_data in mcam_files_raw}
+
+    # This list will hold both real and virtual (linked) files
+    all_files_to_process = list(master_files_map.values())
+
+    # 2. Find and process all .link files to create virtual file entries
+    link_files_raw = git_repo.list_files("*.link")
+    for link_file_data in link_files_raw:
+        try:
+            link_content_str = git_repo.get_file_content(
+                link_file_data['path'])
+            if not link_content_str:
+                continue
+
+            link_content = json.loads(link_content_str)
+            master_filename = link_content.get("master_file")
+
+            if master_filename and master_filename in master_files_map:
+                master_file_data = master_files_map[master_filename]
+
+                # Create a virtual file entry that inherits from its master
+                virtual_file = master_file_data.copy()
+
+                # Overwrite key properties to represent the link itself
+                virtual_file['name'] = link_file_data['name'].replace(
+                    '.link', '')
+                virtual_file['path'] = virtual_file['name']  # Path is virtual
+                virtual_file['is_link'] = True
+                virtual_file['master_file'] = master_filename
+
+                all_files_to_process.append(virtual_file)
+        except Exception as e:
+            logger.error(
+                f"Could not process link file {link_file_data['name']}: {e}")
+
+    # 3. Process the combined list of real and virtual files
+    grouped_files = {}
+    current_user = app_state.get(
+        'config_manager').config.gitlab.get('username', 'demo_user')
+
+    for file_data in all_files_to_process:
+        # For metadata and locks, linked files should use their master's path
+        path_for_meta = file_data['master_file'] if file_data.get(
+            'is_link') else file_data['path']
+
+        meta_path = git_repo.repo_path / f"{path_for_meta}.meta.json"
         description, revision = None, None
         if meta_path.exists():
             try:
                 meta_content = json.loads(meta_path.read_text())
-                description, revision = meta_content.get(
-                    'description'), meta_content.get('revision')
+                description = meta_content.get('description')
+                revision = meta_content.get('revision')
             except json.JSONDecodeError:
-                logger.warning(
-                    f"Could not parse metadata for {file_data['path']}")
+                logger.warning(f"Could not parse metadata for {path_for_meta}")
+
         file_data['description'], file_data['revision'] = description, revision
-        filename = file_data['name'].strip()
-        group_name = "Miscellaneous"
-        if re.match(r"^\d{7}.*\.mcam$", filename):
-            group_name = f"{filename[:2]}XXXXX"
-        if group_name not in grouped_files:
-            grouped_files[group_name] = []
-        lock_info = metadata_manager.get_lock_info(file_data['path'])
+
+        lock_info = metadata_manager.get_lock_info(path_for_meta)
         status, locked_by, locked_at = "unlocked", None, None
         if lock_info:
             status, locked_by, locked_at = "locked", lock_info.get(
                 'user'), lock_info.get('timestamp')
             if locked_by == current_user:
                 status = "checked_out_by_user"
+
         file_data['filename'] = file_data.pop('name')
         file_data.update(
             {"status": status, "locked_by": locked_by, "locked_at": locked_at})
+
+        # Grouping logic remains the same
+        filename = file_data['filename'].strip()
+        group_name = "Miscellaneous"
+        if re.match(r"^\d{7}.*", filename):
+            group_name = f"{filename[:2]}XXXXX"
+        if group_name not in grouped_files:
+            grouped_files[group_name] = []
         grouped_files[group_name].append(file_data)
+
     return grouped_files
 
 
@@ -1293,60 +1345,180 @@ async def acknowledge_message(request: AckMessageRequest):
 
 
 @app.post("/files/new_upload")
-async def new_upload(user: str = Form(...), description: str = Form(...), rev: str = Form(...), file: UploadFile = File(...)):
-    # --- ADDED VALIDATION CHECKS ---
-    is_valid_format, error_message = validate_filename_format(file.filename)
-    if not is_valid_format:
-        raise HTTPException(status_code=400, detail=error_message)
-
-    if not await is_valid_file_type(file):
-        allowed_exts = ', '.join(ALLOWED_FILE_TYPES.keys())
+async def new_upload(
+    user: str = Form(...),
+    description: str = Form(...),
+    rev: str = Form(...),
+    # Changed to str to handle form data
+    is_link_creation: str = Form("false"),
+    new_link_filename: Optional[str] = Form(None),
+    link_to_master: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None)
+):
+    """
+    Handle both file uploads and link creation through a single endpoint.
+    """
+    git_repo = app_state.get('git_repo')
+    if not git_repo or not app_state.get('initialized'):
         raise HTTPException(
-            status_code=400, detail=f"Invalid file type. Only {allowed_exts} files are allowed.")
-    # --- END OF VALIDATION ---
+            status_code=500, detail="Repository not available.")
 
-    try:
-        git_repo = app_state.get('git_repo')
-        if not git_repo or not app_state['initialized']:
+    # Convert string to boolean
+    is_link = is_link_creation.lower() in ('true', '1', 'yes')
+
+    if is_link:
+        # --- LINK CREATION LOGIC ---
+        logger.info(f"Creating link: {new_link_filename} -> {link_to_master}")
+
+        if not new_link_filename or not link_to_master:
             raise HTTPException(
-                status_code=500, detail="Repository not available.")
+                status_code=400,
+                detail="Must provide both a link name and a master file to link to."
+            )
 
-        content = await file.read()
-        filename_str = file.filename
+        # Validate the new link filename format
+        is_valid_format, error_message = validate_filename_format(
+            new_link_filename)
+        if not is_valid_format:
+            raise HTTPException(status_code=400, detail=error_message)
 
-        if find_file_path(filename_str) is not None:
+        # Check if file or link already exists
+        if find_file_path(new_link_filename) or find_file_path(f"{new_link_filename}.link"):
             raise HTTPException(
-                status_code=409, detail=f"File '{filename_str}' already exists. Use the check-in process for existing files.")
+                status_code=409,
+                detail=f"File or link '{new_link_filename}' already exists."
+            )
 
-        if not content:
-            raise HTTPException(status_code=400, detail="File is empty.")
+        # Verify the master file exists
+        master_file_path = find_file_path(link_to_master)
+        if not master_file_path:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Master file '{link_to_master}' not found."
+            )
 
-        git_repo.save_file(filename_str, content)
+        try:
+            # Create the .link file
+            link_data = {"master_file": link_to_master}
+            link_filepath_str = f"{new_link_filename}.link"
+            link_full_path = git_repo.repo_path / link_filepath_str
+            link_full_path.write_text(json.dumps(link_data, indent=2))
 
-        meta_filename_str = f"{filename_str}.meta.json"
-        meta_content = {"description": description, "revision": rev}
-        (git_repo.repo_path /
-         meta_filename_str).write_text(json.dumps(meta_content, indent=2))
+            # Create the metadata file for the link
+            meta_filename_str = f"{new_link_filename}.meta.json"
+            meta_content = {
+                "description": description,
+                "revision": rev,
+                "created_by": user,
+                "created_at": datetime.utcnow().isoformat() + "Z"
+            }
+            meta_full_path = git_repo.repo_path / meta_filename_str
+            meta_full_path.write_text(json.dumps(meta_content, indent=2))
 
-        commit_message = f"ADD: {filename_str} (Rev: {rev}) by {user}"
-        success = git_repo.commit_and_push(
-            [filename_str, meta_filename_str], commit_message, user, f"{user}@example.com")
+            # Commit both files
+            commit_message = f"LINK: Create '{new_link_filename}' -> '{link_to_master}' by {user}"
+            files_to_commit = [link_filepath_str, meta_filename_str]
 
-        if success:
-            await handle_successful_git_operation()
-            return JSONResponse({"status": "success"})
+            success = git_repo.commit_and_push(
+                files_to_commit, commit_message, user, f"{user}@example.com"
+            )
 
-        (git_repo.repo_path / meta_filename_str).unlink(missing_ok=True)
-        (git_repo.repo_path / filename_str).unlink(missing_ok=True)
-        raise HTTPException(
-            status_code=500, detail="Failed to commit new file.")
-    except HTTPException as http_exc:
-        raise http_exc
-    except Exception as e:
-        logger.error(
-            f"An unexpected error occurred in new_upload: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=500, detail=f"An internal error occurred: {e}")
+            if success:
+                await handle_successful_git_operation()
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Link '{new_link_filename}' created successfully, pointing to '{link_to_master}'."
+                })
+            else:
+                raise HTTPException(
+                    status_code=500, detail="Failed to commit new link to repository."
+                )
+
+        except Exception as e:
+            logger.error(f"Error creating link: {e}", exc_info=True)
+            # Clean up on error
+            (git_repo.repo_path / link_filepath_str).unlink(missing_ok=True)
+            (git_repo.repo_path / meta_filename_str).unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=500, detail=f"Failed to create link: {str(e)}"
+            )
+
+    else:
+        # --- FILE UPLOAD LOGIC ---
+        logger.info(f"Uploading new file: {file.filename if file else 'None'}")
+
+        if not file or not file.filename:
+            raise HTTPException(
+                status_code=400, detail="A file upload is required for file creation."
+            )
+
+        # Validate file format
+        is_valid_format, error_message = validate_filename_format(
+            file.filename)
+        if not is_valid_format:
+            raise HTTPException(status_code=400, detail=error_message)
+
+        # Check if file already exists
+        if find_file_path(file.filename):
+            raise HTTPException(
+                status_code=409, detail=f"File '{file.filename}' already exists."
+            )
+
+        # Validate file type
+        if not await is_valid_file_type(file):
+            file_ext = Path(file.filename).suffix.lower()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file type. The uploaded file is not a valid {file_ext} file."
+            )
+
+        try:
+            # Save the file content
+            content = await file.read()
+            git_repo.save_file(file.filename, content)
+
+            # Create metadata file
+            meta_filename = f"{file.filename}.meta.json"
+            meta_content = {
+                "description": description,
+                "revision": rev,
+                "uploaded_by": user,
+                "uploaded_at": datetime.utcnow().isoformat() + "Z"
+            }
+            meta_path = git_repo.repo_path / meta_filename
+            meta_path.write_text(json.dumps(meta_content, indent=2))
+
+            # Commit both files
+            commit_message = f"NEW: Upload {file.filename} rev {rev} by {user}"
+            files_to_commit = [file.filename, meta_filename]
+
+            success = git_repo.commit_and_push(
+                files_to_commit, commit_message, user, f"{user}@example.com"
+            )
+
+            if success:
+                await handle_successful_git_operation()
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"File '{file.filename}' uploaded successfully with revision {rev}."
+                })
+            else:
+                # Clean up on failure
+                (git_repo.repo_path / file.filename).unlink(missing_ok=True)
+                meta_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=500, detail="Failed to commit new file to repository."
+                )
+
+        except Exception as e:
+            logger.error(f"Error uploading file: {e}", exc_info=True)
+            # Clean up on error
+            (git_repo.repo_path / file.filename).unlink(missing_ok=True)
+            (git_repo.repo_path /
+             f"{file.filename}.meta.json").unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=500, detail=f"Failed to upload file: {str(e)}"
+            )
 
 
 @app.post("/files/{filename}/checkout")
@@ -1610,41 +1782,121 @@ async def admin_delete_file(filename: str, request: AdminDeleteRequest):
         if not all([cfg_manager, git_repo, metadata_manager]):
             raise HTTPException(
                 status_code=500, detail="Repository not initialized.")
+
         admin_users = cfg_manager.config.security.get("admin_users", [])
         if request.admin_user not in admin_users:
             raise HTTPException(
                 status_code=403, detail="Permission denied. Admin access required.")
-        file_path_str = find_file_path(filename)
-        if not file_path_str:
-            raise HTTPException(status_code=404, detail="File not found")
-        absolute_file_path = git_repo.repo_path / file_path_str
-        absolute_lock_path = metadata_manager._get_lock_file_path(
-            file_path_str)
-        relative_lock_path_str = str(absolute_lock_path.relative_to(
-            git_repo.repo_path)).replace(os.sep, '/')
-        files_to_commit = [file_path_str]
-        if absolute_lock_path.exists():
-            files_to_commit.append(relative_lock_path_str)
-        meta_path = git_repo.repo_path / f"{file_path_str}.meta.json"
-        if meta_path.exists():
-            files_to_commit.append(
-                str(meta_path.relative_to(git_repo.repo_path)))
-            meta_path.unlink()
-        absolute_file_path.unlink(missing_ok=True)
-        metadata_manager.release_lock(file_path_str)
-        commit_message = f"ADMIN DELETE: {filename} by {request.admin_user}"
-        success = git_repo.commit_and_push(
-            files_to_commit, commit_message, request.admin_user, f"{request.admin_user}@example.com")
-        if success:
-            await handle_successful_git_operation()
-            return JSONResponse({"status": "success", "message": f"File '{filename}' permanently deleted."})
+
+        # Check if this is a link file first
+        link_file_path = f"{filename}.link"
+        is_link_file = (git_repo.repo_path / link_file_path).exists()
+
+        if is_link_file:
+            # LINK DELETION LOGIC
+            logger.info(
+                f"Admin {request.admin_user} deleting link: {filename}")
+
+            # Links cannot be "locked" since they're virtual, so no lock check needed
+            absolute_link_path = git_repo.repo_path / link_file_path
+            meta_path = git_repo.repo_path / f"{filename}.meta.json"
+
+            files_to_commit = [link_file_path]
+
+            # Remove the .link file
+            if absolute_link_path.exists():
+                absolute_link_path.unlink()
+            else:
+                raise HTTPException(
+                    status_code=404, detail=f"Link file {filename} not found.")
+
+            # Remove associated metadata if it exists
+            if meta_path.exists():
+                files_to_commit.append(f"{filename}.meta.json")
+                meta_path.unlink()
+
+            # Commit the removal
+            commit_message = f"ADMIN DELETE LINK: Remove link {filename} by {request.admin_user}"
+            success = git_repo.commit_and_push(
+                files_to_commit, commit_message, request.admin_user, f"{request.admin_user}@example.com"
+            )
+
+            if success:
+                await handle_successful_git_operation()
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"Link '{filename}' removed successfully. Master file remains unaffected."
+                })
+            else:
+                # Attempt to recover the files if push failed
+                if not absolute_link_path.exists():
+                    absolute_link_path.write_text(
+                        '{"master_file": "unknown"}')  # Placeholder
+                git_repo.pull()  # Sync with remote to recover
+                raise HTTPException(
+                    status_code=500, detail="Failed to commit link removal.")
+
         else:
-            git_repo.pull()
-            raise HTTPException(
-                status_code=500, detail="Failed to commit the file deletion.")
+            # REGULAR FILE DELETION LOGIC (existing code)
+            file_path_str = find_file_path(filename)
+            if not file_path_str:
+                raise HTTPException(status_code=404, detail="File not found")
+
+            # Safety check for locked files
+            lock_info = metadata_manager.get_lock_info(file_path_str)
+            if lock_info:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot delete file. It is currently checked out by '{lock_info.get('user', 'unknown')}'."
+                )
+
+            logger.info(
+                f"Admin {request.admin_user} deleting file: {filename}")
+
+            absolute_file_path = git_repo.repo_path / file_path_str
+            absolute_lock_path = metadata_manager._get_lock_file_path(
+                file_path_str)
+            relative_lock_path_str = str(absolute_lock_path.relative_to(
+                git_repo.repo_path)).replace(os.sep, '/')
+
+            files_to_commit = [file_path_str]
+
+            # Include lock file if it exists
+            if absolute_lock_path.exists():
+                files_to_commit.append(relative_lock_path_str)
+
+            # Include metadata file if it exists
+            meta_path = git_repo.repo_path / f"{file_path_str}.meta.json"
+            if meta_path.exists():
+                files_to_commit.append(
+                    str(meta_path.relative_to(git_repo.repo_path)))
+                meta_path.unlink()
+
+            # Remove the actual file and clean up
+            absolute_file_path.unlink(missing_ok=True)
+            metadata_manager.release_lock(file_path_str)  # Clean up any lock
+
+            commit_message = f"ADMIN DELETE FILE: {filename} by {request.admin_user}"
+            success = git_repo.commit_and_push(
+                files_to_commit, commit_message, request.admin_user, f"{request.admin_user}@example.com"
+            )
+
+            if success:
+                await handle_successful_git_operation()
+                return JSONResponse({
+                    "status": "success",
+                    "message": f"File '{filename}' permanently deleted from repository."
+                })
+            else:
+                git_repo.pull()  # Attempt to recover by syncing with remote
+                raise HTTPException(
+                    status_code=500, detail="Failed to commit file deletion.")
+
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred in admin_delete_file: {e}", exc_info=True)
+            f"Unexpected error in admin_delete_file: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"An internal error occurred: {e}")
 
@@ -1718,13 +1970,36 @@ async def download_file(filename: str):
 )
 async def get_file_history(filename: str):
     try:
-        file_path = find_file_path(filename)
-        if not file_path or not (git_repo := app_state.get('git_repo')):
-            raise HTTPException(status_code=404)
-        return {"filename": filename, "history": git_repo.get_file_history(file_path)}
+        git_repo = app_state.get('git_repo')
+        if not git_repo:
+            raise HTTPException(
+                status_code=500, detail="Repository not initialized.")
+
+        # Check if this is a link file
+        link_file_path = f"{filename}.link"
+        is_link = (git_repo.repo_path / link_file_path).exists()
+
+        if is_link:
+            # For link files, show the history of the .link file and its metadata
+            history = git_repo.get_file_history(link_file_path, limit=10)
+            # Also get metadata history
+            meta_history = git_repo.get_file_history(
+                f"{filename}.meta.json", limit=10)
+
+            # Combine and sort by date
+            combined_history = history + meta_history
+            combined_history.sort(key=lambda x: x['date'], reverse=True)
+
+            return {"filename": f"{filename} (Link)", "history": combined_history[:10]}
+        else:
+            # Regular file logic
+            file_path = find_file_path(filename)
+            if not file_path:
+                raise HTTPException(status_code=404, detail="File not found")
+            return {"filename": filename, "history": git_repo.get_file_history(file_path)}
+
     except Exception as e:
-        logger.error(
-            f"An unexpected error occurred in get_file_history: {e}", exc_info=True)
+        logger.error(f"Error in get_file_history: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"An internal error occurred: {e}")
 

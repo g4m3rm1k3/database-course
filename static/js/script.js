@@ -645,8 +645,29 @@ const modalTooltips = {
   },
 };
 
+const linkTooltips = {
+  "view-master": {
+    title: "View Master File",
+    content:
+      "Scroll to and highlight the master file that this link points to.",
+    position: "top",
+  },
+  "link-info": {
+    title: "Link Information",
+    content:
+      "View detailed information about this link and its relationship to the master file.",
+    position: "top",
+  },
+  "remove-link": {
+    title: "Remove Link",
+    content:
+      "Delete this link file without affecting the master file it points to (admin only).",
+    position: "top",
+  },
+};
+
 // Merge modal tooltips with the main tooltips object
-Object.assign(tooltips, modalTooltips);
+Object.assign(tooltips, modalTooltips, linkTooltips);
 
 function addFormFieldTooltips() {
   if (!tooltipsEnabled) return;
@@ -743,7 +764,7 @@ function addTooltipToElement(element, tooltipKey) {
 function addDynamicTooltips() {
   if (!tooltipsEnabled) return;
 
-  // Add tooltips to file action buttons
+  // Regular file action tooltips
   document.querySelectorAll(".js-checkout-btn").forEach((btn) => {
     addTooltipToElement(btn, "checkout");
   });
@@ -772,10 +793,27 @@ function addDynamicTooltips() {
     addTooltipToElement(btn, "delete");
   });
 
-  // Add tooltips to form elements
-  const revisionRadios = document.querySelectorAll('input[name="rev_type"]');
-  revisionRadios.forEach((radio) => {
-    addTooltipToElement(radio.parentElement, "revisionType");
+  // Link-specific action tooltips
+  document.querySelectorAll(".js-view-master-btn").forEach((btn) => {
+    addTooltipToElement(btn, "view-master");
+  });
+
+  document.querySelectorAll(".js-link-info-btn").forEach((btn) => {
+    addTooltipToElement(btn, "link-info");
+  });
+
+  // Admin delete buttons for links have different tooltip text
+  document.querySelectorAll(".js-delete-btn").forEach((btn) => {
+    const filename = btn.dataset.filename;
+    const safeId = `file-${filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
+    const fileElement = document.getElementById(safeId);
+    const isLink = fileElement && fileElement.querySelector(".fa-link");
+
+    if (isLink) {
+      addTooltipToElement(btn, "remove-link");
+    } else {
+      addTooltipToElement(btn, "delete");
+    }
   });
 }
 
@@ -1054,6 +1092,7 @@ async function loadFiles() {
   }
 }
 
+// Updated file rendering section to properly display linked files
 function renderFiles() {
   const fileListEl = document.getElementById("fileList");
   const searchTerm = document.getElementById("searchInput").value.toLowerCase();
@@ -1065,7 +1104,7 @@ function renderFiles() {
   let totalFilesFound = 0;
 
   if (!groupedFiles || Object.keys(groupedFiles).length === 0) {
-    fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-primary-600 dark:text-primary-300"><i class="fa-solid fa-exclamation-triangle text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No Connection</h3><p class="mt-2 text-center">Unable to load files. Check your configuration.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-accent to-accent-hover text-white rounded-md hover:bg-opacity-80">Try Again</button></div>`;
+    fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-gray-600 dark:text-gray-400"><i class="fa-solid fa-exclamation-triangle text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No Connection</h3><p class="mt-2 text-center">Unable to load files. Check your configuration.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-md hover:bg-opacity-80">Try Again</button></div>`;
     return;
   }
 
@@ -1099,7 +1138,9 @@ function renderFiles() {
       const filteredFiles = subGroupedFiles[subGroupName].filter(
         (file) =>
           file.filename.toLowerCase().includes(searchTerm) ||
-          file.path.toLowerCase().includes(searchTerm)
+          file.path.toLowerCase().includes(searchTerm) ||
+          (file.master_file &&
+            file.master_file.toLowerCase().includes(searchTerm))
       );
       if (filteredFiles.length > 0) {
         filteredSubGroups[subGroupName] = filteredFiles.sort((a, b) =>
@@ -1115,9 +1156,8 @@ function renderFiles() {
     // Create top-level group (by first two digits)
     const detailsEl = document.createElement("details");
     detailsEl.className =
-      "file-group group border-t border-primary-300 dark:border-mc-dark-accent";
+      "file-group group border-t border-gray-300 dark:border-gray-600";
     detailsEl.dataset.groupName = groupName;
-    // *** CHANGE #1: Force open if there is a search term ***
     if (expandedGroups.includes(groupName) || searchTerm) {
       detailsEl.open = true;
     }
@@ -1125,10 +1165,10 @@ function renderFiles() {
 
     const summaryEl = document.createElement("summary");
     summaryEl.className =
-      "list-none py-3 px-4 bg-gradient-to-r from-mc-light-accent to-white dark:from-mc-dark-accent dark:to-mc-dark-bg cursor-pointer hover:bg-opacity-80 flex justify-between items-center transition-colors";
-    summaryEl.innerHTML = `<div class="flex items-center space-x-3"><i class="fa-solid fa-chevron-right text-xs text-primary-600 dark:text-primary-300 transform transition-transform duration-200 group-open:rotate-90"></i><span class="font-semibold text-primary-800 dark:text-primary-200">${
+      "list-none py-3 px-4 bg-gradient-to-r from-gray-100 to-white dark:from-gray-700 dark:to-gray-800 cursor-pointer hover:bg-opacity-80 flex justify-between items-center transition-colors";
+    summaryEl.innerHTML = `<div class="flex items-center space-x-3"><i class="fa-solid fa-chevron-right text-xs text-gray-600 dark:text-gray-400 transform transition-transform duration-200 group-open:rotate-90"></i><span class="font-semibold text-gray-800 dark:text-gray-200">${
       groupName.endsWith("XXXXX") ? `${groupName} SERIES` : groupName
-    }</span></div><span class="text-sm font-medium text-primary-600 dark:text-primary-300">(${groupFileCount} files)</span>`;
+    }</span></div><span class="text-sm font-medium text-gray-600 dark:text-gray-400">(${groupFileCount} files)</span>`;
     detailsEl.appendChild(summaryEl);
 
     // Create container for subgroups
@@ -1143,9 +1183,8 @@ function renderFiles() {
 
         const subDetailsEl = document.createElement("details");
         subDetailsEl.className =
-          "sub-file-group group border-t border-primary-200 dark:border-primary-600";
+          "sub-file-group group border-t border-gray-200 dark:border-gray-600";
         subDetailsEl.dataset.subGroupName = `${groupName}/${subGroupName}`;
-        // *** CHANGE #2: Force open if there is a search term ***
         if (
           expandedSubGroups.includes(`${groupName}/${subGroupName}`) ||
           searchTerm
@@ -1156,81 +1195,140 @@ function renderFiles() {
 
         const subSummaryEl = document.createElement("summary");
         subSummaryEl.className =
-          "list-none py-2 px-3 bg-gradient-to-r from-primary-50 to-primary-100 dark:from-primary-700 dark:to-primary-800 cursor-pointer hover:bg-opacity-80 flex justify-between items-center transition-colors";
-        subSummaryEl.innerHTML = `<div class="flex items-center space-x-3"><i class="fa-solid fa-chevron-right text-xs text-primary-600 dark:text-primary-300 transform transition-transform duration-200 group-open:rotate-90"></i><span class="font-medium text-primary-800 dark:text-primary-200">${subGroupName}</span></div><span class="text-sm font-medium text-primary-600 dark:text-primary-300">(${filesInSubGroup.length} files)</span>`;
+          "list-none py-2 px-3 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-600 dark:to-gray-700 cursor-pointer hover:bg-opacity-80 flex justify-between items-center transition-colors";
+        subSummaryEl.innerHTML = `<div class="flex items-center space-x-3"><i class="fa-solid fa-chevron-right text-xs text-gray-600 dark:text-gray-400 transform transition-transform duration-200 group-open:rotate-90"></i><span class="font-medium text-gray-800 dark:text-gray-200">${subGroupName}</span></div><span class="text-sm font-medium text-gray-600 dark:text-gray-400">(${filesInSubGroup.length} files)</span>`;
         subDetailsEl.appendChild(subSummaryEl);
 
         const filesContainer = document.createElement("div");
         filesContainer.className = "pl-4";
+
         filesInSubGroup.forEach((file) => {
           const fileEl = document.createElement("div");
           fileEl.id = `file-${file.filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
+
           let statusClass = "",
             statusBadgeText = "";
-          switch (file.status) {
-            case "unlocked":
-              statusClass =
-                "bg-green-100 text-green-900 dark:bg-green-900 dark:text-green-200";
-              statusBadgeText = "Available";
-              break;
-            case "locked":
-              statusClass =
-                "bg-red-100 text-red-900 dark:bg-red-900 dark:text-red-200";
-              statusBadgeText = `Locked by ${file.locked_by}`;
-              break;
-            case "checked_out_by_user":
-              statusClass =
-                "bg-blue-100 text-blue-900 dark:bg-blue-900 dark:text-blue-200";
-              statusBadgeText = "Checked out by you";
-              break;
-            default:
-              statusClass =
-                "bg-primary-100 text-primary-900 dark:bg-primary-600 dark:text-primary-200";
-              statusBadgeText = "Unknown";
+
+          // Different status handling for linked vs regular files
+          if (file.is_link) {
+            statusClass =
+              "bg-purple-100 text-purple-900 dark:bg-purple-900 dark:text-purple-200";
+            statusBadgeText = `Links to ${file.master_file}`;
+          } else {
+            // Regular file status logic
+            switch (file.status) {
+              case "unlocked":
+                statusClass =
+                  "bg-green-100 text-green-900 dark:bg-green-900 dark:text-green-200";
+                statusBadgeText = "Available";
+                break;
+              case "locked":
+                statusClass =
+                  "bg-red-100 text-red-900 dark:bg-red-900 dark:text-red-200";
+                statusBadgeText = `Locked by ${file.locked_by}`;
+                break;
+              case "checked_out_by_user":
+                statusClass =
+                  "bg-blue-100 text-blue-900 dark:bg-blue-900 dark:text-blue-200";
+                statusBadgeText = "Checked out by you";
+                break;
+              default:
+                statusClass =
+                  "bg-gray-100 text-gray-900 dark:bg-gray-600 dark:text-gray-200";
+                statusBadgeText = "Unknown";
+            }
           }
+
           const actionsHtml = getActionButtons(file);
           fileEl.className =
-            "py-6 px-4 bg-white dark:bg-mc-dark-bg hover:bg-opacity-80 transition-colors duration-200 border-b border-primary-300 dark:border-mc-dark-accent bg-opacity-95";
+            "py-6 px-4 bg-white dark:bg-gray-800 hover:bg-opacity-80 transition-colors duration-200 border-b border-gray-300 dark:border-gray-600";
+
+          // Enhanced file display with link indicators
+          const linkBadge = file.is_link
+            ? `
+            <span class="text-xs font-bold px-2.5 py-1 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" title="Linked to: ${file.master_file}">
+              <i class="fa-solid fa-link"></i> Linked
+            </span>
+          `
+            : "";
+
+          const revisionBadge = file.revision
+            ? `
+            <span class="text-xs font-semibold px-2.5 py-1 rounded-full bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200">
+              REV ${file.revision}
+            </span>
+          `
+            : "";
+
           fileEl.innerHTML = `
             <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
                 <div class="flex items-center space-x-4 flex-wrap">
-                    <h3 class="text-lg font-semibold text-primary-900 dark:text-primary-100">${
-                      file.filename
-                    }</h3>
+                    <div class="flex items-center space-x-2">
+                      ${
+                        file.is_link
+                          ? '<i class="fa-solid fa-link text-purple-600 dark:text-purple-400"></i>'
+                          : '<i class="fa-solid fa-file text-blue-600 dark:text-blue-400"></i>'
+                      }
+                      <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">${
+                        file.filename
+                      }</h3>
+                    </div>
                     <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
-                    ${
-                      file.revision
-                        ? `<span class="text-xs font-bold px-2.5 py-1 rounded-full bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200">REV ${file.revision}</span>`
-                        : ""
-                    }
+                    ${revisionBadge}
+                    ${linkBadge}
                 </div>
                 <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
             </div>
             ${
               file.description
-                ? `<div class="mt-2 text-sm text-primary-700 dark:text-primary-300 italic">${file.description}</div>`
+                ? `<div class="mt-2 text-sm text-gray-700 dark:text-gray-300 italic">${file.description}</div>`
                 : ""
             }
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-primary-700 dark:text-primary-300 text-sm">
-                <div class="flex items-center space-x-2"><i class="fa-solid fa-file text-primary-600 dark:text-primary-300"></i><span>Path: ${
-                  file.path
-                }</span></div>
-                <div class="flex items-center space-x-2"><i class="fa-solid fa-hard-drive text-primary-600 dark:text-primary-300"></i><span>Size: ${formatBytes(
-                  file.size
-                )}</span></div>
-                <div class="flex items-center space-x-2"><i class="fa-solid fa-clock text-primary-600 dark:text-primary-300"></i><span>Modified: ${formatDate(
-                  file.modified_at
-                )}</span></div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-gray-700 dark:text-gray-300 text-sm">
+                ${
+                  file.is_link
+                    ? `
+                  <div class="flex items-center space-x-2">
+                    <i class="fa-solid fa-link text-purple-600 dark:text-purple-400"></i>
+                    <span>Points to: ${file.master_file}</span>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <i class="fa-solid fa-info-circle text-gray-600 dark:text-gray-400"></i>
+                    <span>Type: Virtual Link</span>
+                  </div>
+                `
+                    : `
+                  <div class="flex items-center space-x-2">
+                    <i class="fa-solid fa-file text-gray-600 dark:text-gray-400"></i>
+                    <span>Path: ${file.path}</span>
+                  </div>
+                  <div class="flex items-center space-x-2">
+                    <i class="fa-solid fa-hard-drive text-gray-600 dark:text-gray-400"></i>
+                    <span>Size: ${formatBytes(file.size)}</span>
+                  </div>
+                `
+                }
+                <div class="flex items-center space-x-2">
+                  <i class="fa-solid fa-clock text-gray-600 dark:text-gray-400"></i>
+                  <span>Modified: ${formatDate(file.modified_at)}</span>
+                </div>
                 ${
                   file.locked_by && file.status !== "checked_out_by_user"
-                    ? `<div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1"><i class="fa-solid fa-lock text-primary-600 dark:text-primary-300"></i><span>Locked by: ${
-                        file.locked_by
-                      } at ${formatDate(file.locked_at)}</span></div>`
+                    ? `
+                  <div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1">
+                    <i class="fa-solid fa-lock text-gray-600 dark:text-gray-400"></i>
+                    <span>Locked by: ${file.locked_by} at ${formatDate(
+                        file.locked_at
+                      )}</span>
+                  </div>
+                `
                     : ""
                 }
-            </div>`;
+            </div>
+          `;
           filesContainer.appendChild(fileEl);
         });
+
         subDetailsEl.appendChild(filesContainer);
         subGroupsContainer.appendChild(subDetailsEl);
       });
@@ -1240,7 +1338,7 @@ function renderFiles() {
   });
 
   if (totalFilesFound === 0) {
-    fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-primary-600 dark:text-primary-300"><i class="fa-solid fa-folder-open text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No files found</h3><p class="mt-2 text-center">No Mastercam files match your search criteria.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-accent to-accent-hover text-white rounded-md hover:bg-opacity-80">Refresh</button></div>`;
+    fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-gray-600 dark:text-gray-400"><i class="fa-solid fa-folder-open text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No files found</h3><p class="mt-2 text-center">No Mastercam files match your search criteria.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-md hover:bg-opacity-80">Refresh</button></div>`;
   }
 
   // Re-apply tooltips to newly rendered elements
@@ -1248,7 +1346,6 @@ function renderFiles() {
     addDynamicTooltips();
   }, 100);
 }
-
 async function loadConfig() {
   try {
     const response = await fetch("/config");
@@ -1430,19 +1527,77 @@ function showCheckinDialog(filename) {
   }, 100);
 }
 
-// function showNewFileDialog() {
-//   const modal = document.getElementById("newUploadModal");
-//   const form = document.getElementById("newUploadForm");
-//   form.reset();
-//   modal.classList.remove("hidden");
+function validateSingleInput(input) {
+  if (!input) return;
 
-//   // Add file naming helper and tooltips after modal is shown
-//   setTimeout(() => {
-//     addFileNamingHelper();
-//     addModalTooltips();
-//     updateTooltipVisibility();
-//   }, 100);
-// }
+  const value = input.value.trim();
+  let isValid = true;
+
+  if (input.hasAttribute("required") && value === "") {
+    isValid = false;
+  }
+
+  if (input.id === "newFileRev" && value !== "" && !/^\d+\.\d+$/.test(value)) {
+    isValid = false;
+  }
+
+  addValidationClass(input, isValid);
+}
+
+function setupNewUploadModal() {
+  // Upload type radio button handlers
+  const uploadTypeRadios = document.querySelectorAll(
+    'input[name="uploadType"]'
+  );
+  uploadTypeRadios.forEach((radio) => {
+    radio.addEventListener("change", updateUploadTypeView);
+  });
+
+  // Form submission handler
+  // const newUploadForm = document.getElementById("newUploadForm");
+  // if (newUploadForm) {
+  //   newUploadForm.removeEventListener("submit", handleFormSubmission); // Remove any existing listeners
+  //   newUploadForm.addEventListener("submit", handleFormSubmission);
+  // }
+
+  // Cancel button handler
+  const cancelBtn = document.getElementById("cancelNewUpload");
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", () => {
+      document.getElementById("newUploadModal").classList.add("hidden");
+    });
+  }
+
+  // Real-time validation handlers
+  const inputs = document.querySelectorAll("#newUploadForm input[required]");
+  inputs.forEach((input) => {
+    input.addEventListener("blur", function () {
+      validateSingleInput(this);
+    });
+
+    input.addEventListener("input", function () {
+      // Clear validation state on input
+      this.classList.remove(
+        "border-red-500",
+        "border-green-500",
+        "ring-red-500",
+        "ring-green-500",
+        "ring-2",
+        "ring-opacity-25"
+      );
+    });
+  });
+
+  // Special validation for revision field
+  const revInput = document.getElementById("newFileRev");
+  if (revInput) {
+    revInput.addEventListener("blur", function () {
+      const value = this.value.trim();
+      const isValid = value !== "" && /^\d+\.\d+$/.test(value);
+      addValidationClass(this, isValid);
+    });
+  }
+}
 
 async function openSendMessageModal() {
   const modal = document.getElementById("sendMessageModal");
@@ -1790,186 +1945,280 @@ async function viewFileHistory(filename) {
   }
 }
 
-function showFileHistoryModal(historyData) {
-  const modal = document.createElement("div");
-  modal.className =
-    "fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100] js-history-modal";
-  modal.addEventListener("click", (e) => {
-    if (e.target === modal) modal.remove();
-  });
+// function showFileHistoryModal(historyData) {
+//   const modal = document.createElement("div");
+//   modal.className =
+//     "fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100] js-history-modal";
+//   modal.addEventListener("click", (e) => {
+//     if (e.target === modal) modal.remove();
+//   });
 
-  const allRevisions = Array.from(
-    new Set(
-      historyData.history
-        .map((commit) => (commit.revision ? parseFloat(commit.revision) : null))
-        .filter((rev) => rev !== null && !isNaN(rev))
-    )
-  ).sort((a, b) => a - b);
+//   const allRevisions = Array.from(
+//     new Set(
+//       historyData.history
+//         .map((commit) => (commit.revision ? parseFloat(commit.revision) : null))
+//         .filter((rev) => rev !== null && !isNaN(rev))
+//     )
+//   ).sort((a, b) => a - b);
 
-  let historyListHtml = "";
-  if (historyData.history && historyData.history.length > 0) {
-    historyData.history.forEach((commit, index) => {
-      const revisionBadge = commit.revision
-        ? `<span class="font-bold text-xs bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200 px-2 py-1 rounded-full">REV ${commit.revision}</span>`
-        : "";
+//   let historyListHtml = "";
+//   if (historyData.history && historyData.history.length > 0) {
+//     historyData.history.forEach((commit, index) => {
+//       const revisionBadge = commit.revision
+//         ? `<span class="font-bold text-xs bg-primary-200 text-primary-800 dark:bg-primary-700 dark:text-primary-200 px-2 py-1 rounded-full">REV ${commit.revision}</span>`
+//         : "";
 
-      let adminActions = "";
-      const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
+//       let adminActions = "";
+//       const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
 
-      if (
-        currentConfig &&
-        currentConfig.is_admin &&
-        index === 0 &&
-        historyData.history.length > 1
-      ) {
-        adminActions = `<button class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold admin-action-btn js-revert-btn ${adminBtnVisibility}" data-filename="${historyData.filename}" data-commit-hash="${commit.commit_hash}"><i class="fa-solid fa-undo"></i><span>Revert</span></button>`;
-      }
+//       if (
+//         currentConfig &&
+//         currentConfig.is_admin &&
+//         index === 0 &&
+//         historyData.history.length > 1
+//       ) {
+//         adminActions = `<button class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold admin-action-btn js-revert-btn ${adminBtnVisibility}" data-filename="${historyData.filename}" data-commit-hash="${commit.commit_hash}"><i class="fa-solid fa-undo"></i><span>Revert</span></button>`;
+//       }
 
-      historyListHtml += `<div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95 history-item" data-revision="${
-        commit.revision || ""
-      }">
-        <div class="flex justify-between items-start">
-            <div>
-                <div class="flex items-center space-x-3 text-sm mb-2 flex-wrap gap-y-1">
-                    <span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
-                      0,
-                      8
-                    )}</span>
-                    ${revisionBadge}
-                    <span class="text-primary-600 dark:text-primary-300">${formatDate(
-                      commit.date
-                    )}</span>
-                </div>
-                <div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
-                  commit.message
-                }</div>
-                <div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
-                  commit.author_name
-                }</div>
-            </div>
-            <div class="flex-shrink-0 ml-4 flex items-center space-x-2">
-                ${adminActions}
-                <a href="/files/${historyData.filename}/versions/${
-        commit.commit_hash
-      }" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold">
-                    <i class="fa-solid fa-file-arrow-down"></i><span>Download</span>
-                </a>
-            </div>
-        </div>
-      </div>`;
-    });
-  } else {
-    historyListHtml = `<p class="text-center text-primary-600 dark:text-primary-300">No version history available.</p>`;
-  }
+//       historyListHtml += `<div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95 history-item" data-revision="${
+//         commit.revision || ""
+//       }">
+//         <div class="flex justify-between items-start">
+//             <div>
+//                 <div class="flex items-center space-x-3 text-sm mb-2 flex-wrap gap-y-1">
+//                     <span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
+//                       0,
+//                       8
+//                     )}</span>
+//                     ${revisionBadge}
+//                     <span class="text-primary-600 dark:text-primary-300">${formatDate(
+//                       commit.date
+//                     )}</span>
+//                 </div>
+//                 <div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
+//                   commit.message
+//                 }</div>
+//                 <div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
+//                   commit.author_name
+//                 }</div>
+//             </div>
+//             <div class="flex-shrink-0 ml-4 flex items-center space-x-2">
+//                 ${adminActions}
+//                 <a href="/files/${historyData.filename}/versions/${
+//         commit.commit_hash
+//       }" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold">
+//                     <i class="fa-solid fa-file-arrow-down"></i><span>Download</span>
+//                 </a>
+//             </div>
+//         </div>
+//       </div>`;
+//     });
+//   } else {
+//     historyListHtml = `<p class="text-center text-primary-600 dark:text-primary-300">No version history available.</p>`;
+//   }
 
-  const revisionFilterHtml =
-    allRevisions.length > 1
-      ? `
-    <div class="flex items-center justify-center space-x-6 mt-4">
-        <div class="flex items-center space-x-2">
-            <label for="revFilterFrom" class="text-sm font-medium text-primary-800 dark:text-primary-200">From Rev:</label>
-            <input type="number" id="revFilterFrom" value="${
-              allRevisions[0]
-            }" min="${allRevisions[0]}" max="${
-          allRevisions[allRevisions.length - 1]
-        }" step="0.1" 
-                   class="w-24 p-1 text-center font-semibold border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
-        </div>
-        <div class="flex items-center space-x-2">
-            <label for="revFilterTo" class="text-sm font-medium text-primary-800 dark:text-primary-200">To Rev:</label>
-            <input type="number" id="revFilterTo" value="${
-              allRevisions[allRevisions.length - 1]
-            }" min="${allRevisions[0]}" max="${
-          allRevisions[allRevisions.length - 1]
-        }" step="0.1" 
-                   class="w-24 p-1 text-center font-semibold border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
-        </div>
-    </div>
-  `
-      : "";
+//   const revisionFilterHtml =
+//     allRevisions.length > 1
+//       ? `
+//     <div class="flex items-center justify-center space-x-6 mt-4">
+//         <div class="flex items-center space-x-2">
+//             <label for="revFilterFrom" class="text-sm font-medium text-primary-800 dark:text-primary-200">From Rev:</label>
+//             <input type="number" id="revFilterFrom" value="${
+//               allRevisions[0]
+//             }" min="${allRevisions[0]}" max="${
+//           allRevisions[allRevisions.length - 1]
+//         }" step="0.1"
+//                    class="w-24 p-1 text-center font-semibold border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
+//         </div>
+//         <div class="flex items-center space-x-2">
+//             <label for="revFilterTo" class="text-sm font-medium text-primary-800 dark:text-primary-200">To Rev:</label>
+//             <input type="number" id="revFilterTo" value="${
+//               allRevisions[allRevisions.length - 1]
+//             }" min="${allRevisions[0]}" max="${
+//           allRevisions[allRevisions.length - 1]
+//         }" step="0.1"
+//                    class="w-24 p-1 text-center font-semibold border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
+//         </div>
+//     </div>
+//   `
+//       : "";
 
-  modal.innerHTML = `<div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-4xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
-    <div class="flex-shrink-0 p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent">
-        <div class="flex justify-between items-center">
-            <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3>
-            <button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.js-history-modal').remove()">
-                <i class="fa-solid fa-xmark text-2xl"></i>
-            </button>
-        </div>
-        
-        ${revisionFilterHtml}
+//   modal.innerHTML = `<div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-4xl flex flex-col max-h-[90vh] bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
+//     <div class="flex-shrink-0 p-6 pb-4 border-b border-primary-300 dark:border-mc-dark-accent">
+//         <div class="flex justify-between items-center">
+//             <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Version History - ${historyData.filename}</h3>
+//             <button class="text-primary-600 hover:text-primary-900 dark:text-primary-300 dark:hover:text-accent" onclick="this.closest('.js-history-modal').remove()">
+//                 <i class="fa-solid fa-xmark text-2xl"></i>
+//             </button>
+//         </div>
 
-    </div>
-    <div id="historyListContainer" class="overflow-y-auto p-6 space-y-4">
-        ${historyListHtml}
-    </div>
-  </div>`;
-  document.body.appendChild(modal);
+//         ${revisionFilterHtml}
 
-  const historyItems = modal.querySelectorAll(".history-item");
-  const fromInput = document.getElementById("revFilterFrom");
-  const toInput = document.getElementById("revFilterTo");
+//     </div>
+//     <div id="historyListContainer" class="overflow-y-auto p-6 space-y-4">
+//         ${historyListHtml}
+//     </div>
+//   </div>`;
+//   document.body.appendChild(modal);
 
-  const applyFilters = () => {
-    const minRev = parseFloat(fromInput.value) || allRevisions[0];
-    const maxRev =
-      parseFloat(toInput.value) || allRevisions[allRevisions.length - 1];
+//   const historyItems = modal.querySelectorAll(".history-item");
+//   const fromInput = document.getElementById("revFilterFrom");
+//   const toInput = document.getElementById("revFilterTo");
 
-    if (minRev > maxRev) {
-      return;
-    }
+//   const applyFilters = () => {
+//     const minRev = parseFloat(fromInput.value) || allRevisions[0];
+//     const maxRev =
+//       parseFloat(toInput.value) || allRevisions[allRevisions.length - 1];
 
-    historyItems.forEach((item) => {
-      const itemRevStr = item.dataset.revision;
-      let revMatch = true;
+//     if (minRev > maxRev) {
+//       return;
+//     }
 
-      if (itemRevStr && itemRevStr !== "") {
-        const itemRev = parseFloat(itemRevStr);
-        revMatch = itemRev >= minRev && itemRev <= maxRev;
-      } else {
-        revMatch = false;
-      }
+//     historyItems.forEach((item) => {
+//       const itemRevStr = item.dataset.revision;
+//       let revMatch = true;
 
-      item.style.display = revMatch ? "" : "none";
-    });
-  };
+//       if (itemRevStr && itemRevStr !== "") {
+//         const itemRev = parseFloat(itemRevStr);
+//         revMatch = itemRev >= minRev && itemRev <= maxRev;
+//       } else {
+//         revMatch = false;
+//       }
 
-  if (fromInput && toInput) {
-    fromInput.addEventListener("input", applyFilters);
-    toInput.addEventListener("input", applyFilters);
-    applyFilters();
-  }
-}
+//       item.style.display = revMatch ? "" : "none";
+//     });
+//   };
+
+//   if (fromInput && toInput) {
+//     fromInput.addEventListener("input", applyFilters);
+//     toInput.addEventListener("input", applyFilters);
+//     applyFilters();
+//   }
+// }
 
 function showNewFileDialog() {
   const modal = document.getElementById("newUploadModal");
   const form = document.getElementById("newUploadForm");
+
+  // Reset form
   form.reset();
+
+  // Reset to file upload mode by default
+  document.getElementById("uploadTypeFile").checked = true;
+  document.getElementById("uploadTypeLink").checked = false;
+
+  // Clear any validation classes
+  clearFormValidation();
+
+  // Update the view
+  updateUploadTypeView();
+
+  // Show modal
   modal.classList.remove("hidden");
 
-  // Add file naming helper and tooltips after modal is shown
+  // Add tooltips after modal is shown
   setTimeout(() => {
     addFileNamingHelper();
     updateTooltipVisibility();
   }, 100);
 }
 
-async function uploadNewFile(file, description, rev) {
+function updateUploadTypeView() {
+  const selectedValue =
+    document.querySelector('input[name="uploadType"]:checked')?.value || "file";
+  const fileContainer = document.getElementById("fileUploadContainer");
+  const linkContainer = document.getElementById("linkCreateContainer");
+
+  if (selectedValue === "link") {
+    fileContainer.classList.add("hidden");
+    linkContainer.classList.remove("hidden");
+    populateMasterFileList(); // Populate the datalist when switching to link mode
+  } else {
+    fileContainer.classList.remove("hidden");
+    linkContainer.classList.add("hidden");
+  }
+}
+
+async function uploadNewFile(formData) {
+  const submitBtn = document.querySelector(
+    '#newUploadForm button[type="submit"]'
+  );
+  const submitText = document.getElementById("submitBtnText");
+  const submitSpinner = document.getElementById("submitSpinner");
+
+  // Show loading state
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.classList.add("opacity-75", "cursor-not-allowed");
+    if (submitText) submitText.textContent = "Creating...";
+    if (submitSpinner) submitSpinner.classList.remove("hidden");
+  }
+
   try {
-    const formData = new FormData();
-    formData.append("user", currentUser);
-    formData.append("file", file);
-    formData.append("description", description);
-    formData.append("rev", rev);
     const response = await fetch(`/files/new_upload`, {
       method: "POST",
       body: formData,
     });
+
     const result = await response.json();
-    if (!response.ok) throw new Error(result.detail);
-    debounceNotifications(`New file '${file.name}' added!`, "success");
+
+    if (!response.ok) {
+      // Parse specific error types for better user feedback
+      let errorMessage = result.detail || "Upload failed";
+
+      // Handle specific error cases
+      if (response.status === 409) {
+        // File already exists
+        errorMessage = `❌ ${errorMessage}\n\nTip: Try a different filename or check if a similar file/link already exists.`;
+      } else if (response.status === 404) {
+        // Master file not found (for links)
+        errorMessage = `❌ ${errorMessage}\n\nTip: Make sure the master file exists and is spelled correctly.`;
+      } else if (response.status === 400) {
+        // Validation errors
+        errorMessage = `❌ ${errorMessage}`;
+      }
+
+      throw new Error(errorMessage);
+    }
+
+    // Success handling
+    debounceNotifications(
+      `✅ ${result.message || "Action completed successfully!"}`,
+      "success"
+    );
+
+    // Close modal on success
+    document.getElementById("newUploadModal").classList.add("hidden");
+
+    // Clear form for next use
+    document.getElementById("newUploadForm").reset();
+    clearFormValidation();
+
+    // Reset to file upload mode
+    document.getElementById("uploadTypeFile").checked = true;
+    updateUploadTypeView();
   } catch (error) {
-    debounceNotifications(`Upload Error: ${error.message}`, "error");
+    // Enhanced error display
+    let displayError = error.message;
+
+    // If it's a network error, provide helpful guidance
+    if (error.name === "TypeError" || error.message.includes("fetch")) {
+      displayError =
+        "❌ Network Error: Could not connect to server.\n\nPlease check your connection and try again.";
+    }
+
+    debounceNotifications(displayError, "error");
+
+    // Keep the modal open so user can fix issues
+    console.error("Upload error:", error);
+  } finally {
+    // Reset button state
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.classList.remove("opacity-75", "cursor-not-allowed");
+      if (submitText) submitText.textContent = "Create";
+      if (submitSpinner) submitSpinner.classList.add("hidden");
+    }
   }
 }
 
@@ -2167,6 +2416,49 @@ function formatDate(dateString) {
     console.error("Error formatting date:", dateString, error);
     return "Date Error";
   }
+}
+
+function handleFormSubmission(e) {
+  e.preventDefault();
+
+  const form = e.target;
+  const formData = new FormData();
+  formData.append("user", currentUser);
+
+  const description = form.querySelector("#newFileDescription").value.trim();
+  const rev = form.querySelector("#newFileRev").value.trim();
+  const uploadType =
+    form.querySelector('input[name="uploadType"]:checked')?.value || "file";
+
+  // Client-side validation
+  const validation = validateUploadForm(form);
+
+  if (!validation.isValid) {
+    debounceNotifications(
+      `Please fix the following errors:\n• ${validation.errors.join("\n• ")}`,
+      "error"
+    );
+    return;
+  }
+
+  // Add common fields
+  formData.append("description", description);
+  formData.append("rev", rev);
+
+  if (uploadType === "link") {
+    const newLinkFilename = form.querySelector("#newLinkFilename").value.trim();
+    const linkToMaster = form.querySelector("#linkToMaster").value.trim();
+
+    formData.append("is_link_creation", "true");
+    formData.append("new_link_filename", newLinkFilename);
+    formData.append("link_to_master", linkToMaster);
+  } else {
+    const fileInput = form.querySelector("#newFileUpload");
+    formData.append("is_link_creation", "false");
+    formData.append("file", fileInput.files[0]);
+  }
+
+  uploadNewFile(formData);
 }
 
 function formatDuration(totalSeconds) {
@@ -2377,6 +2669,146 @@ function closeDashboardModal() {
   }
 }
 
+function validateUploadForm(form) {
+  const errors = [];
+  let isValid = true;
+
+  const description = form.querySelector("#newFileDescription").value.trim();
+  const rev = form.querySelector("#newFileRev").value.trim();
+  const uploadType =
+    form.querySelector('input[name="uploadType"]:checked')?.value || "file";
+
+  // Clear previous validation
+  clearFormValidation();
+
+  // Description validation
+  const descInput = form.querySelector("#newFileDescription");
+  if (!description) {
+    errors.push("Description is required");
+    addValidationClass(descInput, false);
+    isValid = false;
+  } else if (description.length < 3) {
+    errors.push("Description must be at least 3 characters");
+    addValidationClass(descInput, false);
+    isValid = false;
+  } else {
+    addValidationClass(descInput, true);
+  }
+
+  // Revision validation
+  const revInput = form.querySelector("#newFileRev");
+  if (!rev) {
+    errors.push("Revision is required");
+    addValidationClass(revInput, false);
+    isValid = false;
+  } else if (!/^\d+\.\d+$/.test(rev)) {
+    errors.push("Revision must be in format X.Y (e.g., 1.0)");
+    addValidationClass(revInput, false);
+    isValid = false;
+  } else {
+    addValidationClass(revInput, true);
+  }
+
+  if (uploadType === "link") {
+    const newLinkFilename = form.querySelector("#newLinkFilename").value.trim();
+    const linkToMaster = form.querySelector("#linkToMaster").value.trim();
+
+    const linkNameInput = form.querySelector("#newLinkFilename");
+    if (!newLinkFilename) {
+      errors.push("Link name is required");
+      addValidationClass(linkNameInput, false);
+      isValid = false;
+    } else if (newLinkFilename.length < 7) {
+      errors.push("Link name must follow naming convention (7+ digits)");
+      addValidationClass(linkNameInput, false);
+      isValid = false;
+    } else {
+      addValidationClass(linkNameInput, true);
+    }
+
+    const linkMasterInput = form.querySelector("#linkToMaster");
+    if (!linkToMaster) {
+      errors.push("Master file selection is required");
+      addValidationClass(linkMasterInput, false);
+      isValid = false;
+    } else {
+      addValidationClass(linkMasterInput, true);
+    }
+
+    // Check if user is trying to link to themselves
+    if (newLinkFilename === linkToMaster) {
+      errors.push("A link cannot point to itself");
+      addValidationClass(linkNameInput, false);
+      addValidationClass(linkMasterInput, false);
+      isValid = false;
+    }
+  } else {
+    const fileInput = form.querySelector("#newFileUpload");
+    if (!fileInput.files || fileInput.files.length === 0) {
+      errors.push("File selection is required");
+      addValidationClass(fileInput, false);
+      isValid = false;
+    } else {
+      addValidationClass(fileInput, true);
+
+      // Additional file validation
+      const file = fileInput.files[0];
+      const maxSize = 100 * 1024 * 1024; // 100MB
+      if (file.size > maxSize) {
+        errors.push("File size must be less than 100MB");
+        addValidationClass(fileInput, false);
+        isValid = false;
+      }
+    }
+  }
+
+  return { isValid, errors };
+}
+
+function addValidationClass(element, isValid) {
+  if (!element) return;
+
+  // Remove existing classes
+  element.classList.remove(
+    "border-red-500",
+    "border-green-500",
+    "ring-red-500",
+    "ring-green-500",
+    "ring-2",
+    "ring-opacity-25"
+  );
+
+  if (isValid) {
+    element.classList.add(
+      "border-green-500",
+      "ring-green-500",
+      "ring-2",
+      "ring-opacity-25"
+    );
+  } else {
+    element.classList.add(
+      "border-red-500",
+      "ring-red-500",
+      "ring-2",
+      "ring-opacity-25"
+    );
+  }
+}
+
+function clearFormValidation() {
+  const inputs = document.querySelectorAll("#newUploadForm input");
+  inputs.forEach((input) => {
+    input.classList.remove(
+      "border-red-500",
+      "border-green-500",
+      "ring-red-500",
+      "ring-green-500",
+      "ring-2",
+      "ring-opacity-25"
+    );
+  });
+}
+
 function saveExpandedSubState() {
   const openSubGroups = [];
   document.querySelectorAll(".sub-file-group[open]").forEach((subDetailsEl) => {
@@ -2394,6 +2826,31 @@ function saveExpandedState() {
       openGroups.push(detailsEl.dataset.groupName);
   });
   localStorage.setItem("expandedGroups", JSON.stringify(openGroups));
+}
+
+function populateMasterFileList() {
+  const datalist = document.getElementById("masterFileList");
+  if (!datalist) return;
+
+  datalist.innerHTML = ""; // Clear old options
+
+  // Create a flat list of all physical files (not links)
+  if (!groupedFiles || Object.keys(groupedFiles).length === 0) {
+    return; // No files available
+  }
+
+  const physicalFiles = Object.values(groupedFiles)
+    .flat()
+    .filter((file) => !file.is_link); // Only include real files, not links
+
+  // Use a Set to ensure unique filenames
+  const uniqueFilenames = new Set(physicalFiles.map((file) => file.filename));
+
+  uniqueFilenames.forEach((filename) => {
+    const option = document.createElement("option");
+    option.value = filename;
+    datalist.appendChild(option);
+  });
 }
 
 // -- New Confirmation Modal Function --
@@ -2447,6 +2904,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
   // Initialize tooltip system
   initTooltipSystem();
+  setupNewUploadModal();
 
   setTimeout(() => connectWebSocket(), 1000);
 
@@ -2607,25 +3065,62 @@ document.addEventListener("DOMContentLoaded", function () {
     );
 
   const newUploadForm = document.getElementById("newUploadForm");
+  // Replace your existing 'newUploadForm.addEventListener("submit", ...)' with this
   newUploadForm.addEventListener("submit", function (e) {
     e.preventDefault();
-    const fileInput = document.getElementById("newFileUpload");
-    const descriptionInput = document.getElementById("newFileDescription");
-    const revInput = document.getElementById("newFileRev");
-    if (
-      fileInput.files.length > 0 &&
-      descriptionInput.value.trim() !== "" &&
-      revInput.value.trim() !== ""
-    ) {
-      uploadNewFile(
-        fileInput.files[0],
-        descriptionInput.value.trim(),
-        revInput.value.trim()
+    const formData = new FormData();
+    formData.append("user", currentUser);
+
+    const description = document
+      .getElementById("newFileDescription")
+      .value.trim();
+    const rev = document.getElementById("newFileRev").value.trim();
+    const uploadType = document.querySelector(
+      'input[name="uploadType"]:checked'
+    ).value;
+
+    // --- NEW VALIDATION LOGIC ---
+    if (!description || !rev) {
+      debounceNotifications(
+        "Please fill out the Description and Revision fields.",
+        "error"
       );
-      document.getElementById("newUploadModal").classList.add("hidden");
-    } else {
-      debounceNotifications("Please complete all fields.", "error");
+      return;
     }
+
+    if (uploadType === "link") {
+      const newLinkFilename = document
+        .getElementById("newLinkFilename")
+        .value.trim();
+      const linkToMaster = document.getElementById("linkToMaster").value.trim();
+
+      if (!newLinkFilename || !linkToMaster) {
+        debounceNotifications(
+          "Please provide both a new link name and a master file.",
+          "error"
+        );
+        return;
+      }
+      formData.append("is_link_creation", true);
+      formData.append("new_link_filename", newLinkFilename);
+      formData.append("link_to_master", linkToMaster);
+    } else {
+      // 'file' upload type
+      const fileInput = document.getElementById("newFileUpload");
+      if (fileInput.files.length === 0) {
+        debounceNotifications("Please select a file to upload.", "error");
+        return;
+      }
+      formData.append("is_link_creation", false);
+      formData.append("file", fileInput.files[0]);
+    }
+
+    // If all validation passes, proceed
+    formData.append("description", description);
+    formData.append("rev", rev);
+
+    uploadNewFile(formData);
+    document.getElementById("newUploadModal").classList.add("hidden");
   });
 
   document

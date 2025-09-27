@@ -9,6 +9,50 @@
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
     />
+    <style>
+      .selected-upload-type {
+        border-color: #fbbf24 !important; /* Corresponds to Tailwind 'border-accent' */
+        color: #fbbf24 !important; /* Corresponds to Tailwind 'text-accent' */
+      }
+      /* Custom validation classes using Tailwind colors */
+      .invalid-input {
+        @apply border-red-500 ring-red-500 ring-2 ring-opacity-25;
+      }
+
+      .valid-input {
+        @apply border-green-500 ring-green-500 ring-2 ring-opacity-25;
+      }
+
+      /* Ensure amber colors work consistently */
+      .text-accent {
+        @apply text-amber-500;
+      }
+
+      .bg-accent {
+        @apply bg-amber-500;
+      }
+
+      .border-accent {
+        @apply border-amber-500;
+      }
+
+      .from-accent {
+        @apply from-amber-500;
+      }
+
+      .to-accent-hover {
+        @apply to-amber-600;
+      }
+
+      /* File input button styling */
+      input[type="file"]::file-selector-button {
+        @apply mr-4 py-2 px-4 rounded-md border-0 text-sm font-semibold bg-gradient-to-r from-amber-400 to-amber-500 text-gray-800 cursor-pointer transition-colors;
+      }
+
+      input[type="file"]::file-selector-button:hover {
+        @apply from-amber-500 to-amber-600;
+      }
+    </style>
   </head>
   <body
     class="font-sans bg-mc-light-bg dark:bg-mc-dark-bg text-mc-text-light dark:text-mc-text-dark flex flex-col items-center p-4 min-h-screen transition-colors duration-300"
@@ -389,74 +433,177 @@
 
     <div
       id="newUploadModal"
-      class="fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100] hidden"
+      class="fixed inset-0 bg-gray-900 bg-opacity-80 flex items-center justify-center p-4 z-[100] hidden"
     >
       <div
-        class="bg-white dark:bg-mc-dark-bg rounded-xl shadow-lg p-6 w-full max-w-lg bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent"
+        class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 w-full max-w-lg"
       >
-        <form id="newUploadForm">
-          <h3
-            class="text-xl font-semibold text-primary-900 dark:text-accent mb-4"
-          >
-            Upload New File
+        <form id="newUploadForm" class="space-y-4">
+          <h3 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">
+            Add New File
           </h3>
-          <div class="mb-4">
+
+          <!-- Upload Type Selection with proper yellow accent -->
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <input
+                type="radio"
+                id="uploadTypeFile"
+                name="uploadType"
+                value="file"
+                class="hidden peer"
+                checked
+              />
+              <label
+                for="uploadTypeFile"
+                class="block p-3 text-center rounded-lg border-2 border-gray-300 dark:border-gray-600 cursor-pointer peer-checked:border-amber-400 peer-checked:text-amber-600 peer-checked:bg-amber-50 dark:peer-checked:bg-amber-900/20 dark:peer-checked:border-amber-400 dark:peer-checked:text-amber-400 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              >
+                <i class="fa-solid fa-file-arrow-up text-xl mb-1"></i>
+                <div class="font-semibold">Upload New File</div>
+              </label>
+            </div>
+            <div>
+              <input
+                type="radio"
+                id="uploadTypeLink"
+                name="uploadType"
+                value="link"
+                class="hidden peer"
+              />
+              <label
+                for="uploadTypeLink"
+                class="block p-3 text-center rounded-lg border-2 border-gray-300 dark:border-gray-600 cursor-pointer peer-checked:border-amber-400 peer-checked:text-amber-600 peer-checked:bg-amber-50 dark:peer-checked:bg-amber-900/20 dark:peer-checked:border-amber-400 dark:peer-checked:text-amber-400 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+              >
+                <i class="fa-solid fa-link text-xl mb-1"></i>
+                <div class="font-semibold">Create a Link</div>
+              </label>
+            </div>
+          </div>
+
+          <!-- File Upload Container -->
+          <div id="fileUploadContainer">
+            <label
+              for="newFileUpload"
+              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Mastercam File <span class="text-red-500">*</span>
+            </label>
+            <input
+              type="file"
+              id="newFileUpload"
+              name="file"
+              accept=".mcam,.vnc"
+              class="mt-1 block w-full text-sm text-gray-600 dark:text-gray-300 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-amber-400 file:to-amber-500 file:text-gray-800 hover:file:from-amber-500 hover:file:to-amber-600"
+            />
+            <div
+              class="mt-2 p-3 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700 rounded-md"
+            >
+              <p class="text-xs text-blue-700 dark:text-blue-300">
+                <i class="fa-solid fa-info-circle mr-1"></i>
+                <strong>Naming Convention:</strong> 7-digit number + machine
+                (e.g., 1234567_M69.mcam)
+              </p>
+            </div>
+          </div>
+
+          <!-- Link Creation Container -->
+          <div id="linkCreateContainer" class="hidden space-y-4">
+            <div>
+              <label
+                for="newLinkFilename"
+                class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                New Link Name <span class="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                id="newLinkFilename"
+                name="new_link_filename"
+                placeholder="e.g., 1234567_M70"
+                class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-amber-500 dark:focus:border-amber-400 focus:ring-amber-500 dark:focus:ring-amber-400 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Name for the new linked file (without extension)
+              </p>
+            </div>
+
+            <div>
+              <label
+                for="linkToMaster"
+                class="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                Link to Master File <span class="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                id="linkToMaster"
+                name="link_to_master"
+                list="masterFileList"
+                placeholder="Start typing to see available files..."
+                class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-amber-500 dark:focus:border-amber-400 focus:ring-amber-500 dark:focus:ring-amber-400 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+              />
+              <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Select the master file this link should point to
+              </p>
+            </div>
+          </div>
+
+          <!-- Common Fields -->
+          <div>
             <label
               for="newFileDescription"
-              class="block text-sm font-medium text-primary-800 dark:text-primary-200 mb-1"
-              >Title block name:</label
+              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
             >
+              Description <span class="text-red-500">*</span>
+            </label>
             <input
               type="text"
               id="newFileDescription"
+              name="description"
+              placeholder="Part name per title block"
               required
-              class="w-full p-2 border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent bg-opacity-90"
+              class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-amber-500 dark:focus:border-amber-400 focus:ring-amber-500 dark:focus:ring-amber-400 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
             />
           </div>
-          <div class="mb-4">
+
+          <div>
             <label
               for="newFileRev"
-              class="block text-sm font-medium text-primary-800 dark:text-primary-200 mb-1"
-              >Initial Revision:</label
+              class="block text-sm font-medium text-gray-700 dark:text-gray-300"
             >
+              Initial Revision <span class="text-red-500">*</span>
+            </label>
             <input
               type="text"
               id="newFileRev"
-              placeholder="e.g., 1.0"
+              name="rev"
+              placeholder="1.0"
               required
-              pattern="\d+\.\d+"
-              title="Please enter a revision in the format '1.0'"
-              class="w-full p-2 border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent bg-opacity-90"
+              pattern="^\d+\.\d+$"
+              class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-amber-500 dark:focus:border-amber-400 focus:ring-amber-500 dark:focus:ring-amber-400 bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
             />
+            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              Use format like "1.0" for the first version
+            </p>
           </div>
-          <div class="mb-6">
-            <label
-              for="newFileUpload"
-              class="block text-sm font-medium text-primary-800 dark:text-primary-200 mb-1"
-              >File:</label
-            >
-            <input
-              id="newFileUpload"
-              name="file"
-              type="file"
-              required
-              accept=".mcam"
-              class="w-full text-sm text-primary-600 dark:text-primary-300 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-accent file:to-accent-hover file:text-white hover:file:bg-opacity-80"
-            />
-          </div>
-          <div class="flex justify-end space-x-4">
+
+          <div class="flex justify-end space-x-3 pt-4">
             <button
               type="button"
               id="cancelNewUpload"
-              class="px-4 py-2 rounded-md font-semibold bg-gray-200 text-gray-800 hover:bg-gray-300 dark:bg-gray-600 dark:text-gray-100 dark:hover:bg-gray-500"
+              class="px-4 py-2 bg-gray-300 hover:bg-gray-400 dark:bg-gray-600 dark:hover:bg-gray-500 text-gray-800 dark:text-gray-100 rounded-md transition-colors font-semibold"
             >
               Cancel
             </button>
             <button
               type="submit"
-              class="px-4 py-2 bg-gradient-to-r from-accent to-accent-hover text-white rounded-md hover:bg-opacity-80 font-semibold"
+              class="px-4 py-2 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-gray-800 rounded-md transition-colors font-semibold flex items-center"
             >
-              Upload File
+              <span id="submitBtnText">Create</span>
+              <i
+                id="submitSpinner"
+                class="fa-solid fa-spinner fa-spin ml-2 hidden"
+              ></i>
             </button>
           </div>
         </form>
@@ -582,6 +729,7 @@
         </div>
       </div>
     </div>
+    <datalist id="masterFileList"></datalist>
 
     <script src="/static/js/script.js"></script>
   </body>
