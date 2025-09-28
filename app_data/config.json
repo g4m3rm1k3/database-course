@@ -1,10 +1,10 @@
 {
   "version": "1.0.0",
   "gitlab": {
-    "base_url": "https://gitlab.com/g4m3rm1k3-group/test.git",
-    "project_id": "74609002",
+    "base_url": "https://gitlab.com/g4m3rm1k3-group/interfacetest2.git",
+    "project_id": "74856420",
     "username": "g4m3rm1k3",
-    "token": "Z0FBQUFBQm8yVUJDc1R5a1dta2lCVThTQlkwN2dOQk5NRE9aeDRCTW1VNGJHM1p1Z1g5aEdWREhodHljei1fNFRVWnBwNEwtMDl3Ulpjc05rQjVtMlhvUjJzVkoyODAwM0VHbXJHUEdqRzVWQjhqQnNINHN1MFJMZ0RNOEJQUUpTQzJ6VXJVWFMwcFZGTVBOS3BBOTdlS0pVOWF3bmd6cnZnPT0="
+    "token": "Z0FBQUFBQm8yVmp0LWZhdnQwQl92bGNfX0xIalJ1QVBTQ2J0VVlJS184OFZlY3puRkdHMEJiS2pCOXpVaUZaTFd2VUhYV3BqOFJ3T3dielN3c2JqRTNUdVk2dDI2VDhZUHNSU0ZpbVVocmhDMFhaRjlCMWJ1VVp0ME54UWUzZnBIal9mdjFaOW5ERGpkQnktMjNULVpqWi1VZVl3WUJsN3hnPT0="
   },
   "local": {},
   "ui": {},

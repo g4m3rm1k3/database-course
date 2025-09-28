@@ -1,2097 +1,253 @@
-Yes, I can do that. I've updated the master document to reflect the new functionality and revised the Python code to fix the bugs and add the features we discussed.
-
-### Master Document Updates
-
-I've updated your master document to include the new **"Add New File"** feature and to clarify the API and URL requirements based on our debugging session. This keeps your project's blueprint in sync with the latest code changes.
-
-- **Added "Add New File" Workflow:** A new section outlines the process for adding new files to the repository through a dedicated UI button and backend endpoint.
-- **Clarified URL Handling:** The document now specifies the distinction between the **GitLab API URL** (`https://gitlab.com/api/v4`) and the **Git Clone URL** (`https://gitlab.com/user/repo.git`), which was the root of your previous connection issues.
-
----
-
-### Code Changes
-
-Here are the complete and corrected code changes for your application files. I've integrated all the fixes we've discussed so far, including:
-
-- Fixing the `GitLab URL` and `Git Clone URL` handling.
-- Adding a new API endpoint (`/files/new_upload`) and backend logic for creating a new file.
-- Updating the JavaScript to correctly fetch and display the username from your saved configuration.
-- Adding a new "Upload File" button to the HTML interface.
-
-### `mastercam_app.py`
-
-This is the single, self-contained Python file that now includes all the fixes and new functionality.
-
-```python
-#!/usr/bin/env python3
-"""
-Mastercam GitLab Interface - Integrated Main Application
-Enhanced version with Git operations, configuration management, and full functionality
-"""
-
-import os
-import sys
-import asyncio
-import webbrowser
-import threading
-import logging
-import tempfile
-import json
-import git
-import requests
-from pathlib import Path
-from typing import Dict, List, Optional, Any
-from datetime import datetime
-from contextlib import asynccontextmanager
-from dataclasses import dataclass, asdict, field
-from cryptography.fernet import Fernet
-import base64
-
-import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Form, UploadFile, File, BackgroundTasks, APIRouter
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.templating import Jinja2Templates
-from fastapi.websockets import WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
-
-# --- Start of Re-integrated Code from Original File ---
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('mastercam_git_interface.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# Data models
-class FileInfo(BaseModel):
-    filename: str
-    path: str
-    status: str  # "unlocked", "locked", "checked_out_by_user"
-    locked_by: Optional[str] = None
-    locked_at: Optional[str] = None
-    size: Optional[int] = None
-    modified_at: Optional[str] = None
-    version_info: Optional[Dict] = None
-
-class CheckoutRequest(BaseModel):
-    user: str
-
-class AdminOverrideRequest(BaseModel):
-    admin_user: str
-
-class ConfigUpdateRequest(BaseModel):
-    gitlab_url: str
-    project_id: str
-    username: str
-    token: str
-
-# Application state and dependencies
-class AppConfig(BaseModel):
-    version: str = "1.0.0"
-    gitlab: dict = field(default_factory=lambda: {
-        "base_url": "",
-        "project_id": "",
-        "username": "",
-        "token": "",
-        "branch": "main",
-        "timeout": 30
-    })
-    local: dict = field(default_factory=lambda: {
-        "repo_path": str(Path.home() / "MastercamGitRepo"),
-        "backup_path": str(Path.home() / "MastercamGitBackups"),
-        "temp_path": str(Path.home() / "mastercam_git_interface_temp"),
-        "max_file_size_mb": 500,
-        "auto_backup": True,
-        "cleanup_temp_files": True
-    })
-    ui: dict = field(default_factory=lambda: {
-        "theme": "light",
-        "language": "en",
-        "auto_refresh_interval": 30,
-        "show_file_details": True,
-        "show_notifications": True,
-        "notification_sound": False
-    })
-    security: dict = field(default_factory=lambda: {
-        "encrypt_tokens": True,
-        "session_timeout_hours": 8,
-        "max_failed_attempts": 3,
-        "require_admin_confirmation": True,
-        "auto_lock_stale_files_hours": 24
-    })
-
-    def __post_init__(self):
-        if not self.local['repo_path']:
-            self.local['repo_path'] = str(self.get_default_repo_path())
-        if not self.local['backup_path']:
-            self.local['backup_path'] = str(self.get_default_backup_path())
-        if not self.local['temp_path']:
-            self.local['temp_path'] = str(self.get_default_temp_path())
-
-    @staticmethod
-    def get_default_repo_path() -> Path:
-        if os.name == 'nt':
-            return Path.home() / 'Documents' / 'MastercamGitRepo'
-        else:
-            return Path.home() / '.mastercam_git_repo'
-
-    @staticmethod
-    def get_default_backup_path() -> Path:
-        if os.name == 'nt':
-            return Path.home() / 'Documents' / 'MastercamGitBackups'
-        else:
-            return Path.home() / '.mastercam_git_backups'
-
-    @staticmethod
-    def get_default_temp_path() -> Path:
-        return Path(tempfile.gettempdir()) / 'mastercam_git_interface'
-
-class EncryptionManager:
-    def __init__(self, config_dir: Path):
-        self.config_dir = Path(config_dir)
-        self.key_file = self.config_dir / '.encryption_key'
-        self._fernet = None
-        self._initialize_encryption()
-
-    def _initialize_encryption(self):
-        try:
-            if self.key_file.exists():
-                key = self.key_file.read_bytes()
-            else:
-                key = Fernet.generate_key()
-                self.key_file.write_bytes(key)
-                if os.name != 'nt':
-                    os.chmod(self.key_file, 0o600)
-
-            self._fernet = Fernet(key)
-            logger.info("Encryption initialized successfully")
-        except Exception as e:
-            logger.error(f"Failed to initialize encryption: {str(e)}")
-            self._fernet = None
-
-    def encrypt(self, data: str) -> str:
-        try:
-            if self._fernet:
-                encrypted = self._fernet.encrypt(data.encode())
-                return base64.b64encode(encrypted).decode()
-            else:
-                return base64.b64encode(data.encode()).decode()
-        except Exception as e:
-            logger.error(f"Encryption failed: {str(e)}")
-            return data
-
-    def decrypt(self, encrypted_data: str) -> str:
-        try:
-            if self._fernet:
-                encrypted_bytes = base64.b64decode(encrypted_data.encode())
-                decrypted = self._fernet.decrypt(encrypted_bytes)
-                return decrypted.decode()
-            else:
-                return base64.b64decode(encrypted_data.encode()).decode()
-        except Exception as e:
-            logger.error(f"Decryption failed: {str(e)}")
-            return encrypted_data
-
-class ConfigManager:
-    def __init__(self, config_dir: Optional[Path] = None):
-        if config_dir is None:
-            config_dir = self._get_default_config_dir()
-
-        self.config_dir = Path(config_dir)
-        self.config_file = self.config_dir / 'config.json'
-        self.user_file = self.config_dir / 'user_settings.json'
-
-        self.config_dir.mkdir(parents=True, exist_ok=True)
-
-        self.encryption = EncryptionManager(self.config_dir)
-
-        self.config = self._load_config()
-        self.user_settings = self._load_user_settings()
-
-    @staticmethod
-    def _get_default_config_dir() -> Path:
-        if os.name == 'nt':
-            base = Path.home() / 'AppData' / 'Local' / 'MastercamGitInterface'
-        else:
-            base = Path.home() / '.config' / 'mastercam_git_interface'
-        return base
-
-    def _load_config(self) -> AppConfig:
-        try:
-            if self.config_file.exists():
-                content = self.config_file.read_text()
-                if not content:
-                    logger.warning("Configuration file is empty. Using default configuration.")
-                    return AppConfig()
-
-                data = json.loads(content)
-
-                if 'gitlab' in data and 'token' in data['gitlab']:
-                    if data['gitlab']['token']:
-                        data['gitlab']['token'] = self.encryption.decrypt(data['gitlab']['token'])
-
-                config = AppConfig(**data)
-                return config
-            else:
-                logger.info("No existing configuration found, creating default")
-                return AppConfig()
-        except Exception as e:
-            logger.error(f"Failed to load configuration: {str(e)}")
-            return AppConfig()
-
-    def _load_user_settings(self) -> Dict:
-        try:
-            if self.user_file.exists():
-                return json.loads(self.user_file.read_text())
-            return {}
-        except Exception as e:
-            logger.error(f"Failed to load user settings: {str(e)}")
-            return {}
-
-    def save_config(self) -> bool:
-        try:
-            data = self.config.model_dump()
-
-            if self.config.security.get('encrypt_tokens', False) and self.config.gitlab.get('token'):
-                data['gitlab']['token'] = self.encryption.encrypt(self.config.gitlab['token'])
-
-            self.config_file.write_text(json.dumps(data, indent=2))
-            logger.info("Configuration saved successfully")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save configuration: {str(e)}")
-            return False
-
-    def save_user_settings(self) -> bool:
-        try:
-            self.user_file.write_text(json.dumps(self.user_settings, indent=2))
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save user settings: {str(e)}")
-            return False
-
-    def update_gitlab_config(self, base_url: str, project_id: str, username: str, token: str) -> bool:
-        try:
-            self.config.gitlab['base_url'] = base_url.rstrip('/')
-            self.config.gitlab['project_id'] = project_id
-            self.config.gitlab['username'] = username
-            self.config.gitlab['token'] = token
-            return self.save_config()
-        except Exception as e:
-            logger.error(f"Failed to update GitLab configuration: {str(e)}")
-            return False
-
-    def validate_config(self) -> tuple[bool, list[str]]:
-        errors = []
-        if not self.config.gitlab['base_url']:
-            errors.append("GitLab base URL is required")
-        if not self.config.gitlab['project_id']:
-            errors.append("GitLab project ID is required")
-        if not self.config.gitlab['username']:
-            errors.append("GitLab username is required")
-        if not self.config.gitlab['token']:
-            errors.append("GitLab access token is required")
-
-        try:
-            repo_path = Path(self.config.local['repo_path'])
-            repo_path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            errors.append(f"Invalid repository path: {str(e)}")
-
-        try:
-            backup_path = Path(self.config.local['backup_path'])
-            backup_path.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            errors.append(f"Invalid backup path: {str(e)}")
-
-        if self.config.local['max_file_size_mb'] <= 0:
-            errors.append("Maximum file size must be positive")
-
-        if self.config.ui['auto_refresh_interval'] <= 0:
-            errors.append("Auto-refresh interval must be positive")
-
-        return len(errors) == 0, errors
-
-    def get_user_setting(self, key: str, default: Any = None) -> Any:
-        return self.user_settings.get(key, default)
-
-    def set_user_setting(self, key: str, value: Any) -> bool:
-        try:
-            self.user_settings[key] = value
-            return self.save_user_settings()
-        except Exception as e:
-            logger.error(f"Failed to set user setting '{key}': {str(e)}")
-            return False
-
-    def export_config(self, export_path: Path, include_tokens: bool = False) -> bool:
-        try:
-            data = self.config.model_dump()
-            if not include_tokens:
-                data['gitlab']['token'] = ""
-            self.config_file.write_text(json.dumps(data, indent=2))
-            logger.info(f"Configuration exported to {export_path}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to export configuration: {str(e)}")
-            return False
-
-    def import_config(self, import_path: Path) -> bool:
-        try:
-            if not import_path.exists():
-                raise FileNotFoundError(f"Configuration file not found: {import_path}")
-
-            data = json.loads(import_path.read_text())
-
-            self.config = AppConfig(**data)
-
-            success = self.save_config()
-            if success:
-                logger.info(f"Configuration imported from {import_path}")
-            return success
-        except Exception as e:
-            logger.error(f"Failed to import configuration: {str(e)}")
-            return False
-
-    def reset_to_defaults(self) -> bool:
-        try:
-            self.config = AppConfig()
-            return self.save_config()
-        except Exception as e:
-            logger.error(f"Failed to reset configuration: {str(e)}")
-            return False
-
-    def get_config_summary(self) -> Dict[str, Any]:
-        return {
-            'gitlab_url': self.config.gitlab['base_url'],
-            'project_id': self.config.gitlab['project_id'],
-            'username': self.config.gitlab['username'],
-            'has_token': bool(self.config.gitlab['token']),
-            'repo_path': self.config.local['repo_path'],
-            'backup_enabled': self.config.local['auto_backup'],
-            'theme': self.config.ui['theme'],
-            'auto_refresh': self.config.ui['auto_refresh_interval'],
-            'version': self.config.version
-        }
-
-class GitLabAPI:
-    def __init__(self, base_url: str, token: str, project_id: str):
-        self.base_url = f"{base_url}/api/v4"
-        self.project_id = project_id
-        self.headers = {"Private-Token": token}
-
-    def test_connection(self) -> bool:
-        try:
-            response = requests.get(f"{self.base_url}/projects/{self.project_id}", headers=self.headers, timeout=10)
-            response.raise_for_status()
-            return True
-        except requests.exceptions.RequestException as e:
-            logger.error(f"GitLab connection test failed: {e}")
-            return False
-
-class GitRepository:
-    def __init__(self, repo_path: Path, remote_url: str, username: str, token: str):
-        self.repo_path = repo_path
-        self.remote_url = remote_url
-        self.username = username
-        self.token = token
-        self.repo = None
-
-    def _get_credential_url(self) -> str:
-        return f"https://oauth2:{self.token}@{self.remote_url.split('://')[-1]}"
-
-    def clone_or_pull(self) -> bool:
-        try:
-            if not self.repo_path.exists():
-                logger.info(f"Cloning repository from {self.remote_url} to {self.repo_path}")
-                self.repo = git.Repo.clone_from(self._get_credential_url(), self.repo_path)
-            else:
-                logger.info(f"Pulling latest changes from repository at {self.repo_path}")
-                self.repo = git.Repo(self.repo_path)
-                self.repo.remotes.origin.pull()
-            return True
-        except git.GitCommandError as e:
-            logger.error(f"Git operation failed: {e}")
-            return False
-
-    def list_files(self, pattern: str = "*.mcam") -> List[Dict]:
-        if not self.repo:
-            return []
-
-        files = []
-        for root, dirs, filenames in os.walk(self.repo_path):
-            if ".git" in root:
-                continue
-
-            for filename in filenames:
-                file_path = Path(root) / filename
-                if file_path.match(pattern):
-                    rel_path = str(file_path.relative_to(self.repo_path))
-                    try:
-                        file_stat = os.stat(file_path)
-                        files.append({
-                            "name": filename,
-                            "path": rel_path,
-                            "size": file_stat.st_size,
-                            "modified_at": datetime.fromtimestamp(file_stat.st_mtime).isoformat() + "Z"
-                        })
-                    except OSError:
-                        pass
-        return files
-
-    def get_file_content(self, file_path: str) -> Optional[bytes]:
-        full_path = self.repo_path / file_path
-        if full_path.exists():
-            return full_path.read_bytes()
-        return None
-
-    def save_file(self, file_path: str, content: bytes) -> bool:
-        try:
-            full_path = self.repo_path / file_path
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_bytes(content)
-            return True
-        except IOError as e:
-            logger.error(f"Failed to save file: {e}")
-            return False
-
-    def commit_and_push(self, file_path: str, message: str, author_name: str, author_email: str) -> bool:
-        if not self.repo:
-            return False
-
-        try:
-            self.repo.index.add([file_path])
-            self.repo.index.commit(message, author=f"{author_name} <{author_email}>")
-            self.repo.git.push(self._get_credential_url())
-            return True
-        except git.GitCommandError as e:
-            logger.error(f"Git commit/push failed: {e}")
-            return False
-
-    def get_file_history(self, file_path: str, limit: int = 10) -> List[Dict]:
-        if not self.repo:
-            return []
-
-        try:
-            commits = list(self.repo.iter_commits(paths=file_path, max_count=limit))
-            history = []
-            for commit in commits:
-                history.append({
-                    "commit_hash": commit.hexsha,
-                    "author_name": commit.author.name,
-                    "author_email": commit.author.email,
-                    "date": datetime.fromtimestamp(commit.committed_date).isoformat() + "Z",
-                    "message": commit.message.strip()
-                })
-            return history
-        except git.exc.GitCommandError:
-            return []
-
-class MetadataManager:
-    def __init__(self, metadata_path: Path):
-        self.metadata_path = metadata_path
-        self.metadata_path.mkdir(parents=True, exist_ok=True)
-
-    def _get_lock_file_path(self, file_path: str) -> Path:
-        return self.metadata_path / f"{file_path.replace(os.path.sep, '_')}.lock"
-
-    def create_lock(self, file_path: str, user: str) -> bool:
-        lock_file = self._get_lock_file_path(file_path)
-        if lock_file.exists():
-            return False
-
-        lock_data = {
-            "file": file_path,
-            "user": user,
-            "timestamp": datetime.now().isoformat() + "Z"
-        }
-        with open(lock_file, "w") as f:
-            json.dump(lock_data, f, indent=4)
-        return True
-
-    def release_lock(self, file_path: str, user: Optional[str] = None) -> bool:
-        lock_file = self._get_lock_file_path(file_path)
-        if not lock_file.exists():
-            return False
-
-        if user:
-            try:
-                with open(lock_file, "r") as f:
-                    lock_data = json.load(f)
-                if lock_data.get("user") != user:
-                    return False
-            except (IOError, json.JSONDecodeError):
-                return False
-
-        os.remove(lock_file)
-        return True
-
-    def get_lock_info(self, file_path: str) -> Optional[Dict]:
-        lock_file = self._get_lock_file_path(file_path)
-        if not lock_file.exists():
-            return None
-
-        try:
-            with open(lock_file, "r") as f:
-                return json.load(f)
-        except (IOError, json.JSONDecodeError):
-            return None
-
-    def cleanup_stale_locks(self, timeout_days: int = 7) -> int:
-        stale_count = 0
-        timeout_seconds = timeout_days * 24 * 60 * 60
-        for lock_file in self.metadata_path.glob("*.lock"):
-            try:
-                file_mod_time = lock_file.stat().st_mtime
-                if (datetime.now().timestamp() - file_mod_time) > timeout_seconds:
-                    os.remove(lock_file)
-                    stale_count += 1
-            except OSError:
-                continue
-        return stale_count
-
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-        self.user_connections: Dict[str, List[WebSocket]] = {}
-
-    async def connect(self, websocket: WebSocket, user: str = "anonymous"):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-        if user not in self.user_connections:
-            self.user_connections[user] = []
-        self.user_connections[user].append(websocket)
-
-        logger.info(f"WebSocket connection established for user '{user}'. Total: {len(self.active_connections)}")
-
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-
-        for user, connections in self.user_connections.items():
-            if websocket in connections:
-                connections.remove(websocket)
-                if not connections:
-                    del self.user_connections[user]
-                break
-
-        logger.info(f"WebSocket connection closed. Total: {len(self.active_connections)}")
-
-    async def send_personal_message(self, message: str, websocket: WebSocket):
-        try:
-            await websocket.send_text(message)
-        except:
-            self.disconnect(websocket)
-
-    async def send_to_user(self, message: str, user: str):
-        if user in self.user_connections:
-            disconnected = []
-            for connection in self.user_connections[user]:
-                try:
-                    await connection.send_text(message)
-                except:
-                    disconnected.append(connection)
-
-            for connection in disconnected:
-                self.disconnect(connection)
-
-    async def broadcast(self, message: str):
-        disconnected = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(message)
-                except:
-                    disconnected.append(connection)
-
-            for connection in disconnected:
-                self.disconnect(connection)
-
-manager = ConnectionManager()
-app_state = {
-    'config_manager': None,
-    'git_repo': None,
-    'metadata_manager': None,
-    'gitlab_api': None,
-    'initialized': False,
-    'current_user': 'demo_user'
-}
-
-# Lifespan event handler
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup logic
-    logger.info("Starting Mastercam GitLab Interface...")
-    await initialize_application()
-    yield
-    # Shutdown logic
-    logger.info("Shutting down Mastercam GitLab Interface...")
-    await cleanup_application()
-
-# FastAPI setup
-app = FastAPI(
-    title="Mastercam GitLab Interface",
-    description="User-friendly interface for managing Mastercam files with GitLab",
-    version="1.0.0",
-    lifespan=lifespan
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
-# Helper functions
-def get_demo_files() -> List[FileInfo]:
-    return [
-        FileInfo(
-            filename="part_001.mcam",
-            path="parts/part_001.mcam",
-            status="unlocked",
-            size=2048576,
-            modified_at="2024-01-15T10:30:00Z",
-            version_info={"latest_commit": "abc12345", "latest_author": "demo_user", "commit_count": 3}
-        ),
-        FileInfo(
-            filename="assembly_main.mcam",
-            path="assemblies/assembly_main.mcam",
-            status="unlocked",
-            size=5242880,
-            modified_at="2024-01-15T09:15:00Z",
-            version_info={"latest_commit": "def67890", "latest_author": "demo_user", "commit_count": 7}
-        ),
-        FileInfo(
-            filename="fixture_design.mcam",
-            path="fixtures/fixture_design.mcam",
-            status="locked",
-            locked_by="other_user",
-            locked_at="2024-01-15T12:00:00Z",
-            size=1572864,
-            modified_at="2024-01-14T16:45:00Z",
-            version_info={"latest_commit": "ghi11111", "latest_author": "other_user", "commit_count": 2}
-        )
-    ]
-
-def find_file_path(filename: str) -> Optional[str]:
-    try:
-        if app_state.get('git_repo') and app_state['initialized']:
-            files = app_state['git_repo'].list_files("*.mcam")
-            for file_data in files:
-                if file_data['name'] == filename:
-                    return file_data['path']
-        return filename
-    except Exception as e:
-        logger.error(f"Error finding file path for '{filename}': {str(e)}")
-        return filename
-
-async def process_checkin(file_path: str, content: bytes, user: str, filename: str):
-    try:
-        if app_state.get('git_repo') and app_state['initialized']:
-            if app_state['config_manager'].config.local.get('auto_backup', False):
-                create_backup(file_path, content)
-
-            if app_state['git_repo'].save_file(file_path, content):
-                commit_message = f"Update {filename} by {user}"
-                author_email = f"{user}@example.com"
-
-                success = app_state['git_repo'].commit_and_push(file_path, commit_message, user, author_email)
-
-                if success:
-                    logger.info(f"File '{filename}' successfully committed and pushed")
-                    await manager.broadcast(f"FILE_COMMITTED:{filename}:{user}")
-                else:
-                    logger.error(f"Failed to commit file '{filename}'")
-                    await manager.broadcast(f"FILE_COMMIT_FAILED:{filename}:{user}")
-            else:
-                logger.error(f"Failed to save file '{filename}'")
-        else:
-            logger.warning(f"Repository not available, file '{filename}' not committed")
-
-    except Exception as e:
-        logger.error(f"Error processing check-in for '{filename}': {str(e)}")
-
-async def process_new_upload(file_path: str, content: bytes, user: str, filename: str):
-    try:
-        if app_state.get('git_repo') and app_state['initialized']:
-            if app_state['git_repo'].save_file(file_path, content):
-                commit_message = f"Add new file {filename} by {user}"
-                author_email = f"{user}@example.com"
-
-                success = app_state['git_repo'].commit_and_push(file_path, commit_message, user, author_email)
-
-                if success:
-                    logger.info(f"New file '{filename}' successfully committed and pushed")
-                    await manager.broadcast(f"FILE_ADDED:{filename}:{user}")
-                else:
-                    logger.error(f"Failed to commit new file '{filename}'")
-                    await manager.broadcast(f"FILE_ADD_FAILED:{filename}:{user}")
-            else:
-                logger.error(f"Failed to save new file '{filename}'")
-        else:
-            logger.warning(f"Repository not available, new file '{filename}' not committed")
-    except Exception as e:
-        logger.error(f"Error processing new file upload for '{filename}': {str(e)}")
-
-def create_backup(file_path: str, content: bytes):
-    try:
-        backup_dir = Path(app_state['config_manager'].config.local.get('backup_path'))
-        backup_dir.mkdir(parents=True, exist_ok=True)
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_filename = f"{Path(file_path).stem}_{timestamp}{Path(file_path).suffix}"
-        backup_path = backup_dir / backup_filename
-
-        backup_path.write_bytes(content)
-        logger.info(f"Backup created: {backup_path}")
-
-    except Exception as e:
-        logger.error(f"Failed to create backup: {str(e)}")
-
-async def initialize_application():
-    try:
-        app_state['config_manager'] = ConfigManager()
-        config = app_state['config_manager'].config
-
-        metadata_path = Path(config.local.get('temp_path')) / 'metadata'
-        app_state['metadata_manager'] = MetadataManager(metadata_path)
-
-        user_provided_repo_url = config.gitlab.get('base_url')
-
-        if user_provided_repo_url and config.gitlab.get('token'):
-            try:
-                # Correctly extract the API base URL from the user-provided full repo URL
-                api_base_url_parts = user_provided_repo_url.split('/')[:3]
-                api_base_url = '/'.join(api_base_url_parts)
-                if not api_base_url:
-                    api_base_url = "https://gitlab.com"
-            except Exception as e:
-                logger.warning(f"Could not parse API base URL from '{user_provided_repo_url}': {e}. Defaulting to https://gitlab.com")
-                api_base_url = "https://gitlab.com"
-
-            app_state['gitlab_api'] = GitLabAPI(
-                base_url=api_base_url,
-                token=config.gitlab.get('token'),
-                project_id=config.gitlab.get('project_id')
-            )
-
-            if app_state['gitlab_api'].test_connection():
-                logger.info("GitLab connection established")
-
-                app_state['git_repo'] = GitRepository(
-                    repo_path=Path(config.local.get('repo_path')),
-                    remote_url=user_provided_repo_url,
-                    username=config.gitlab.get('username'),
-                    token=config.gitlab.get('token')
-                )
-
-                if app_state['git_repo'].clone_or_pull():
-                    logger.info("Repository synchronized")
-                    app_state['initialized'] = True
-                else:
-                    logger.warning("Failed to synchronize repository")
-            else:
-                logger.warning("GitLab connection failed")
-        else:
-            logger.info("GitLab not configured, running in demo mode")
-
-        if app_state.get('metadata_manager'):
-            cleaned = app_state['metadata_manager'].cleanup_stale_locks()
-            if cleaned > 0:
-                logger.info(f"Cleaned up {cleaned} stale file locks")
-
-        logger.info("Application initialization completed")
-
-    except Exception as e:
-        logger.error(f"Failed to initialize application: {str(e)}")
-
-async def cleanup_application():
-    try:
-        for connection in manager.active_connections:
-            await connection.close()
-
-        if app_state.get('config_manager'):
-            app_state['config_manager'].save_config()
-
-        logger.info("Application cleanup completed")
-
-    except Exception as e:
-        logger.error(f"Error during cleanup: {str(e)}")
-
-# API Endpoints
-@app.get("/")
-async def root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-@app.post("/files/new_upload")
-async def new_upload(
-    background_tasks: BackgroundTasks,
-    user: str = Form(...),
-    file: UploadFile = File(...)
-):
-    try:
-        if not app_state['git_repo']:
-            raise HTTPException(status_code=500, detail="Repository not available")
-
-        filename = file.filename
-        file_path = str(Path(filename))
-
-        content = await file.read()
-        if not content:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty")
-
-        max_size = app_state['config_manager'].config.local.get('max_file_size_mb', 100) * 1024 * 1024
-        if len(content) > max_size:
-            raise HTTPException(status_code=400, detail=f"File size exceeds maximum allowed size ({max_size // 1024 // 1024} MB)")
-
-        background_tasks.add_task(process_new_upload, file_path, content, user, filename)
-
-        logger.info(f"New file '{filename}' upload initiated by '{user}'")
-        return JSONResponse({"status": "success", "message": f"New file '{filename}' is being added"})
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error uploading new file '{file.filename}': {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to upload new file")
-
-@app.get("/files", response_model=List[FileInfo])
-async def get_files():
-    try:
-        files = []
-        if app_state.get('git_repo') and app_state['initialized']:
-            repo_files = app_state['git_repo'].list_files("*.mcam")
-            for file_data in repo_files:
-                file_info = FileInfo(
-                    filename=file_data['name'],
-                    path=file_data['path'],
-                    status="unlocked",
-                    size=file_data['size'],
-                    modified_at=file_data['modified_at']
-                )
-                lock_info = app_state['metadata_manager'].get_lock_info(file_data['path'])
-                if lock_info:
-                    file_info.status = "locked"
-                    file_info.locked_by = lock_info['user']
-                    file_info.locked_at = lock_info['timestamp']
-                    if lock_info['user'] == app_state['current_user']:
-                        file_info.status = "checked_out_by_user"
-                if app_state['git_repo']:
-                    history = app_state['git_repo'].get_file_history(file_data['path'], limit=5)
-                    if history:
-                        file_info.version_info = {
-                            'latest_commit': history[0]['commit_hash'][:8],
-                            'latest_author': history[0]['author_name'],
-                            'commit_count': len(history)
-                        }
-                files.append(file_info)
-        else:
-            files = get_demo_files()
-        logger.info(f"Retrieved {len(files)} files")
-        return files
-    except Exception as e:
-        logger.error(f"Error fetching files: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to fetch files")
-
-@app.post("/files/{filename}/checkout")
-async def checkout_file(filename: str, request: CheckoutRequest):
-    try:
-        if not app_state['metadata_manager']:
-            raise HTTPException(status_code=500, detail="Metadata manager not available")
-        file_path = find_file_path(filename)
-        if not file_path:
-            raise HTTPException(status_code=404, detail="File not found")
-        success = app_state['metadata_manager'].create_lock(file_path, request.user)
-        if not success:
-            lock_info = app_state['metadata_manager'].get_lock_info(file_path)
-            if lock_info and lock_info['user'] != request.user:
-                raise HTTPException(status_code=409, detail=f"File is already locked by {lock_info['user']}")
-        logger.info(f"File '{filename}' checked out by '{request.user}'")
-        await manager.broadcast(f"FILE_STATUS_CHANGED:{filename}:locked:{request.user}")
-        return JSONResponse({"status": "success", "message": f"File '{filename}' checked out successfully", "download_url": f"/files/{filename}/download"})
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error checking out file '{filename}': {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to checkout file")
-
-@app.post("/files/{filename}/checkin")
-async def checkin_file(filename: str, background_tasks: BackgroundTasks, user: str = Form(...), file: UploadFile = File(...)):
-    try:
-        if not app_state['metadata_manager']:
-            raise HTTPException(status_code=500, detail="Metadata manager not available")
-        file_path = find_file_path(filename)
-        if not file_path:
-            raise HTTPException(status_code=404, detail="File not found")
-        lock_info = app_state['metadata_manager'].get_lock_info(file_path)
-        if not lock_info:
-            raise HTTPException(status_code=409, detail="File is not locked")
-        if lock_info['user'] != user:
-            raise HTTPException(status_code=409, detail="File is locked by a different user")
-        content = await file.read()
-        if len(content) == 0:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty")
-        max_size = app_state['config_manager'].config.local.get('max_file_size_mb', 100) * 1024 * 1024
-        if len(content) > max_size:
-            raise HTTPException(status_code=400, detail=f"File size exceeds maximum allowed size ({max_size // 1024 // 1024} MB)")
-        background_tasks.add_task(process_checkin, file_path, content, user, filename)
-        app_state['metadata_manager'].release_lock(file_path, user)
-        logger.info(f"File '{filename}' check-in initiated by '{user}'")
-        await manager.broadcast(f"FILE_STATUS_CHANGED:{filename}:unlocked:")
-        return JSONResponse({"status": "success", "message": f"File '{filename}' is being processed"})
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error checking in file '{filename}': {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to checkin file")
-
-@app.post("/files/{filename}/override")
-async def admin_override(filename: str, request: AdminOverrideRequest):
-    try:
-        if not app_state['metadata_manager']:
-            raise HTTPException(status_code=500, detail="Metadata manager not available")
-        file_path = find_file_path(filename)
-        if not file_path:
-            raise HTTPException(status_code=404, detail="File not found")
-        lock_info = app_state['metadata_manager'].get_lock_info(file_path)
-        previous_user = lock_info['user'] if lock_info else 'none'
-        app_state['metadata_manager'].release_lock(file_path)
-        logger.info(f"Admin '{request.admin_user}' overrode lock on '{filename}' (was locked by '{previous_user}')")
-        await manager.broadcast(f"FILE_STATUS_CHANGED:{filename}:unlocked:")
-        return JSONResponse({"status": "success", "message": f"File '{filename}' unlocked by admin"})
-    except Exception as e:
-        logger.error(f"Error in admin override for file '{filename}': {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to override file lock")
-
-@app.get("/files/{filename}/download")
-async def download_file(filename: str):
-    try:
-        file_path = find_file_path(filename)
-        if not file_path:
-            raise HTTPException(status_code=404, detail="File not found")
-        if app_state['git_repo'] and app_state['initialized']:
-            content = app_state['git_repo'].get_file_content(file_path)
-            if content is None:
-                raise HTTPException(status_code=404, detail="File not found in repository")
-            temp_dir = Path(tempfile.gettempdir()) / 'mastercam_downloads'
-            temp_dir.mkdir(exist_ok=True)
-            temp_file = temp_dir / filename
-            temp_file.write_bytes(content)
-            logger.info(f"File '{filename}' prepared for download")
-            return FileResponse(path=str(temp_file), filename=filename, media_type='application/octet-stream')
-        else:
-            raise HTTPException(status_code=501, detail="Repository not available")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error downloading file '{filename}': {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to download file")
-
-@app.get("/files/{filename}/history")
-async def get_file_history(filename: str):
-    try:
-        file_path = find_file_path(filename)
-        if not file_path:
-            raise HTTPException(status_code=404, detail="File not found")
-        if app_state['git_repo'] and app_state['initialized']:
-            history = app_state['git_repo'].get_file_history(file_path, limit=20)
-            return {"filename": filename, "history": history}
-        else:
-            return {"filename": filename, "history": []}
-    except Exception as e:
-        logger.error(f"Error getting file history for '{filename}': {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get file history")
-
-@app.get("/config")
-async def get_config():
-    try:
-        if app_state['config_manager']:
-            return app_state['config_manager'].get_config_summary()
-        return {"error": "Configuration not available"}
-    except Exception as e:
-        logger.error(f"Error getting configuration: {str(e)}")
-        raise HTTPException(status_code=500, detail="Failed to get configuration")
-
-@app.post("/config/gitlab")
-async def update_gitlab_config(request: ConfigUpdateRequest):
-    try:
-        config_manager = app_state['config_manager']
-        if not config_manager:
-            raise HTTPException(status_code=500, detail="Configuration manager not available")
-        success = config_manager.update_gitlab_config(request.gitlab_url, request.project_id, request.username, request.token)
-        if success:
-            return {"status": "success", "message": "GitLab configuration updated"}
-        else:
-            raise HTTPException(status_code=500, detail="Failed to update configuration")
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating GitLab configuration: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
-    await manager.connect(websocket, user)
-    try:
-        while True:
-            data = await websocket.receive_text()
-            logger.info(f"WebSocket message from {user}: {data}")
-            if data.startswith("PING"):
-                await manager.send_personal_message("PONG", websocket)
-            elif data.startswith("SET_USER:"):
-                new_user = data.split(":", 1)[1]
-                app_state['current_user'] = new_user
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
-
-def open_browser(port: int = 8000):
-    url = f"http://localhost:{port}"
-    logger.info(f"Opening browser to {url}")
-    webbrowser.open(url)
-
-def main():
-    logger.info("Starting Mastercam GitLab Interface...")
-    if getattr(sys, 'frozen', False):
-        logger.info("Running as PyInstaller executable")
-    else:
-        logger.info("Running as Python script")
-    port = 8000
-    def delayed_browser_open():
-        import time
-        time.sleep(3)
-        open_browser(port)
-    browser_thread = threading.Thread(target=delayed_browser_open, daemon=True)
-    browser_thread.start()
-    try:
-        uvicorn.run(
-            app,
-            host="127.0.0.1",
-            port=port,
-            log_level="info",
-            access_log=True
-        )
-    except KeyboardInterrupt:
-        logger.info("Application stopped by user")
-    except Exception as e:
-        logger.error(f"Error starting server: {str(e)}")
-        raise
-
-if __name__ == "__main__":
-    main()
+Below is a comprehensive user documentation in Markdown format for your Mastercam Git-based app, designed for use with **MkDocs ** to generate a professional, navigable documentation site. The documentation covers the app’s purpose, setup, and workflow for checking out, editing, and checking in CAD files(`.mcam`, `.vnc`), with placeholders for screenshots or images to illustrate key steps. It assumes your app uses a web interface(FastAPI backend, JavaScript frontend) with GitLab as the source of truth, sparse/shallow clones, and Git LFS for large files, as per our previous discussion. The workflow is tailored to your low-usage CAD environment, emphasizing minimal local storage, race condition handling, and network error recovery. I’ve included MkDocs configuration and structured the content for easy integration into your company’s documentation site.
+
+# User Documentation
+
+<xaiArtifact artifact_id = "eb98b10c-bb71-4664-af3b-2bd403d551cf" artifact_version_id = "1dbe9c2b-aa01-4df0-8cf8-fcea169eb63a" title = "user_guide.md" contentType = "text/markdown" >
+
+# Mastercam Git App User Guide
+
+# Overview
+
+The Mastercam Git App is a web-based tool for managing Mastercam CAD files(`.mcam`, `.vnc`) stored in a GitLab repository. It allows users to check out files for editing, check them back in with version control, and manage revisions, while minimizing local storage on your PC. The app ensures files are locked to prevent conflicts, uses Git LFS for efficient handling of large files, and provides clear error messages for issues like network failures or race conditions.
+
+This guide covers how to set up the app and follow the standard workflow for working with CAD files.
+
+# Prerequisites
+
+- **Operating System**: Windows 10/11 (app is packaged as a standalone executable).
+- **Mastercam**: Installed and licensed for editing `.mcam` and `.vnc` files.
+- **Network Access**: Connection to the internal GitLab server.
+- **App Executable**: Provided by your IT team, built with PyInstaller.
+- **Git LFS**: Included in the app; no separate installation needed.
+
+# Setup
+
+1. ** Install the App**:
+   - Download `MastercamGitApp.exe` from [Internal SharePoint Link](  # ) (replace with your company’s link).
+   - Double-click to run; no installation is required.
+   - The app runs without a console window and creates a local repository in `C: \Users\<YourUsername>\MastercamGitRepo`.
+
+2. **Configure the App**:
+   - On first launch, the app prompts for your GitLab credentials:
+     - **GitLab URL**: Provided by IT (e.g., `https://gitlab.yourcompany.com`).
+     - **Project ID**: Provided by IT (e.g., `group/project`).
+     - **Personal Access Token**: Generate in GitLab:
+       1. Log in to GitLab.
+       2. Go to **User Settings > Access Tokens**.
+       3. Create a token with `read_repository` and `write_repository` scopes.
+       4. Copy and paste it into the app’s config prompt.
+   - Credentials are securely stored in an encrypted config file.
+
+3. **Verify Setup**:
+   - The app initializes a local Git repository with minimal storage (only metadata and checked-out files).
+   - If setup fails (e.g., network issue), a modal will display: “Network issue: Disconnected from GitLab. Please check connection.” Contact IT if this persists.
+
+   ![Setup Modal](images/setup-modal.png) *(Placeholder: IT to insert screenshot of config prompt modal)*
+
+## Workflow
+
+The app’s workflow is designed to manage CAD files efficiently, ensuring only the files you check out are stored locally, with version history maintained on GitLab.
+
+### Step 1: Launch the App
+
+- Double-click `MastercamGitApp.exe` to open the web interface in your default browser (e.g., `http://localhost:8000`).
+- Log in with your username (same as your GitLab username).
+- The main interface shows a file list grouped by project folders, with columns for filename, status (unlocked/locked/checked out by you), revision, and last modified date.
+
+  ![Main Interface](images/main-interface.png) *(Placeholder: IT to insert screenshot of file list)*
+
+### Step 2: Check Out a File
+
+1. **Select a File**:
+   - Browse or search for a `.mcam` or `.vnc` file in the file list.
+   - Check the **Status** column:
+     - **Unlocked**: Available to check out.
+     - **Locked**: Another user has it checked out (hover for user details).
+     - **Checked out by you**: Already checked out on your PC.
+
+2. **Check Out**:
+   - Click the **Checkout** button next to the desired file.
+   - The app downloads the file to your local repo (e.g., `C:\Users\<YourUsername>\MastercamGitRepo\<filename>`).
+   - A lock is created on GitLab to prevent others from editing.
+   - Success: Notification shows “Checked out <filename> successfully!”
+   - Failure (e.g., another user checked it out first): A modal displays, “Checkout failed: File is already locked.” Click **Retry** to try again or **Cancel** to return.
+
+   ![Checkout Modal](images/checkout-failure-modal.png) *(Placeholder: IT to insert screenshot of checkout failure modal)*
+
+3. **Edit the File**:
+   - Open the file in Mastercam from the local repo path.
+   - Make your changes as needed.
+
+### Step 3: Check In a File
+
+1. **Open Check-in Modal**:
+   - In the app, locate the file (status: “Checked out by you”).
+   - Click the **Check In** button.
+   - A modal appears to enter:
+     - **Commit Message**: Describe your changes (e.g., “Updated toolpath for part X”).
+     - **Revision Type**: Select `Minor` (e.g., 1.1 → 1.2) or `Major` (e.g., 1.2 → 2.0).
+     - **New Major Revision** (optional): Specify a new major version (e.g., “2.0”) if needed.
+
+   ![Check-in Modal](images/checkin-modal.png) *(Placeholder: IT to insert screenshot of check-in modal)*
+
+2. **Upload and Commit**:
+   - Click **Submit** to upload the modified file.
+   - The app commits the file to GitLab, updates the revision, and removes the lock.
+   - The file is deleted from your local PC to save space.
+   - Success: Notification shows “Checked in <filename> successfully with revision X.Y!”
+   - Failure (e.g., network issue): A modal displays, “Check-in failed: File remains checked out.” Click **OK** to keep the file checked out and try again later.
+
+### Step 4: Handle Network Issues
+
+- If the app detects a network issue (e.g., can’t reach GitLab), a modal appears: “Network error: Disconnected from GitLab. Changes disabled until reconnected.”
+- All buttons are disabled to prevent actions until reconnected.
+- Click **Retry** to refresh or contact IT if the issue persists.
+
+  ![Network Error Modal](images/network-error-modal.png) *(Placeholder: IT to insert screenshot of network error modal)*
+
+### Step 5: Admin Actions (Optional)
+
+- **Admins Only**: To delete a file (e.g., obsolete `.mcam` or `.vnc`):
+  - Click **Delete** next to the file (visible only to admins).
+  - Confirm in the modal to remove the file and any linked `.link` files from GitLab.
+  - Success: Notification shows “File <filename> deleted successfully!”
+
+## Best Practices
+
+- **Check Out Only What You Need**: Only check out files you’re actively editing to minimize local storage.
+- **Provide Clear Commit Messages**: Include details (e.g., “Fixed toolpath for CNC-123”) for team visibility.
+- **Avoid Direct File Edits**: Always use the app to check out/in files; editing files directly in the repo folder may cause conflicts.
+- **Monitor Locks**: If a file is locked by another user, hover over the status to see who has it and contact them if needed.
+- **Report Issues**: If you see persistent network errors or checkout failures, contact IT with the error message from the modal.
+
+## Troubleshooting
+
+- **“File is already locked”**:
+  - Another user has the file checked out. Wait or contact them to check it in.
+  - Admins can override locks via the **Delete** action if necessary.
+- **“Network issue: Disconnected from GitLab”**:
+  - Check your internet connection and retry.
+  - Contact IT if the issue persists; your local changes are safe and remain checked out.
+- **File Not Found After Checkout**:
+  - Ensure the file downloaded to `C:\Users\<YourUsername>\MastercamGitRepo`.
+  - Retry checkout or contact IT to verify Git LFS setup.
+- **App Won’t Start**:
+  - Ensure you have write permissions to `C:\Users\<YourUsername>\MastercamGitRepo`.
+  - Re-download the executable from [SharePoint Link](#).
+
+## Contact Support
+
+For issues or questions, contact the IT team at [support@yourcompany.com](mailto:support@yourcompany.com) or via [Internal Support Portal](#).
+
+</xaiArtifact>
+
+### MkDocs Configuration
+
+To integrate this into your MkDocs site, add the following configuration file to your MkDocs project directory. It sets up a clean structure with a navigation menu and support for images.
+
+<xaiArtifact artifact_id="83cda1d7-ebd9-4b59-97ee-ba46e5434b15" artifact_version_id="3599fea2-1533-47bb-b2c7-8603b535a287" title="mkdocs.yml" contentType="text/yaml">
+```yaml
+site_name: Mastercam Git App Documentation
+theme:
+  name: material
+  palette:
+    primary: blue
+  features:
+    - content.code.copy
+    - content.tabs
+nav:
+  - Home: index.md
+  - User Guide: user_guide.md
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/gitlab
+      link: https://gitlab.yourcompany.com
+    - icon: fontawesome/solid/envelope
+      link: mailto:support@yourcompany.com
 ```
 
-### `templates/index.html`
+</xaiArtifact>
 
-This file is updated with a new button for uploading a file.
+### Folder Structure
 
-```html
-<!DOCTYPE html>
-<html lang="en" class="dark">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Mastercam GitLab Interface</title>
-    <link rel="stylesheet" href="/static/css/tailwind.css" />
-    <link
-      rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css"
-    />
-  </head>
-  <body
-    class="bg-gray-100 dark:bg-gray-900 flex flex-col items-center p-4 min-h-screen font-sans transition-colors duration-300"
-  >
-    <div class="container mx-auto max-w-7xl">
-      <div class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 mb-6">
-        <h1
-          class="text-3xl sm:text-4xl font-bold text-center text-blue-800 dark:text-gold-500"
-        >
-          Mastercam GitLab Interface
-        </h1>
-        <p class="text-center text-gray-600 dark:text-gray-400 mt-2">
-          Collaborative CAM file management
-        </p>
-      </div>
-
-      <div
-        class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-4 mb-6 flex flex-col sm:flex-row justify-between items-center space-y-3 sm:space-y-0"
-      >
-        <div class="flex items-center space-x-2">
-          <div
-            id="connectionStatus"
-            class="w-3 h-3 rounded-full animate-pulse bg-green-500"
-          ></div>
-          <span
-            id="connectionText"
-            class="text-sm text-gray-700 dark:text-gray-300"
-            >Connected</span
-          >
-        </div>
-        <div class="flex items-center space-x-2">
-          <i class="fa-solid fa-user text-gray-500 dark:text-gray-400"></i>
-          <span class="text-sm text-gray-700 dark:text-gray-300"
-            >User:
-            <span id="currentUser" class="font-semibold text-gold-500"
-              >demo_user</span
-            ></span
-          >
-        </div>
-        <div class="flex items-center space-x-2">
-          <i
-            class="fa-solid fa-code-branch text-gray-500 dark:text-gray-400"
-          ></i>
-          <span class="text-sm text-gray-700 dark:text-gray-300"
-            >Repository:
-            <span id="repoStatus" class="font-semibold text-gold-500"
-              >Ready</span
-            ></span
-          >
-        </div>
-      </div>
-
-      <div
-        class="bg-white dark:bg-gray-800 rounded-xl shadow-lg p-6 overflow-hidden"
-      >
-        <div
-          class="flex flex-col sm:flex-row justify-between items-center mb-6 space-y-4 sm:space-y-0"
-        >
-          <div class="relative flex-1 w-full sm:max-w-md">
-            <i
-              class="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
-            ></i>
-            <input
-              type="text"
-              id="searchInput"
-              placeholder="Search files..."
-              class="w-full px-4 pl-10 py-2 border border-gray-300 dark:border-gray-600 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-gold-500 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 transition-colors"
-            />
-          </div>
-          <button
-            class="flex items-center space-x-2 px-6 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-full hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
-            onclick="toggleConfigPanel()"
-          >
-            <i class="fa-solid fa-gear"></i>
-            <span>Settings</span>
-          </button>
-        </div>
-
-        <div
-          id="fileList"
-          class="divide-y divide-gray-200 dark:divide-gray-700"
-        >
-          <div
-            class="flex justify-center items-center py-12 text-gray-500 dark:text-gray-400"
-          >
-            <div
-              class="animate-spin rounded-full h-12 w-12 border-4 border-gray-300 dark:border-gray-600 border-t-blue-500 dark:border-t-gold-500"
-            ></div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div
-      id="configPanel"
-      class="fixed inset-y-0 right-0 w-full max-w-md transform translate-x-full transition-transform duration-300 bg-white dark:bg-gray-800 shadow-2xl p-6 z-50 overflow-y-auto"
-    >
-      <div
-        class="flex justify-between items-center pb-4 mb-4 border-b border-gray-200 dark:border-gray-700"
-      >
-        <h3 class="text-2xl font-semibold text-gray-800 dark:text-gold-500">
-          Settings
-        </h3>
-        <button
-          class="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gold-500"
-          onclick="toggleConfigPanel()"
-        >
-          <i class="fa-solid fa-xmark text-2xl"></i>
-        </button>
-      </div>
-
-      <form id="configForm" class="space-y-4">
-        <div>
-          <label
-            for="gitlabUrl"
-            class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-            >GitLab URL</label
-          >
-          <input
-            type="url"
-            id="gitlabUrl"
-            required
-            class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-300 dark:focus:border-gold-500 focus:ring focus:ring-indigo-200 dark:focus:ring-gold-500 focus:ring-opacity-50 dark:focus:ring-opacity-30 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-          />
-        </div>
-        <div>
-          <label
-            for="projectId"
-            class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-            >Project ID</label
-          >
-          <input
-            type="text"
-            id="projectId"
-            required
-            class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-300 dark:focus:border-gold-500 focus:ring focus:ring-indigo-200 dark:focus:ring-gold-500 focus:ring-opacity-50 dark:focus:ring-opacity-30 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-          />
-        </div>
-        <div>
-          <label
-            for="username"
-            class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-            >Username</label
-          >
-          <input
-            type="text"
-            id="username"
-            required
-            class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-300 dark:focus:border-gold-500 focus:ring focus:ring-indigo-200 dark:focus:ring-gold-500 focus:ring-opacity-50 dark:focus:ring-opacity-30 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-          />
-        </div>
-        <div>
-          <label
-            for="token"
-            class="block text-sm font-medium text-gray-700 dark:text-gray-300"
-            >Access Token</label
-          >
-          <input
-            type="password"
-            id="token"
-            required
-            class="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-indigo-300 dark:focus:border-gold-500 focus:ring focus:ring-indigo-200 dark:focus:ring-gold-500 focus:ring-opacity-50 dark:focus:ring-opacity-30 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100"
-          />
-        </div>
-        <button
-          type="submit"
-          class="w-full flex justify-center items-center space-x-2 py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 dark:bg-gold-500 dark:hover:bg-gold-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 dark:focus:ring-gold-500"
-        >
-          <i class="fa-solid fa-floppy-disk"></i>
-          <span>Save Configuration</span>
-        </button>
-      </form>
-
-      <div class="mt-8 pt-4 border-t border-gray-200 dark:border-gray-700">
-        <h4 class="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-2">
-          Current Status
-        </h4>
-        <p class="text-sm text-gray-600 dark:text-gray-400">
-          <strong>Status:</strong>
-          <span id="configStatusText" class="font-medium text-gold-500"
-            >Not configured</span
-          >
-        </p>
-        <p class="text-sm text-gray-600 dark:text-gray-400 mt-1">
-          <strong>Repository:</strong>
-          <span id="configRepoText" class="font-medium text-gold-500"
-            >Not available</span
-          >
-        </p>
-      </div>
-    </div>
-
-    <div class="fixed bottom-6 right-6 flex flex-col items-end space-y-4 z-40">
-      <button
-        class="bg-blue-600 text-white rounded-full shadow-lg p-4 hover:bg-blue-700 dark:bg-gold-500 dark:hover:bg-gold-600 transition-colors"
-        title="Upload New File"
-        onclick="showNewFileDialog()"
-      >
-        <i class="fa-solid fa-cloud-arrow-up text-lg"></i>
-      </button>
-      <button
-        class="bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-full shadow-lg p-4 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors"
-        title="Refresh"
-        onclick="loadFiles()"
-      >
-        <i class="fa-solid fa-arrows-rotate text-lg"></i>
-      </button>
-      <button
-        class="bg-blue-600 text-white rounded-full shadow-lg p-4 hover:bg-blue-700 dark:bg-gold-500 dark:hover:bg-gold-600 transition-colors"
-        title="Settings"
-        onclick="toggleConfigPanel()"
-      >
-        <i class="fa-solid fa-gear text-lg"></i>
-      </button>
-      <button
-        class="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-full shadow-lg p-4 hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
-        title="Toggle Dark Mode"
-        onclick="toggleDarkMode()"
-      >
-        <i class="fa-solid fa-moon text-lg"></i>
-      </button>
-    </div>
-
-    <input type="file" id="fileUpload" class="hidden" accept=".mcam" />
-    <input type="file" id="newFileUpload" class="hidden" accept=".mcam" />
-
-    <script src="/static/js/script.js"></script>
-  </body>
-</html>
-```
-
-### `static/js/script.js`
-
-This file is updated with a new `showNewFileDialog` function and a corrected `DOMContentLoaded` event listener to fetch and display the username.
-
-```javascript
-// Function declarations
-let currentUser = "demo_user";
-let ws = null;
-let files = [];
-let currentConfig = null;
-
-function connectWebSocket() {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${protocol}//${
-    window.location.host
-  }/ws?user=${encodeURIComponent(currentUser)}`;
-
-  ws = new WebSocket(wsUrl);
-
-  ws.onopen = function (event) {
-    console.log("WebSocket connected");
-    updateConnectionStatus(true);
-    ws.send(`SET_USER:${currentUser}`);
-  };
-
-  ws.onmessage = function (event) {
-    console.log("WebSocket message:", event.data);
-    handleWebSocketMessage(event.data);
-  };
-
-  ws.onclose = function (event) {
-    console.log("WebSocket disconnected");
-    updateConnectionStatus(false);
-    setTimeout(connectWebSocket, 3000);
-  };
-
-  ws.onerror = function (error) {
-    console.error("WebSocket error:", error);
-    updateConnectionStatus(false);
-  };
-
-  setInterval(() => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send("PING");
-    }
-  }, 30000);
-}
-
-function updateConnectionStatus(connected) {
-  const statusEl = document.getElementById("connectionStatus");
-  const textEl = document.getElementById("connectionText");
-
-  statusEl.className = `w-3 h-3 rounded-full animate-pulse ${
-    connected ? "bg-green-500" : "bg-red-500"
-  }`;
-  textEl.textContent = connected ? "Connected" : "Disconnected";
-}
-
-function handleWebSocketMessage(message) {
-  if (message.startsWith("FILE_STATUS_CHANGED:")) {
-    loadFiles();
-    const parts = message.split(":");
-    if (parts.length >= 3) {
-      showNotification(`File ${parts[1]} status changed`, "info");
-    }
-  } else if (message.startsWith("FILE_COMMITTED:")) {
-    const parts = message.split(":");
-    if (parts.length >= 3) {
-      showNotification(`File ${parts[1]} committed successfully`, "success");
-    }
-    loadFiles();
-  } else if (message.startsWith("FILE_ADD_FAILED:")) {
-    const parts = message.split(":");
-    if (parts.length >= 3) {
-      showNotification(`Failed to add new file ${parts[1]}`, "error");
-    }
-  } else if (message.startsWith("FILE_COMMIT_FAILED:")) {
-    const parts = message.split(":");
-    if (parts.length >= 3) {
-      showNotification(`Failed to commit file ${parts[1]}`, "error");
-    }
-  } else if (message.startsWith("FILE_ADDED:")) {
-    const parts = message.split(":");
-    if (parts.length >= 3) {
-      showNotification(`New file ${parts[1]} added successfully`, "success");
-    }
-    loadFiles();
-  } else if (message === "PONG") {
-    console.log("WebSocket ping successful");
-  }
-}
-
-async function loadFiles() {
-  try {
-    const response = await fetch("/files");
-    files = await response.json();
-    renderFiles();
-    updateRepoStatus("Ready");
-  } catch (error) {
-    console.error("Error loading files:", error);
-    showNotification("Error loading files", "error");
-    updateRepoStatus("Error");
-  }
-}
-
-function updateRepoStatus(status) {
-  document.getElementById("repoStatus").textContent = status;
-}
-
-async function loadConfig() {
-  try {
-    const response = await fetch("/config");
-    currentConfig = await response.json();
-    updateConfigDisplay();
-  } catch (error) {
-    console.error("Error loading config:", error);
-  }
-}
-
-function updateConfigDisplay() {
-  if (currentConfig) {
-    document.getElementById("configStatusText").textContent =
-      currentConfig.has_token ? "Configured" : "Not configured";
-    document.getElementById("configRepoText").textContent =
-      currentConfig.repo_path || "Not available";
-
-    document.getElementById("gitlabUrl").value = currentConfig.gitlab_url || "";
-    document.getElementById("projectId").value = currentConfig.project_id || "";
-    document.getElementById("username").value = currentConfig.username || "";
-
-    // FIX: Update the hardcoded currentUser variable with the value from the config
-    if (currentConfig.username) {
-      currentUser = currentConfig.username;
-      document.getElementById("currentUser").textContent = currentUser;
-    }
-  }
-}
-
-function renderFiles() {
-  const fileListEl = document.getElementById("fileList");
-  const searchTerm = document.getElementById("searchInput").value.toLowerCase();
-
-  const filteredFiles = files.filter(
-    (file) =>
-      file.filename.toLowerCase().includes(searchTerm) ||
-      file.path.toLowerCase().includes(searchTerm)
-  );
-
-  if (filteredFiles.length === 0) {
-    fileListEl.innerHTML = `
-            <div class="flex flex-col items-center justify-center py-12 text-gray-500 dark:text-gray-400">
-                <i class="fa-solid fa-folder-open text-6xl mb-4"></i>
-                <h3 class="text-2xl font-semibold">No files found</h3>
-                <p class="mt-2 text-center">No Mastercam files match your search criteria.</p>
-            </div>
-        `;
-    return;
-  }
-
-  fileListEl.innerHTML = "";
-
-  filteredFiles.forEach((file) => {
-    const fileEl = document.createElement("div");
-    let statusClass = "";
-    let statusBadgeText = "";
-
-    switch (file.status) {
-      case "unlocked":
-        statusClass =
-          "bg-green-100 text-green-800 dark:bg-green-800 dark:text-green-100";
-        statusBadgeText = "Available";
-        break;
-      case "locked":
-        statusClass =
-          "bg-red-100 text-red-800 dark:bg-red-800 dark:text-red-100";
-        statusBadgeText = `Locked by ${file.locked_by}`;
-        break;
-      case "checked_out_by_user":
-        statusClass =
-          "bg-blue-100 text-blue-800 dark:bg-gold-500 dark:text-black";
-        statusBadgeText = "Checked out by you";
-        break;
-    }
-
-    const actionsHtml = getActionButtons(file);
-
-    fileEl.className =
-      "py-6 px-4 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 transition-colors duration-200";
-    fileEl.innerHTML = `
-            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
-                <div class="flex items-center space-x-4">
-                    <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">${
-                      file.filename
-                    }</h3>
-                    <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
-                </div>
-                <div class="flex items-center space-x-2 flex-wrap">
-                    ${actionsHtml}
-                </div>
-            </div>
-            
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-gray-600 dark:text-gray-300 text-sm">
-                <div class="flex items-center space-x-2">
-                    <i class="fa-solid fa-file text-gray-500 dark:text-gray-400"></i>
-                    <span>Path: ${file.path}</span>
-                </div>
-                <div class="flex items-center space-x-2">
-                    <i class="fa-solid fa-hard-drive text-gray-500 dark:text-gray-400"></i>
-                    <span>Size: ${formatBytes(file.size)}</span>
-                </div>
-                <div class="flex items-center space-x-2">
-                    <i class="fa-solid fa-clock text-gray-500 dark:text-gray-400"></i>
-                    <span>Modified: ${formatDate(file.modified_at)}</span>
-                </div>
-                ${
-                  file.version_info
-                    ? `
-                    <div class="flex items-center space-x-2">
-                        <i class="fa-solid fa-code-commit text-gray-500 dark:text-gray-400"></i>
-                        <span>Version: ${file.version_info.latest_commit} (${file.version_info.commit_count} commits)</span>
-                    </div>
-                `
-                    : ""
-                }
-                ${
-                  file.locked_by && file.status !== "checked_out_by_user"
-                    ? `
-                    <div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1">
-                        <i class="fa-solid fa-lock text-gray-500 dark:text-gray-400"></i>
-                        <span>Locked by: ${file.locked_by} at ${formatDate(
-                        file.locked_at
-                      )}</span>
-                    </div>
-                `
-                    : ""
-                }
-            </div>
-        `;
-
-    fileListEl.appendChild(fileEl);
-  });
-}
-
-function getActionButtons(file) {
-  let buttons = "";
-
-  if (file.status === "unlocked") {
-    buttons += `
-            <button class="flex items-center space-x-2 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors text-sm" onclick="checkoutFile('${file.filename}')">
-                <i class="fa-solid fa-download"></i>
-                <span>Checkout</span>
-            </button>
-        `;
-  } else if (
-    file.status === "checked_out_by_user" ||
-    (file.status === "locked" && file.locked_by === currentUser)
-  ) {
-    buttons += `
-            <button class="flex items-center space-x-2 px-4 py-2 bg-gold-500 text-black rounded-md hover:bg-gold-600 transition-colors text-sm" onclick="showCheckinDialog('${file.filename}')">
-                <i class="fa-solid fa-upload"></i>
-                <span>Check In</span>
-            </button>
-        `;
-  } else if (file.status === "locked" && file.locked_by !== currentUser) {
-    buttons += `
-            <button class="flex items-center space-x-2 px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 transition-colors text-sm" onclick="adminOverride('${file.filename}')">
-                <i class="fa-solid fa-unlock"></i>
-                <span>Admin Override</span>
-            </button>
-        `;
-  }
-
-  buttons += `
-        <button class="flex items-center space-x-2 px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 rounded-md hover:bg-gray-400 dark:hover:bg-gray-500 transition-colors text-sm" onclick="viewFileHistory('${file.filename}')">
-            <i class="fa-solid fa-history"></i>
-            <span>History</span>
-        </button>
-    `;
-
-  return buttons;
-}
-
-async function checkoutFile(filename) {
-  try {
-    const response = await fetch(`/files/${filename}/checkout`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user: currentUser }),
-    });
-    const result = await response.json();
-
-    if (response.ok) {
-      showNotification(
-        `File '${filename}' checked out successfully!`,
-        "success"
-      );
-      loadFiles();
-      if (confirm("Would you like to download the file now?")) {
-        window.location.href = `/files/${filename}/download`;
-      }
-    } else {
-      showNotification(`Error: ${result.detail}`, "error");
-    }
-  } catch (error) {
-    console.error("Error checking out file:", error);
-    showNotification("Error checking out file", "error");
-  }
-}
-
-function showCheckinDialog(filename) {
-  const input = document.getElementById("fileUpload");
-  input.onchange = function (event) {
-    const file = event.target.files[0];
-    if (file) {
-      checkinFile(filename, file);
-    }
-  };
-  input.click();
-}
-
-async function checkinFile(filename, file) {
-  try {
-    showNotification(`Uploading ${filename}...`, "info");
-    const formData = new FormData();
-    formData.append("user", currentUser);
-    formData.append("file", file);
-    const response = await fetch(`/files/${filename}/checkin`, {
-      method: "POST",
-      body: formData,
-    });
-    const result = await response.json();
-    if (response.ok) {
-      showNotification(`File '${filename}' is being processed`, "success");
-      loadFiles();
-    } else {
-      showNotification(`Error: ${result.detail}`, "error");
-    }
-  } catch (error) {
-    console.error("Error checking in file:", error);
-    showNotification("Error checking in file", "error");
-  }
-}
-
-async function adminOverride(filename) {
-  if (
-    !confirm(`Are you sure you want to override the lock on '${filename}'?`)
-  ) {
-    return;
-  }
-  try {
-    const response = await fetch(`/files/${filename}/override`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ admin_user: currentUser }),
-    });
-    const result = await response.json();
-    if (response.ok) {
-      showNotification(`File '${filename}' unlocked successfully!`, "success");
-      loadFiles();
-    } else {
-      showNotification(`Error: ${result.detail}`, "error");
-    }
-  } catch (error) {
-    console.error("Error overriding file lock:", error);
-    showNotification("Error overriding file lock", "error");
-  }
-}
-
-async function viewFileHistory(filename) {
-  try {
-    const response = await fetch(`/files/${filename}/history`);
-    const result = await response.json();
-    if (response.ok) {
-      showFileHistoryModal(result);
-    } else {
-      showNotification("Error loading file history", "error");
-    }
-  } catch (error) {
-    console.error("Error loading file history:", error);
-    showNotification("Error loading file history", "error");
-  }
-}
-
-function showFileHistoryModal(historyData) {
-  const modal = document.createElement("div");
-  modal.className =
-    "fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-[100]";
-
-  const content = document.createElement("div");
-  content.className =
-    "bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto text-gray-900 dark:text-gray-100";
-
-  let historyHtml = `
-        <div class="flex justify-between items-center mb-4 pb-2 border-b border-gray-200 dark:border-gray-700">
-            <h3 class="text-xl font-semibold text-gray-800 dark:text-gold-500">Version History - ${historyData.filename}</h3>
-            <button class="text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gold-500" onclick="this.closest('.fixed').remove()">
-                <i class="fa-solid fa-xmark text-2xl"></i>
-            </button>
-        </div>
-    `;
-
-  if (historyData.history && historyData.history.length > 0) {
-    historyHtml += '<div class="space-y-4">';
-    historyData.history.forEach((commit) => {
-      historyHtml += `
-                <div class="p-4 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600">
-                    <div class="flex justify-between items-center text-sm mb-1">
-                        <span class="font-bold text-gray-800 dark:text-gold-500">${commit.commit_hash.substring(
-                          0,
-                          8
-                        )}</span>
-                        <span class="text-gray-500 dark:text-gray-400">${formatDate(
-                          commit.date
-                        )}</span>
-                    </div>
-                    <div class="text-gray-700 dark:text-gray-300 text-sm mb-1">${
-                      commit.message
-                    }</div>
-                    <div class="text-xs text-gray-500 dark:text-gray-400">Author: ${
-                      commit.author_name
-                    }</div>
-                </div>
-            `;
-    });
-    historyHtml += "</div>";
-  } else {
-    historyHtml +=
-      '<p class="text-center text-gray-500 dark:text-gray-400">No version history available.</p>';
-  }
-
-  content.innerHTML = historyHtml;
-  modal.appendChild(content);
-  document.body.appendChild(modal);
-
-  modal.addEventListener("click", (e) => {
-    if (e.target === modal) {
-      modal.remove();
-    }
-  });
-}
-
-function showNewFileDialog() {
-  const input = document.getElementById("newFileUpload");
-  input.onchange = function (event) {
-    const file = event.target.files[0];
-    if (file) {
-      uploadNewFile(file);
-    }
-  };
-  input.click();
-}
-
-async function uploadNewFile(file) {
-  try {
-    showNotification(`Adding new file '${file.name}'...`, "info");
-
-    const formData = new FormData();
-    formData.append("user", currentUser);
-    formData.append("file", file);
-
-    const response = await fetch(`/files/new_upload`, {
-      method: "POST",
-      body: formData,
-    });
-
-    const result = await response.json();
-
-    if (response.ok) {
-      showNotification(`New file '${file.name}' is being processed`, "success");
-      loadFiles();
-    } else {
-      showNotification(`Error: ${result.detail}`, "error");
-    }
-  } catch (error) {
-    console.error("Error uploading new file:", error);
-    showNotification("Error uploading new file", "error");
-  }
-}
-
-function toggleConfigPanel() {
-  const panel = document.getElementById("configPanel");
-  panel.classList.toggle("translate-x-full");
-  panel.classList.toggle("translate-x-0");
-}
-
-function toggleDarkMode() {
-  const htmlEl = document.documentElement;
-  if (htmlEl.classList.contains("dark")) {
-    htmlEl.classList.remove("dark");
-    localStorage.setItem("theme", "light");
-  } else {
-    htmlEl.classList.add("dark");
-    localStorage.setItem("theme", "dark");
-  }
-}
-
-function applyThemePreference() {
-  const savedTheme = localStorage.getItem("theme");
-  if (
-    savedTheme === "dark" ||
-    (!savedTheme && window.matchMedia("(prefers-color-scheme: dark)").matches)
-  ) {
-    document.documentElement.classList.add("dark");
-  } else {
-    document.documentElement.classList.remove("dark");
-  }
-}
-
-document
-  .getElementById("configForm")
-  .addEventListener("submit", async function (e) {
-    e.preventDefault();
-    const formData = {
-      gitlab_url: document.getElementById("gitlabUrl").value,
-      project_id: document.getElementById("projectId").value,
-      username: document.getElementById("username").value,
-      token: document.getElementById("token").value,
-    };
-    try {
-      showNotification("Saving configuration...", "info");
-      const response = await fetch("/config/gitlab", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formData),
-      });
-      const result = await response.json();
-      if (response.ok) {
-        showNotification("Configuration saved successfully!", "success");
-        loadConfig();
-        loadFiles();
-        toggleConfigPanel();
-      } else {
-        showNotification(`Error: ${result.detail}`, "error");
-      }
-    } catch (error) {
-      console.error("Error saving configuration:", error);
-      showNotification("Error saving configuration", "error");
-    }
-  });
-
-function showNotification(message, type = "info") {
-  const notification = document.createElement("div");
-  let bgColor;
-  const isDarkMode = document.documentElement.classList.contains("dark");
-
-  switch (type) {
-    case "success":
-      bgColor = isDarkMode ? "bg-green-700" : "bg-green-500";
-      break;
-    case "error":
-      bgColor = isDarkMode ? "bg-red-700" : "bg-red-500";
-      break;
-    case "info":
-      bgColor = isDarkMode ? "bg-blue-700" : "bg-blue-500";
-      break;
-    default:
-      bgColor = isDarkMode ? "bg-gray-700" : "bg-gray-500";
-  }
-  notification.className = `fixed top-4 right-4 z-[1000] p-4 rounded-lg shadow-lg text-white transform transition-transform duration-300 translate-x-full ${bgColor}`;
-  notification.textContent = message;
-
-  document.body.appendChild(notification);
-
-  setTimeout(() => {
-    notification.classList.remove("translate-x-full");
-    notification.classList.add("translate-x-0");
-  }, 100);
-
-  setTimeout(() => {
-    notification.classList.remove("translate-x-0");
-    notification.classList.add("translate-x-full");
-    setTimeout(() => {
-      if (notification.parentNode) {
-        notification.parentNode.removeChild(notification);
-      }
-    }, 300);
-  }, 4000);
-}
-
-function formatBytes(bytes) {
-  if (!bytes || bytes === 0) return "0 Bytes";
-  const k = 1024;
-  const sizes = ["Bytes", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
-}
-
-function formatDate(dateString) {
-  if (!dateString) return "Unknown";
-  return new Date(dateString).toLocaleString();
-}
-
-document.getElementById("searchInput").addEventListener("input", renderFiles);
-
-document.addEventListener("DOMContentLoaded", function () {
-  applyThemePreference();
-  connectWebSocket();
-  loadConfig(); // FIX: Call loadConfig first to get the username
-  loadFiles();
-  setInterval(loadFiles, 60000);
-});
-```
-
-### New Master Document
-
-This is the updated master document that reflects the recent changes.
-
-# Mastercam GitLab Interface – Master Specification (Final with Diagram & Quick Reference)
-
-## 1\. Objective
-
-Create a user-friendly browser-based application for Mastercam programmers that **abstracts the complexity of Git and GitLab**. The system will provide a simple workflow for managing Mastercam files, including **add, checkout, check-in, read-only access, and admin override**. It will handle large binary files efficiently via Git LFS and maintain version history in a central GitLab repository. The application will be a self-contained executable, enabling easy distribution and future central server deployment.
-
-Authentication relies on GitLab credentials to simplify access control and ensure that only users with repository permissions can edit or check out files.
-
----
-
-## 2\. Core Concepts & Workflow
-
-The system uses a **centralized locking mechanism** managed by a FastAPI server to prevent file overwrites. All Git operations are executed by this server, making the process transparent to the user.
-
-| Concept                  | Description                                                                                                                                                                                                                             |
-| :----------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Add New File**         | A user uploads a new Mastercam file through the web interface. The server saves, commits, and pushes the new file to the GitLab repository.                                                                                             |
-| **Checkout**             | A user requests a file lock through the web interface. The FastAPI server, acting as the central authority, grants exclusive editing rights if the file is unlocked. The user is then provided with a writable, local copy of the file. |
-| **Read-Only Access**     | Other users can access the same file for viewing, but the local copy is set to **read-only at the operating system level** to prevent saving changes.                                                                                   |
-| **Check-In**             | The user saves all changes locally, then uploads the updated file via the web interface. The FastAPI server commits and pushes the file to GitLab and unlocks it.                                                                       |
-| **Admin Override**       | An administrator can forcibly unlock any file through a dedicated web interface action.                                                                                                                                                 |
-| **Git LFS**              | Used for efficient storage and versioning of large Mastercam files.                                                                                                                                                                     |
-| **Centralized Metadata** | File lock status, user, and timestamp information are stored in a dedicated metadata repository within GitLab, ensuring a single source of truth for all users.                                                                         |
-| **Conflict Handling**    | The system detects external edits and prompts the user to choose how to resolve the conflict since binary files cannot be merged.                                                                                                       |
-| **Real-Time Updates**    | The FastAPI server uses **WebSockets** to notify all connected clients when a file's status changes.                                                                                                                                    |
-| **Optional Backup**      | Overwritten files during force check-in can be saved temporarily to a backup location.                                                                                                                                                  |
-
-### 2.1. Workflow
-
-1.  **User Opens App**: Runs the executable → starts FastAPI server → opens browser to `http://localhost:8000`.
-2.  **Add New File**: Click "Upload File" → browser uploads file.
-3.  **FastAPI Adds File**: Saves file to repo, performs `git add`, `git commit`, `git push`.
-4.  **Checkout Request**: Click “Checkout” → browser sends request.
-5.  **FastAPI Locks File**: Checks metadata → if unlocked, creates lock entry → confirmation sent.
-6.  **Local File Access**: Server provides download link → local script sets writable permissions.
-7.  **User Edits**: File opened in Mastercam for editing.
-8.  **Check-In**: Click “Check-In” → browser uploads file.
-9.  **FastAPI Pushes Changes**: Performs `git add`, `git commit`, `git push` → unlocks file.
-10. **Real-Time Update**: Sends WebSocket notifications → clients update file status.
-
-### 2.2. Conflict Resolution for Binary Files
-
-- **Download Latest Version**: Safely overwrite local changes with repository version.
-- **Force Check-In**: Overwrites repository with local file. Warning shown; optional backup created.
-
-### 2.3. Workflow Diagram (Text Representation)
+Place the files as follows in your MkDocs project:
 
 ```
-User Browser        FastAPI Server       GitLab Repo
-   |                     |                  |
-   |---Open App--------->|                  |
-   |                     |---Fetch Files--->|
-   |<--Display Files----|                  |
-   |---Add New File----->|---Commit & Push->|
-   |<--Success Message--|                  |
-   |---Checkout File--->|                  |
-   |                     |---Check Lock--->|
-   |                     |<--Lock Granted--|
-   |<--Provide File Link-|                  |
-   |---Edit File Locally-|                  |
-   |---Check-In File---->|                  |
-   |                     |---Commit & Push->|
-   |                     |---Update Metadata|
-   |<--Success Message---|                  |
-   |                     |--WebSocket Notify-> All Clients
+mkdocs-project/
+├── docs/
+│   ├── user_guide.md
+│   ├── images/
+│   │   ├── setup-modal.png
+│   │   ├── main-interface.png
+│   │   ├── checkout-failure-modal.png
+│   │   ├── checkin-modal.png
+│   │   ├── network-error-modal.png
+├── mkdocs.yml
 ```
 
----
+- **Images**: Create placeholder PNG files for now. Your IT team should replace them with actual screenshots of:
+  - Config prompt modal (`setup-modal.png`).
+  - Main file list interface (`main-interface.png`).
+  - Checkout failure modal (`checkout-failure-modal.png`).
+  - Check-in modal (`checkin-modal.png`).
+  - Network error modal (`network-error-modal.png`).
+- **Links**: Replace `[Internal SharePoint Link](#)` and `[Internal Support Portal](#)` with your company’s actual URLs.
 
-## 3\. Technical Architecture & Requirements
+### Building and Serving with MkDocs
 
-### 3.1. Components
+1. **Install MkDocs** (if not already installed):
+   ```bash
+   pip install mkdocs mkdocs-material
+   ```
 
-- **Local Application (PyInstaller Executable)**: Contains FastAPI server, web interface, all dependencies.
-- **FastAPI Server**: Manages Git commands, metadata, serves web interface.
-- **GitLab Repository**: Central storage for Mastercam files (Git LFS enabled).
-- **Metadata Repository**: Tracks locks, user info, timestamps.
-- **Browser Client**: Accesses UI.
-- **Mastercam Client**: Edits `.mcam` files locally.
+2. **Add Files**:
+   - Save `user_guide.md` in `docs/`.
+   - Save `mkdocs.yml` in the project root.
+   - Create an `index.md` (optional, e.g., a welcome page) or copy `user_guide.md` as `index.md`.
+   - Create placeholder images in `docs/images/` (e.g., empty PNGs).
 
-### 3.2. API Endpoints & Payloads
+3. **Preview the Site**:
+   ```bash
+   mkdocs serve
+   ```
+   - Open `http://localhost:8000` to view the site.
+   - Verify navigation, formatting, and image placeholders.
 
-| Endpoint                     | Method | Request                          | Response                 | Notes                            |
-| ---------------------------- | ------ | -------------------------------- | ------------------------ | -------------------------------- |
-| `/files`                     | GET    | N/A                              | List files with metadata | Fetch all project files          |
-| `/files/new_upload`          | POST   | `multipart/form-data`            | 200 OK                   | Add a new file to the repository |
-| `/files/{filename}/checkout` | POST   | `{ "user": "username" }`         | 200 OK / 409 Conflict    | Lock file for editing            |
-| `/files/{filename}/checkin`  | POST   | `multipart/form-data`            | 200 OK / 409 Conflict    | Upload edited file               |
-| `/files/{filename}/override` | POST   | `{ "admin_user": "admin_name" }` | 200 OK                   | Admin unlock                     |
+4. **Build for Deployment**:
+   ```bash
+   mkdocs build
+   ```
+   - Outputs a `site/` directory for hosting on your internal server (e.g., via nginx or GitLab Pages).
 
-### 3.3. Authentication & Authorization
+5. **Deploy**:
+   - Copy the `site/` directory to your company’s web server or use GitLab Pages.
+   - Update links in `user_guide.md` to point to the hosted location.
 
-- **GitLab-based Authentication**: Ensures users have repository access.
-- **Authorization**: Checkout/check-in/add for all; override restricted to admins.
+### Notes for IT Team
+- **Screenshots**: Capture images of the app’s UI for each placeholder (e.g., use Snipping Tool or browser dev tools).
+- **Customization**: Adjust the `mkdocs.yml` theme (e.g., colors, logo) to match your company’s branding.
+- **Access Control**: Host the documentation on an internal server with authentication (e.g., SSO via GitLab).
+- **Updates**: If the app’s UI changes, update screenshots and workflow steps in `user_guide.md`.
 
-### 3.4. Error Handling & Feedback
+### Workflow Summary
+The documentation outlines a clear workflow:
+1. Launch the app and log in.
+2. Check out a file, edit in Mastercam, and save locally.
+3. Check in the file with a commit message and revision type.
+4. Handle errors via modals (e.g., race conditions, network issues).
+5. Admins can delete files if needed.
 
-- Standard HTTP codes: `409 Conflict`, `500 Internal Server Error`.
-- User-friendly messages in UI.
-- Robust logging for requests, Git outputs, and errors.
+This aligns with your app’s features (sparse checkout, Git LFS, lock management) and ensures users understand how to avoid conflicts and manage storage efficiently.
 
----
+### Next Steps
+- **Provide Screenshots**: Share your app’s UI screenshots or `index.html`/`script.js` snippets so I can tailor the image descriptions.
+- **Add More Sections**: If you need advanced topics (e.g., admin guide, API usage), let me know.
+- **Test Documentation**: Run `mkdocs serve` and review the rendered site, then update placeholders.
 
-## 4\. Scalability & Distribution
-
-### 4.1. Local Deployment
-
-- PyInstaller executable for each user.
-- Local server communicates directly with central GitLab repository.
-
-### 4.2. Central Server Deployment
-
-- FastAPI server hosted centrally.
-- Users access via browser; no local Git or PyInstaller required.
-
-### 4.3. Advantages
-
-- Simplifies Git, prevents overwrites.
-- Efficient for large files (Git LFS).
-- Centralized control and metadata.
-- Scalable for large user bases.
-- Real-time updates enhance collaboration.
-
----
-
-## 5\. Developer Quick Reference
-
-### Workflow
-
-| Action         | Server                | GitLab                 | Local File              |
-| -------------- | --------------------- | ---------------------- | ----------------------- |
-| Add New File   | Commit & push         | Create repository file | N/A                     |
-| Checkout       | Create lock           | N/A                    | Download & set writable |
-| Edit           | N/A                   | N/A                    | Edit in Mastercam       |
-| Check-In       | Commit & push, unlock | Update repository      | N/A                     |
-| Read-Only      | N/A                   | N/A                    | Set read-only           |
-| Admin Override | Unlock                | N/A                    | N/A                     |
-
-### Status Indicators
-
-- 🟢 Green: Unlocked
-- 🟡 Yellow: Checked out by current user
-- 🔒 Red: Locked by another user
-- ⚠️ Orange: Admin override available
-
-### Notes
-
-- `.mcam` files **cannot be merged**; conflict resolution: download latest or force check-in.
-- Optional backup recommended for overwrite.
-- GitLab authentication simplifies access control.
-- Real-time updates via WebSockets.
+Let me know if you need help with MkDocs setup, additional Markdown sections, or specific UI details for the screenshots!
