@@ -17,6 +17,9 @@ let tooltipsEnabled =
   localStorage.getItem("tooltipsEnabled") === "true" || false;
 let lastFileListHash = null;
 let currentNotification = null; // Add this line
+let currentActivityOffset = 0;
+const ACTIVITY_LIMIT = 50;
+let isLoadingMoreActivity = false;
 
 const domCache = {
   fileList: document.getElementById("fileList"),
@@ -184,9 +187,10 @@ const tooltips = {
       "Release the lock without saving changes. Local modifications will be lost.",
     position: "top",
   },
-  view: {
-    title: "View/Download File",
-    content: "Download the latest version of this file to your computer.",
+  download: {
+    title: "Download File",
+    content:
+      "Download this file. If not checked out, you'll get a view-only copy with a warning about saving changes.",
     position: "top",
   },
   history: {
@@ -621,9 +625,11 @@ function addDynamicTooltips() {
     addTooltipToElement(btn, "cancel-checkout");
   });
 
-  document.querySelectorAll('a[href*="/download"]').forEach((btn) => {
-    addTooltipToElement(btn, "view");
-  });
+  document
+    .querySelectorAll('a[href*="/download"], .js-download-btn')
+    .forEach((btn) => {
+      addTooltipToElement(btn, "download");
+    });
 
   document.querySelectorAll(".js-history-btn").forEach((btn) => {
     addTooltipToElement(btn, "history");
@@ -1352,18 +1358,21 @@ function getActionButtons(file) {
     return buttons;
   }
 
-  // Regular file logic
-  let viewBtnHtml = `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80"><i class="fa-solid fa-eye"></i><span>View</span></a>`;
+  let viewBtnHtml;
+
+  if (file.status === "checked_out_by_user") {
+    // Direct download for checked out files
+    viewBtnHtml = `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80"><i class="fa-solid fa-file-arrow-down"></i><span>Download</span></a>`;
+  } else {
+    // Show modal for view-only files
+    viewBtnHtml = `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-download-btn" data-filename="${file.filename}"><i class="fa-solid fa-file-arrow-down"></i><span>Download</span></button>`;
+  }
 
   if (file.status === "unlocked") {
     buttons += `<button class="${btnClass} bg-gradient-to-r from-green-600 to-green-700 text-white hover:bg-opacity-80 js-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
   } else if (file.status === "checked_out_by_user") {
     buttons += `<button class="${btnClass} bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:bg-opacity-80 js-checkin-btn" data-filename="${file.filename}"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
     buttons += `<button class="${btnClass} bg-gradient-to-r from-yellow-600 to-yellow-700 text-white hover:bg-opacity-80 js-cancel-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-times"></i><span>Cancel Checkout</span></button>`;
-    viewBtnHtml = viewBtnHtml.replace(
-      '<i class="fa-solid fa-eye"></i><span>View</span>',
-      '<i class="fa-solid fa-file-arrow-down"></i><span>Download</span>'
-    );
   }
 
   buttons = viewBtnHtml + buttons;
@@ -2292,95 +2301,188 @@ async function loadAndRenderActiveCheckouts() {
   }
 }
 
-async function loadAndRenderActivityFeed() {
+async function loadAndRenderActivityFeed(append = false) {
   const container = document.getElementById("activityFeedContainer");
+
+  if (!append) {
+    currentActivityOffset = 0;
+    isLoadingMoreActivity = true;
+  }
+
   try {
-    const response = await fetch("/dashboard/activity");
+    const response = await fetch(
+      `/dashboard/activity?limit=${ACTIVITY_LIMIT}&offset=${currentActivityOffset}`
+    );
     if (!response.ok) throw new Error(`Server error: ${response.statusText}`);
     const data = await response.json();
 
     const users = Array.from(
       new Set(data.activities.map((act) => act.user))
     ).sort();
-    const filterHtml = `
-          <div class="relative mb-4 flex-shrink-0">
-            <label for="activityUserFilter" class="text-sm font-medium text-primary-800 dark:text-primary-200 mr-2">Filter by User:</label>
-            <select id="activityUserFilter" class="w-full sm:w-auto p-2 border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
-              <option value="all">All Users</option>
-              ${users
-                .map((user) => `<option value="${user}">${user}</option>`)
-                .join("")}
-            </select>
-          </div>
-        `;
 
-    let activityListHtml =
-      '<div id="activity-list" class="space-y-4 flex-grow overflow-y-auto">';
-    if (data.activities.length === 0) {
-      activityListHtml += `<p class="text-center text-primary-600 dark:text-primary-300 py-8">No recent activity found.</p>`;
+    let contentHtml = "";
+
+    if (!append) {
+      // Only add header and filter on initial load
+      const filterHtml = `
+        <div class="relative mb-4 flex-shrink-0">
+          <label for="activityUserFilter" class="text-sm font-medium text-primary-800 dark:text-primary-200 mr-2">Filter by User:</label>
+          <select id="activityUserFilter" class="w-full sm:w-auto p-2 border border-primary-400 dark:border-mc-dark-accent rounded-md bg-white dark:bg-mc-dark-accent text-primary-900 dark:text-primary-100 focus:ring-accent focus:border-accent">
+            <option value="all">All Users</option>
+            ${users
+              .map((user) => `<option value="${user}">${user}</option>`)
+              .join("")}
+          </select>
+        </div>`;
+
+      contentHtml = `
+        <h4 class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-2 flex-shrink-0">Recent Activity</h4>
+        ${filterHtml}
+        <div id="activity-list" class="space-y-4 flex-grow overflow-y-auto">`;
+    }
+
+    // Build activity items
+    let activityListHtml = "";
+    if (data.activities.length === 0 && !append) {
+      activityListHtml = `<p class="text-center text-primary-600 dark:text-primary-300 py-8">No recent activity found.</p>`;
     } else {
       data.activities.forEach((item) => {
         const iconMap = {
           CHECK_IN: { icon: "fa-upload", color: "text-blue-500" },
           CHECK_OUT: { icon: "fa-download", color: "text-green-500" },
+          NEW_FILE: { icon: "fa-plus-circle", color: "text-green-600" },
+          NEW_LINK: { icon: "fa-link", color: "text-purple-500" },
           CANCEL: { icon: "fa-times-circle", color: "text-yellow-500" },
           OVERRIDE: { icon: "fa-unlock", color: "text-orange-500" },
+          DELETE_FILE: { icon: "fa-trash", color: "text-red-600" },
+          DELETE_LINK: { icon: "fa-unlink", color: "text-red-500" },
+          REVERT: { icon: "fa-undo", color: "text-purple-600" },
+          MESSAGE: { icon: "fa-envelope", color: "text-blue-400" },
+          REFRESH_LOCK: { icon: "fa-refresh", color: "text-gray-500" },
         };
+
         const { icon, color } = iconMap[item.event_type] || {
           icon: "fa-question-circle",
           color: "text-gray-500",
         };
+
         const verbMap = {
           CHECK_IN: "checked in",
           CHECK_OUT: "checked out",
+          NEW_FILE: "uploaded new file",
+          NEW_LINK: "created link",
           CANCEL: "canceled checkout for",
           OVERRIDE: "overrode lock on",
+          DELETE_FILE: "deleted file",
+          DELETE_LINK: "removed link",
+          REVERT: "reverted",
+          MESSAGE: "sent message",
+          REFRESH_LOCK: "refreshed lock on",
         };
+
         const verb = verbMap[item.event_type] || "interacted with";
 
         activityListHtml += `
-                    <div class="flex items-start space-x-3 activity-item" data-user="${
-                      item.user
-                    }">
-                        <div class="pt-1"><i class="fa-solid ${icon} ${color}"></i></div>
-                        <div>
-                            <p class="text-sm text-primary-800 dark:text-primary-200">
-                                <strong>${item.user}</strong> 
-                                ${verb}
-                                <strong>${item.filename}</strong>
-                                ${
-                                  item.revision ? ` (Rev ${item.revision})` : ""
-                                }
-                            </p>
-                            <p class="text-xs text-primary-600 dark:text-primary-400">${formatDate(
-                              item.timestamp
-                            )}</p>
-                        </div>
-                    </div>`;
+          <div class="flex items-start space-x-3 activity-item" data-user="${
+            item.user
+          }">
+            <div class="pt-1"><i class="fa-solid ${icon} ${color}"></i></div>
+            <div>
+              <p class="text-sm text-primary-800 dark:text-primary-200">
+                <strong>${item.user}</strong> 
+                ${verb}
+                <strong>${item.filename}</strong>
+                ${item.revision ? ` (Rev ${item.revision})` : ""}
+              </p>
+              <p class="text-xs text-primary-600 dark:text-primary-400">${formatDate(
+                item.timestamp
+              )}</p>
+            </div>
+          </div>`;
       });
     }
-    activityListHtml += "</div>";
 
-    container.innerHTML = `
-            <h4 class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-2 flex-shrink-0">Recent Activity</h4>
-            ${filterHtml}
-            ${activityListHtml}
-        `;
+    if (!append) {
+      contentHtml += activityListHtml;
 
-    const userFilter = document.getElementById("activityUserFilter");
-    const activityItems = container.querySelectorAll(".activity-item");
-    userFilter.addEventListener("change", () => {
-      const selectedUser = userFilter.value;
-      activityItems.forEach((item) => {
-        if (selectedUser === "all" || item.dataset.user === selectedUser) {
-          item.style.display = "flex";
-        } else {
-          item.style.display = "none";
-        }
+      // Add Load More button if we got the full limit (meaning there might be more)
+      if (data.activities.length === ACTIVITY_LIMIT) {
+        contentHtml += `
+          <div class="text-center mt-4">
+            <button id="loadMoreActivityBtn" class="px-4 py-2 bg-gradient-to-r from-primary-500 to-primary-600 text-white rounded-md hover:bg-opacity-80 transition-colors">
+              Load More Activity
+            </button>
+          </div>`;
+      }
+
+      contentHtml += `</div>`;
+      container.innerHTML = contentHtml;
+
+      // Set up user filter
+      const userFilter = document.getElementById("activityUserFilter");
+      const activityItems = container.querySelectorAll(".activity-item");
+      userFilter.addEventListener("change", () => {
+        const selectedUser = userFilter.value;
+        activityItems.forEach((item) => {
+          if (selectedUser === "all" || item.dataset.user === selectedUser) {
+            item.style.display = "flex";
+          } else {
+            item.style.display = "none";
+          }
+        });
       });
-    });
+
+      // Set up Load More button
+      const loadMoreBtn = document.getElementById("loadMoreActivityBtn");
+      if (loadMoreBtn) {
+        loadMoreBtn.addEventListener("click", loadMoreActivity);
+      }
+    } else {
+      // Append new activities
+      const activityList = document.getElementById("activity-list");
+      if (activityList) {
+        const tempDiv = document.createElement("div");
+        tempDiv.innerHTML = activityListHtml;
+        while (tempDiv.firstChild) {
+          activityList.appendChild(tempDiv.firstChild);
+        }
+
+        // Update Load More button
+        const loadMoreBtn = document.getElementById("loadMoreActivityBtn");
+        if (data.activities.length < ACTIVITY_LIMIT) {
+          // No more data, hide button
+          if (loadMoreBtn) loadMoreBtn.style.display = "none";
+        }
+      }
+    }
+
+    isLoadingMoreActivity = false;
   } catch (error) {
-    container.innerHTML = `<h4 class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-4">Recent Activity</h4><p class="text-center text-red-500">Error: ${error.message}</p>`;
+    isLoadingMoreActivity = false;
+    if (!append) {
+      container.innerHTML = `<h4 class="text-lg font-semibold text-primary-900 dark:text-primary-100 mb-4">Recent Activity</h4><p class="text-center text-red-500">Error: ${error.message}</p>`;
+    }
+  }
+}
+
+async function loadMoreActivity() {
+  if (isLoadingMoreActivity) return;
+
+  isLoadingMoreActivity = true;
+  const loadMoreBtn = document.getElementById("loadMoreActivityBtn");
+
+  if (loadMoreBtn) {
+    loadMoreBtn.disabled = true;
+    loadMoreBtn.innerHTML =
+      '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Loading...';
+  }
+
+  currentActivityOffset += ACTIVITY_LIMIT;
+  await loadAndRenderActivityFeed(false); // append = true
+
+  if (loadMoreBtn) {
+    loadMoreBtn.disabled = false;
+    loadMoreBtn.innerHTML = "Load More Activity";
   }
 }
 
@@ -2621,6 +2723,57 @@ function showConfirmModal(message, onConfirm, onCancel = () => {}) {
   }, 100);
 }
 
+function showDownloadModal(filename) {
+  const modal = document.createElement("div");
+  modal.className =
+    "fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100]";
+
+  modal.innerHTML = `
+    <div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-md p-6 bg-opacity-95 border border-transparent bg-gradient-to-br from-white to-mc-light-accent dark:from-mc-dark-bg dark:to-mc-dark-accent">
+      <div class="flex items-center mb-4">
+        <i class="fa-solid fa-info-circle text-blue-500 text-2xl mr-3"></i>
+        <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100">Download for Viewing</h3>
+      </div>
+      
+      <div class="mb-6">
+        <p class="text-primary-700 dark:text-primary-300 mb-3">
+          You are downloading <strong>${filename}</strong> for viewing purposes only.
+        </p>
+        <div class="bg-yellow-50 dark:bg-yellow-900 border border-yellow-200 dark:border-yellow-700 rounded-md p-3">
+          <p class="text-yellow-800 dark:text-yellow-200 text-sm">
+            <i class="fa-solid fa-exclamation-triangle mr-2"></i>
+            <strong>Important:</strong> This file is not checked out. Any changes you make will not be saved to the repository unless you first checkout the file.
+          </p>
+        </div>
+      </div>
+      
+      <div class="flex justify-end space-x-3">
+        <button class="px-4 py-2 bg-gradient-to-r from-gray-300 to-gray-400 dark:from-gray-600 dark:to-gray-700 text-primary-900 dark:text-primary-100 rounded-md hover:bg-opacity-80" onclick="this.closest('.fixed').remove()">
+          Cancel
+        </button>
+        <a href="/files/${filename}/download" class="inline-flex items-center px-4 py-2 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-md hover:bg-opacity-80" onclick="this.closest('.fixed').remove()">
+          <i class="fa-solid fa-file-arrow-down mr-2"></i>
+          Download File
+        </a>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  // Close modal when clicking outside
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) {
+      modal.remove();
+    }
+  });
+
+  // Add tooltips after modal is shown
+  setTimeout(() => {
+    updateTooltipVisibility();
+  }, 100);
+}
+
 // Modify WebSocket onclose to handle persistent connection failures
 function connectWebSocket() {
   if (reconnectTimeout) {
@@ -2797,6 +2950,8 @@ document.addEventListener("DOMContentLoaded", function () {
         checkoutFile(filename);
       } else if (actionButton.classList.contains("js-checkin-btn")) {
         showCheckinDialog(filename);
+      } else if (actionButton.classList.contains("js-download-btn")) {
+        showDownloadModal(filename);
       } else if (actionButton.classList.contains("js-cancel-checkout-btn")) {
         cancelCheckout(filename);
       } else if (actionButton.classList.contains("js-override-btn")) {

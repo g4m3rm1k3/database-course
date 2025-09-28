@@ -35,6 +35,44 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from cryptography.fernet import Fernet
 import base64
+import time
+
+
+class FileLockManager:
+    """A simple file-based lock for distributed processes."""
+
+    def __init__(self, lock_file_path: Path):
+        self.lock_file_path = lock_file_path
+        self.lock_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def __enter__(self):
+        # Acquire the lock
+        timeout = 30  # Wait a maximum of 30 seconds
+        start_time = time.time()
+        while True:
+            try:
+                # 'x' mode means create exclusively - fails if file exists
+                self.lock_file = open(self.lock_file_path, 'x')
+                self.lock_file.write(
+                    f"Locked by process {os.getpid()} at {datetime.now()}")
+                logger.info("Acquired repository lock.")
+                return self
+            except FileExistsError:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(
+                        "Could not acquire repository lock in time.")
+                time.sleep(0.2)  # Wait a bit before retrying
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Release the lock
+        if hasattr(self, 'lock_file'):
+            self.lock_file.close()
+            try:
+                os.remove(self.lock_file_path)
+                logger.info("Released repository lock.")
+            except OSError as e:
+                logger.error(f"Failed to remove lock file: {e}")
+
 
 # --- Basic Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
@@ -74,7 +112,7 @@ def validate_link_filename_format(filename: str) -> tuple[bool, str]:
         return False, f"Link name cannot exceed {MAX_LENGTH} characters."
 
     # Stricter pattern for links: exactly 7 digits, underscore, exactly 3 letters, exactly 3 numbers
-    pattern = re.compile(r"^\d{7}_[A-Z]{3}\d{3}$")
+    pattern = re.compile(r"^\d{7}(_[A-Z]{3}\d{3})?$")
     if not pattern.match(filename):
         return False, "Link name must follow the format: 7digits_3LETTERS_3numbers (e.g., 1234567_ABC123)."
 
@@ -172,6 +210,8 @@ class ConfigUpdateRequest(BaseModel):
     project_id: str = Field(..., description="GitLab project ID")
     username: str = Field(..., description="GitLab username")
     token: str = Field(..., description="GitLab personal access token")
+    allow_insecure_ssl: bool = Field(
+        False, description="Whether to allow insecure SSL connections")
 
 
 class AdminRevertRequest(BaseModel):
@@ -182,7 +222,7 @@ class AdminRevertRequest(BaseModel):
 
 class ActivityItem(BaseModel):
     event_type: str = Field(
-        ..., description="Type of activity: CHECK_IN, CHECK_OUT, CANCEL, OVERRIDE")
+        ..., description="Type of activity: CHECK_IN, CHECK_OUT, CANCEL, OVERRIDE, NEW_FILE, NEW_LINK, DELETE_FILE, DELETE_LINK, REVERT, MESSAGE, REFRESH_LOCK")
     filename: str = Field(..., description="Name of the file involved")
     user: str = Field(..., description="Username who performed the action")
     timestamp: str = Field(..., description="ISO timestamp of the activity")
@@ -204,7 +244,10 @@ class AppConfig(BaseModel):
     gitlab: dict = Field(default_factory=dict)
     local: dict = Field(default_factory=dict)
     ui: dict = Field(default_factory=dict)
-    security: dict = Field(default_factory=lambda: {"admin_users": ["admin"]})
+    security: dict = Field(default_factory=lambda: {
+        "admin_users": ["admin"],
+        "allow_insecure_ssl": False
+    })
     polling: dict = Field(default_factory=lambda: {
                           "enabled": True, "interval_seconds": 15, "check_on_activity": True})
 
@@ -239,7 +282,34 @@ class FileHistory(BaseModel):
     history: List[Dict[str, Any]
                   ] = Field(..., description="List of historical commits for this file")
 
+
+class ConfigurationError(HTTPException):
+    def __init__(self, detail: str):
+        super().__init__(status_code=503, detail=detail)
+
 # --- Core Application Classes & Functions ---
+
+
+def get_git_repo():
+    if not app_state.get('initialized'):
+        raise ConfigurationError(
+            "Application is not configured. Please set GitLab credentials.")
+    return app_state.get('git_repo')
+
+
+def get_metadata_manager():
+    if not app_state.get('initialized'):
+        raise ConfigurationError("Application is not configured.")
+    return app_state.get('metadata_manager')
+
+
+def is_safe_path(basedir, path, follow_symlinks=True):
+    # Resolves symbolic links if allowed
+    if follow_symlinks:
+        matchpath = os.path.realpath(path)
+    else:
+        matchpath = os.path.abspath(path)
+    return basedir == os.path.commonpath((basedir, matchpath))
 
 
 async def is_valid_file_type(file: UploadFile) -> bool:
@@ -427,8 +497,15 @@ class GitLabAPI:
 
     def test_connection(self) -> bool:
         try:
+            # ✅ FIX: This method now reads the config for itself.
+            config_manager = app_state.get('config_manager')
+            allow_insecure = config_manager.config.security.get(
+                "allow_insecure_ssl", False)
+            verify_ssl = not allow_insecure
+
             response = requests.get(
-                self.api_url, headers=self.headers, timeout=10)
+                self.api_url, headers=self.headers, timeout=10, verify=verify_ssl
+            )
             response.raise_for_status()
             return True
         except requests.exceptions.RequestException as e:
@@ -439,38 +516,54 @@ class GitLabAPI:
 class GitRepository:
     def __init__(self, repo_path: Path, remote_url: str, token: str):
         self.repo_path = repo_path
+        # ✅ Create a lock manager that points to a hidden file inside the .git directory
+        self.lock_manager = FileLockManager(repo_path / ".git" / "repo.lock")
+
         self.remote_url_with_token = f"https://oauth2:{token}@{remote_url.split('://')[-1]}"
-        self.git_env = {"GIT_SSL_NO_VERIFY": "true"}
+
+        # ✅ Conditionally disable SSL verification based on the config file setting
+        config_manager = app_state.get('config_manager')
+        allow_insecure = config_manager.config.security.get(
+            "allow_insecure_ssl", False)
+        self.git_env = {"GIT_SSL_NO_VERIFY": "true"} if allow_insecure else {}
+
         self.repo = self._init_repo()
 
     def _init_repo(self):
         try:
-            if not self.repo_path.exists():
-                logger.info(f"Cloning repository to {self.repo_path}")
-                return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
-            repo = git.Repo(self.repo_path)
-            if not repo.remotes:
-                raise git.exc.InvalidGitRepositoryError
-            return repo
+            # ✅ Acquire lock for repository initialization/cloning
+            with self.lock_manager:
+                if not self.repo_path.exists():
+                    logger.info(f"Cloning repository to {self.repo_path}")
+                    return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
+
+                repo = git.Repo(self.repo_path)
+                if not repo.remotes:
+                    raise git.exc.InvalidGitRepositoryError
+                return repo
         except (git.exc.InvalidGitRepositoryError, git.exc.NoSuchPathError):
             logger.warning(f"Invalid repo at {self.repo_path}, re-cloning.")
-            if self.repo_path.exists():
-                import shutil
-                shutil.rmtree(self.repo_path)
-            return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
+            # ✅ Acquire lock for re-cloning
+            with self.lock_manager:
+                if self.repo_path.exists():
+                    import shutil
+                    shutil.rmtree(self.repo_path)
+                return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
         except Exception as e:
             logger.error(f"Failed to initialize repository: {e}")
             return None
 
     def pull(self):
         try:
-            if self.repo:
-                with self.repo.git.custom_environment(**self.git_env):
-                    self.repo.remotes.origin.fetch()
-                    self.repo.git.reset(
-                        '--hard', f'origin/{self.repo.active_branch.name}')
-                    logger.debug(
-                        "Successfully synced with remote via fetch and hard reset.")
+            # ✅ Acquire lock for pull operation to prevent conflicts
+            with self.lock_manager:
+                if self.repo:
+                    with self.repo.git.custom_environment(**self.git_env):
+                        self.repo.remotes.origin.fetch()
+                        self.repo.git.reset(
+                            '--hard', f'origin/{self.repo.active_branch.name}')
+                        logger.debug(
+                            "Successfully synced with remote via fetch and hard reset.")
         except Exception as e:
             logger.error(f"Git sync (fetch/reset) failed: {e}")
 
@@ -493,36 +586,40 @@ class GitRepository:
         (self.repo_path / file_path).write_bytes(content)
 
     def commit_and_push(self, file_paths: List[str], message: str, author_name: str, author_email: str) -> bool:
-        if not self.repo:
-            return False
-        try:
-            with self.repo.git.custom_environment(**self.git_env):
-                to_add = [p for p in file_paths if (
-                    self.repo_path / p).exists()]
-                to_remove = [p for p in file_paths if not (
-                    self.repo_path / p).exists()]
-                if to_add:
-                    self.repo.index.add(to_add)
-                if to_remove:
-                    self.repo.index.remove(to_remove)
-                if not self.repo.index.diff("HEAD") and not any(self.repo.index.diff(None)) and not self.repo.untracked_files:
-                    logger.info("No changes to commit.")
-                    return True
-                author = Actor(author_name, author_email)
-                self.repo.index.commit(message, author=author)
-                self.repo.remotes.origin.push()
-            logger.info("Changes pushed to GitLab.")
-            return True
-        except Exception as e:
-            logger.error(f"Git commit/push failed: {e}")
+        # ✅ Acquire lock for the entire commit and push sequence
+        with self.lock_manager:
+            if not self.repo:
+                return False
             try:
                 with self.repo.git.custom_environment(**self.git_env):
-                    self.repo.git.reset(
-                        '--hard', f'origin/{self.repo.active_branch.name}')
-            except Exception as reset_e:
-                logger.error(
-                    f"Failed to reset repo after push failure: {reset_e}")
-            return False
+                    to_add = [p for p in file_paths if (
+                        self.repo_path / p).exists()]
+                    to_remove = [p for p in file_paths if not (
+                        self.repo_path / p).exists()]
+                    if to_add:
+                        self.repo.index.add(to_add)
+                    if to_remove:
+                        self.repo.index.remove(to_remove)
+
+                    if not self.repo.index.diff("HEAD") and not any(self.repo.index.diff(None)) and not self.repo.untracked_files:
+                        logger.info("No changes to commit.")
+                        return True
+
+                    author = Actor(author_name, author_email)
+                    self.repo.index.commit(message, author=author)
+                    self.repo.remotes.origin.push()
+                logger.info("Changes pushed to GitLab.")
+                return True
+            except Exception as e:
+                logger.error(f"Git commit/push failed: {e}")
+                try:
+                    with self.repo.git.custom_environment(**self.git_env):
+                        self.repo.git.reset(
+                            '--hard', f'origin/{self.repo.active_branch.name}')
+                except Exception as reset_e:
+                    logger.error(
+                        f"Failed to reset repo after push failure: {reset_e}")
+                return False
 
     def get_file_history(self, file_path: str, limit: int = 10) -> List[Dict]:
         if not self.repo:
@@ -862,7 +959,11 @@ async def initialize_application():
                 api_url = f"{base_url_parsed}/api/v4/user"
                 headers = {"Private-Token": gitlab_cfg['token']}
 
-                response = requests.get(api_url, headers=headers, timeout=10)
+                security_cfg = cfg.security
+                verify_ssl = not security_cfg.get("allow_insecure_ssl", False)
+
+                response = requests.get(
+                    api_url, headers=headers, timeout=10, verify=verify_ssl)
                 response.raise_for_status()
 
                 gitlab_user_data = response.json()
@@ -989,8 +1090,7 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
         all_files_raw.extend(git_repo.list_files(pattern))
 
     # Create map of all files (not just mcam files)
-    master_files_map = {file_data['name']
-        : file_data for file_data in all_files_raw}
+    master_files_map = {file_data['name']                        : file_data for file_data in all_files_raw}
 
     # This list will hold both real and virtual (linked) files
     all_files_to_process = list(master_files_map.values())
@@ -1169,49 +1269,64 @@ async def get_config():
 
 @app.post("/config/gitlab")
 async def update_gitlab_config(request: ConfigUpdateRequest):
-    if config_manager := app_state.get('config_manager'):
-        try:
-            # --- THIS IS THE FIX ---
-            # Correctly parse the base URL to prevent validation errors
-            base_url_parsed = '/'.join(request.base_url.split('/')[:3])
-            api_url = f"{base_url_parsed}/api/v4/user"
+    # You can keep the print statement here for testing or remove it.
+    print(
+        f"--- DATA RECEIVED FROM FRONTEND ---\n{request.model_dump_json(indent=2)}\n---------------------------------")
 
-            headers = {"Private-Token": request.token}
-            response = requests.get(api_url, headers=headers, timeout=10)
-            response.raise_for_status()
+    config_manager = app_state.get('config_manager')
+    if not config_manager:
+        raise HTTPException(
+            status_code=500, detail="Configuration manager not found.")
 
-            gitlab_user_data = response.json()
-            gitlab_username = gitlab_user_data.get("username")
+    try:
+        # --- 1. VALIDATION ---
+        base_url_parsed = '/'.join(request.base_url.split('/')[:3])
+        api_url = f"{base_url_parsed}/api/v4/user"
+        headers = {"Private-Token": request.token}
+        verify_ssl = not request.allow_insecure_ssl
+        response = requests.get(api_url, headers=headers,
+                                timeout=10, verify=verify_ssl)
+        response.raise_for_status()
+        gitlab_user_data = response.json()
+        gitlab_username = gitlab_user_data.get("username")
 
-            if gitlab_username != request.username:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Validation Failed: Username '{request.username}' does not match the token owner ('{gitlab_username}')."
-                )
-
-        except HTTPException as e:
-            raise e  # Forward validation errors
-        except requests.exceptions.RequestException as e:
-            logger.error(f"GitLab API validation request failed: {e}")
+        if gitlab_username != request.username:
             raise HTTPException(
-                status_code=401,
-                detail="Could not validate with GitLab. Check your GitLab URL and Access Token."
+                status_code=400,
+                detail=f"Validation Failed: Username '{request.username}' does not match the token owner ('{gitlab_username}')."
             )
-        except Exception as e:
-            error_type = type(e).__name__
-            logger.error(
-                f"An unexpected {error_type} occurred during config update: {e}")
-            raise HTTPException(
-                status_code=500, detail=f"An internal error occurred: {error_type} - {e}")
 
-        # If validation passes, save the configuration.
-        config_manager.update_gitlab_config(
-            **request.model_dump(by_alias=False))
+        # --- 2. UPDATE CONFIG IN MEMORY ---
+        # ✅ This is the corrected logic. It directly modifies the live config object
+        # and does NOT call the problematic update_gitlab_config helper.
+
+        config_manager.config.gitlab['base_url'] = request.base_url
+        config_manager.config.gitlab['project_id'] = request.project_id
+        config_manager.config.gitlab['username'] = request.username
+        config_manager.config.gitlab['token'] = request.token
+        config_manager.config.security['allow_insecure_ssl'] = request.allow_insecure_ssl
+
+        # --- 3. SAVE ONCE ---
+        config_manager.save_config()
+
+        # --- 4. RE-INITIALIZE ---
         asyncio.create_task(initialize_application())
         return {"status": "success", "message": "Configuration validated and saved."}
 
-    raise HTTPException(
-        status_code=500, detail="Configuration manager not found.")
+    except HTTPException as e:
+        raise e
+    except requests.exceptions.RequestException as e:
+        logger.error(f"GitLab API validation request failed: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail="Could not validate with GitLab. Check your GitLab URL, Token, and SSL setting."
+        )
+    except Exception as e:
+        error_type = type(e).__name__
+        logger.error(
+            f"An unexpected {error_type} occurred during config update: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"An internal error occurred: {error_type}")
 
 
 @app.get("/refresh")
@@ -1444,7 +1559,7 @@ async def new_upload(
             # Create the metadata file for the link
             meta_filename_str = f"{new_link_filename}.meta.json"
             meta_content = {
-                "description": description,
+                "description": description.upper(),
                 "revision": rev,
                 "created_by": user,
                 "created_at": datetime.utcnow().isoformat() + "Z"
@@ -1517,7 +1632,7 @@ async def new_upload(
             # Create metadata file
             meta_filename = f"{file.filename}.meta.json"
             meta_content = {
-                "description": description,
+                "description": description.upper(),
                 "revision": rev,
                 "uploaded_by": user,
                 "uploaded_at": datetime.utcnow().isoformat() + "Z"
@@ -1743,7 +1858,7 @@ async def admin_override(filename: str, request: AdminOverrideRequest):
             raise HTTPException(
                 status_code=500, detail="Repository not initialized.")
         admin_users = cfg_manager.config.security.get("admin_users", [])
-        if request.admin_user not in admin_users:
+        if request.admin_user not in ADMIN_USERS:
             raise HTTPException(
                 status_code=403, detail="Permission denied. Admin access required.")
         file_path = find_file_path(filename)
@@ -1856,7 +1971,7 @@ async def admin_delete_file(filename: str, request: AdminDeleteRequest):
                 status_code=500, detail="Repository not initialized.")
 
         admin_users = cfg_manager.config.security.get("admin_users", [])
-        if request.admin_user not in admin_users:
+        if request.admin_user not in ADMIN_USERS:
             raise HTTPException(
                 status_code=403, detail="Permission denied. Admin access required.")
 
@@ -2203,19 +2318,32 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
 
 
 @app.get("/dashboard/activity", response_model=ActivityFeed)
-async def get_activity_feed():
+async def get_activity_feed(limit: int = 50, offset: int = 0):
     """
-    Scans the Git history to create a feed of recent check-in/out events.
+    Scans Git history to create an activity feed with pagination.
+
+    Args:
+        limit: Number of activities to return (default 50, max 200)
+        offset: Number of commits to skip (for pagination)
     """
     git_repo = app_state.get('git_repo')
     if not git_repo or not git_repo.repo:
         raise HTTPException(
             status_code=503, detail="Repository not available.")
 
+    # Limit the maximum to prevent abuse
+    limit = min(limit, 200)
+
     activities = []
+    processed_count = 0
+
     try:
-        # Scan the last 50 commits for relevant activities
-        for commit in git_repo.repo.iter_commits(max_count=50):
+        # Use skip and max_count for efficient pagination
+        # Get more commits than needed since not all will be activities
+        for commit in git_repo.repo.iter_commits(skip=offset, max_count=limit * 3):
+            if len(activities) >= limit:
+                break
+
             msg = commit.message.strip()
             user = commit.author.name
             event_type = "COMMIT"
@@ -2228,24 +2356,74 @@ async def get_activity_feed():
                 match = re.search(r"REV ([\d\.]+):\s*(.*)", msg)
                 if match:
                     revision = match.group(1)
+
+            elif msg.startswith("NEW:"):
+                event_type = "NEW_FILE"
+                match = re.search(r"NEW: Upload ([^\s]+)", msg)
+                if match:
+                    filename = match.group(1)
+
+            elif msg.startswith("LINK:"):
+                event_type = "NEW_LINK"
+                match = re.search(r"LINK: Create '([^']+)'", msg)
+                if match:
+                    filename = match.group(1)
+
             elif msg.startswith("LOCK:"):
                 event_type = "CHECK_OUT"
                 filename = msg.replace("LOCK:", "").split(" by ")[0].strip()
+
+            elif msg.startswith("REFRESH LOCK:"):
+                event_type = "REFRESH_LOCK"
+                filename = msg.replace("REFRESH LOCK:", "").split(" by ")[
+                    0].strip()
+
             elif msg.startswith("USER CANCEL:"):
                 event_type = "CANCEL"
                 filename = msg.replace("USER CANCEL: Unlock", "").split(" by ")[
                     0].strip()
+
             elif msg.startswith("ADMIN OVERRIDE:"):
                 event_type = "OVERRIDE"
                 filename = msg.replace("ADMIN OVERRIDE: Unlock", "").split(" by ")[
                     0].strip()
 
+            elif msg.startswith("ADMIN DELETE FILE:"):
+                event_type = "DELETE_FILE"
+                filename = msg.replace("ADMIN DELETE FILE:", "").split(" by ")[
+                    0].strip()
+
+            elif msg.startswith("ADMIN DELETE LINK:"):
+                event_type = "DELETE_LINK"
+                match = re.search(r"Remove link ([^\s]+)", msg)
+                if match:
+                    filename = match.group(1)
+
+            elif msg.startswith("ADMIN REVERT:"):
+                event_type = "REVERT"
+                match = re.search(r"ADMIN REVERT: ([^\s]+)", msg)
+                if match:
+                    filename = match.group(1)
+
+            elif msg.startswith("MSG:"):
+                event_type = "MESSAGE"
+                if "Send message to" in msg:
+                    match = re.search(r"Send message to ([^\s]+)", msg)
+                    if match:
+                        filename = f"Message to {match.group(1)}"
+                elif "Acknowledge message" in msg:
+                    filename = "Message acknowledgment"
+
             # For check-ins, find the actual file that was changed
             if event_type == "CHECK_IN":
-                for file_diff in commit.diff(commit.parents[0]):
-                    if file_diff.a_path.endswith('.mcam'):
-                        filename = Path(file_diff.a_path).name
-                        break
+                for file_diff in commit.diff(commit.parents[0] if commit.parents else None):
+                    if file_diff.a_path:
+                        for ext in ALLOWED_FILE_TYPES.keys():
+                            if file_diff.a_path.endswith(ext):
+                                filename = Path(file_diff.a_path).name
+                                break
+                        if filename != "N/A":
+                            break
 
             # Only add known event types to the feed
             if event_type != "COMMIT":
@@ -2266,6 +2444,25 @@ async def get_activity_feed():
         logger.error(f"Failed to generate activity feed: {e}")
         raise HTTPException(
             status_code=500, detail="Could not generate activity feed.")
+
+
+@app.get("/debug/file_types")
+async def debug_file_types():
+    git_repo = app_state.get('git_repo')
+    if not git_repo:
+        return {"error": "No git repo"}
+
+    debug_info = {}
+    for ext in ALLOWED_FILE_TYPES.keys():
+        pattern = f"*{ext}"
+        files = git_repo.list_files(pattern)
+        debug_info[ext] = {
+            "pattern": pattern,
+            "count": len(files),
+            "files": [f["name"] for f in files]
+        }
+
+    return debug_info
 
 
 @app.post(
