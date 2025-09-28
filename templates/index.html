@@ -15,6 +15,49 @@
         background-color: #f59e0b; /* This is Tailwind's amber-500 color */
         color: white;
       }
+      .config-tab {
+        @apply px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 border-transparent transition-colors;
+      }
+
+      .config-tab.active {
+        @apply text-accent border-accent bg-accent bg-opacity-10;
+      }
+
+      .config-tab:not(.active) {
+        @apply text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200;
+      }
+
+      .config-tab-content {
+        @apply block;
+      }
+
+      .config-tab-content.hidden {
+        @apply hidden;
+      }
+
+      .health-card {
+        @apply p-4 rounded-lg border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-800;
+      }
+
+      .health-status {
+        @apply px-2 py-1 rounded text-xs font-medium;
+      }
+
+      .health-status.ok {
+        @apply bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200;
+      }
+
+      .health-status.warning {
+        @apply bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200;
+      }
+
+      .health-status.error {
+        @apply bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200;
+      }
+
+      .health-status.checking {
+        @apply bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200;
+      }
     </style>
   </head>
 
@@ -159,85 +202,278 @@
           <i class="fa-solid fa-xmark text-2xl"></i>
         </button>
       </div>
-      <form id="configForm" class="space-y-4">
-        <div>
-          <label for="gitlabUrl" class="block text-sm font-medium"
-            >GitLab URL</label
-          ><input type="url" id="gitlabUrl" required class="input-field" />
-        </div>
-        <div>
-          <label for="projectId" class="block text-sm font-medium"
-            >Project ID</label
-          ><input type="text" id="projectId" required class="input-field" />
-        </div>
-        <div>
-          <label for="username" class="block text-sm font-medium"
-            >Username</label
-          ><input
-            type="text"
-            id="username"
-            autocomplete="username"
-            required
-            class="input-field"
-          />
-        </div>
-        <div>
-          <label for="token" class="block text-sm font-medium"
-            >Access Token</label
-          ><input
-            type="password"
-            id="token"
-            autocomplete="current-password"
-            class="input-field"
-          />
-        </div>
-        <div class="mt-6 pt-4 border-t border-gray-300 dark:border-gray-600">
-          <label
-            for="allowInsecureSsl"
-            class="flex items-center space-x-3 cursor-pointer"
-          >
+
+      <!-- Tab Navigation -->
+      <div
+        class="flex space-x-1 mb-6 border-b border-gray-200 dark:border-gray-700"
+      >
+        <button
+          id="configTab"
+          onclick="switchConfigTab('config')"
+          class="config-tab active"
+        >
+          <i class="fa-solid fa-gear"></i> GitLab
+        </button>
+        <button
+          id="adminTab"
+          onclick="switchConfigTab('admin')"
+          class="config-tab hidden"
+        >
+          <i class="fa-solid fa-shield-halved"></i> Admin
+        </button>
+        <button
+          id="healthTab"
+          onclick="switchConfigTab('health')"
+          class="config-tab"
+        >
+          <i class="fa-solid fa-heart-pulse"></i> Health
+        </button>
+      </div>
+
+      <!-- GitLab Config Tab -->
+      <div id="configContent" class="config-tab-content">
+        <form id="configForm" class="space-y-4">
+          <!-- Your existing config form content stays the same -->
+          <div>
+            <label for="gitlabUrl" class="block text-sm font-medium"
+              >GitLab URL</label
+            >
+            <input type="url" id="gitlabUrl" required class="input-field" />
+          </div>
+          <div>
+            <label for="projectId" class="block text-sm font-medium"
+              >Project ID</label
+            >
+            <input type="text" id="projectId" required class="input-field" />
+          </div>
+          <div>
+            <label for="username" class="block text-sm font-medium"
+              >Username</label
+            >
             <input
-              type="checkbox"
-              id="allowInsecureSsl"
-              name="allowInsecureSsl"
-              class="h-5 w-5 rounded border-gray-400 text-accent focus:ring-accent-hover"
+              type="text"
+              id="username"
+              autocomplete="username"
+              required
+              class="input-field"
             />
-            <div class="flex flex-col">
-              <span class="font-semibold text-gray-800 dark:text-gray-200"
-                >Allow Insecure SSL</span
-              >
-              <span class="text-sm text-red-600 dark:text-red-400 font-bold"
-                >(Not Recommended)</span
-              >
-            </div>
-          </label>
-          <p class="mt-2 text-xs text-gray-600 dark:text-gray-400">
-            Only enable this if you are running this application on a trusted
-            internal network that does not use HTTPS. This bypasses SSL
-            certificate verification.
+          </div>
+          <div>
+            <label for="token" class="block text-sm font-medium"
+              >Access Token</label
+            >
+            <input
+              type="password"
+              id="token"
+              autocomplete="current-password"
+              class="input-field"
+            />
+          </div>
+          <div class="mt-6 pt-4 border-t border-gray-300 dark:border-gray-600">
+            <label
+              for="allowInsecureSsl"
+              class="flex items-center space-x-3 cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                id="allowInsecureSsl"
+                name="allowInsecureSsl"
+                class="h-5 w-5 rounded border-gray-400 text-accent focus:ring-accent-hover"
+              />
+              <div class="flex flex-col">
+                <span class="font-semibold text-gray-800 dark:text-gray-200"
+                  >Allow Insecure SSL</span
+                >
+                <span class="text-sm text-red-600 dark:text-red-400 font-bold"
+                  >(Not Recommended)</span
+                >
+              </div>
+            </label>
+          </div>
+          <button
+            type="submit"
+            class="btn btn-primary w-full justify-center !py-3"
+          >
+            <i class="fa-solid fa-floppy-disk"></i
+            ><span>Save Configuration</span>
+          </button>
+        </form>
+
+        <!-- Repository Reset Section -->
+        <div class="mt-8 pt-4 border-t border-gray-200 dark:border-gray-700">
+          <h4 class="text-lg font-semibold mb-4 text-red-600 dark:text-red-400">
+            <i class="fa-solid fa-triangle-exclamation mr-2"></i>Repository
+            Reset
+          </h4>
+          <p class="text-sm text-gray-600 dark:text-gray-400 mb-4">
+            If your local repository becomes corrupted or out of sync, you can
+            reset it to match GitLab exactly.
+          </p>
+          <button
+            onclick="resetRepository()"
+            class="btn w-full justify-center !py-3 bg-red-600 hover:bg-red-700 text-white"
+          >
+            <i class="fa-solid fa-arrow-rotate-left mr-2"></i>Reset Repository
+            to GitLab
+          </button>
+        </div>
+
+        <!-- Current Status -->
+        <div class="mt-8 pt-4 border-t border-gray-200 dark:border-gray-700">
+          <h4 class="text-lg font-semibold mb-2">Current Status</h4>
+          <p class="text-sm">
+            <strong>Status:</strong>
+            <span id="configStatusText" class="font-medium text-accent"
+              >Not configured</span
+            >
+          </p>
+          <p class="text-sm mt-1">
+            <strong>Repository Path:</strong>
+            <span id="configRepoText" class="font-medium text-accent"
+              >Not available</span
+            >
           </p>
         </div>
-        <button
-          type="submit"
-          class="btn btn-primary w-full justify-center !py-3"
-        >
-          <i class="fa-solid fa-floppy-disk"></i><span>Save Configuration</span>
-        </button>
-      </form>
-      <div class="mt-8 pt-4 border-t border-gray-200 dark:border-gray-700">
-        <h4 class="text-lg font-semibold mb-2">Current Status</h4>
-        <p class="text-sm">
-          <strong>Status:</strong>
-          <span id="configStatusText" class="font-medium text-accent"
-            >Not configured</span
-          >
-        </p>
-        <p class="text-sm mt-1">
-          <strong>Repository Path:</strong>
-          <span id="configRepoText" class="font-medium text-accent"
-            >Not available</span
-          >
-        </p>
+      </div>
+
+      <!-- Admin Tab -->
+      <div id="adminContent" class="config-tab-content hidden">
+        <div class="space-y-6">
+          <!-- Backup Configuration -->
+          <div>
+            <h4 class="text-lg font-semibold mb-4">
+              <i class="fa-solid fa-floppy-disk mr-2"></i>Backup Settings
+            </h4>
+            <form id="backupConfigForm" class="space-y-4">
+              <div>
+                <label for="networkBackupPath" class="block text-sm font-medium"
+                  >Network Backup Path</label
+                >
+                <input
+                  type="text"
+                  id="networkBackupPath"
+                  placeholder="\\server\backup\mastercam"
+                  class="input-field"
+                />
+                <p class="text-xs text-gray-500 mt-1">
+                  Leave empty to disable network backups
+                </p>
+              </div>
+              <button type="submit" class="btn btn-primary">
+                <i class="fa-solid fa-floppy-disk mr-2"></i>Save Backup Settings
+              </button>
+            </form>
+          </div>
+
+          <!-- Manual Actions -->
+          <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
+            <h4 class="text-lg font-semibold mb-4">
+              <i class="fa-solid fa-tools mr-2"></i>Maintenance
+            </h4>
+            <div class="space-y-3">
+              <button
+                onclick="createManualBackup()"
+                class="btn btn-secondary w-full justify-center"
+              >
+                <i class="fa-solid fa-download mr-2"></i>Create Manual Backup
+              </button>
+              <button
+                onclick="cleanupLfsFiles()"
+                class="btn btn-secondary w-full justify-center"
+              >
+                <i class="fa-solid fa-broom mr-2"></i>Cleanup Old LFS Files
+              </button>
+              <button
+                onclick="exportRepository()"
+                class="btn btn-secondary w-full justify-center"
+              >
+                <i class="fa-solid fa-file-zipper mr-2"></i>Export Repository
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Health Tab -->
+      <div id="healthContent" class="config-tab-content hidden">
+        <div class="space-y-6">
+          <div class="flex justify-between items-center">
+            <h4 class="text-lg font-semibold">System Health</h4>
+            <button
+              onclick="refreshHealthStatus()"
+              class="btn btn-secondary !px-3"
+            >
+              <i class="fa-solid fa-arrows-rotate"></i>
+            </button>
+          </div>
+
+          <!-- Health Status Cards -->
+          <div class="space-y-4">
+            <div id="repoHealthCard" class="health-card">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                  <i class="fa-solid fa-database text-blue-500"></i>
+                  <span class="font-medium">Repository</span>
+                </div>
+                <span id="repoHealthStatus" class="health-status"
+                  >Checking...</span
+                >
+              </div>
+              <p
+                id="repoHealthDetails"
+                class="text-sm text-gray-600 dark:text-gray-400 mt-2"
+              ></p>
+            </div>
+
+            <div id="networkHealthCard" class="health-card">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                  <i class="fa-solid fa-wifi text-green-500"></i>
+                  <span class="font-medium">Network</span>
+                </div>
+                <span id="networkHealthStatus" class="health-status"
+                  >Checking...</span
+                >
+              </div>
+              <p
+                id="networkHealthDetails"
+                class="text-sm text-gray-600 dark:text-gray-400 mt-2"
+              ></p>
+            </div>
+
+            <div id="lfsHealthCard" class="health-card">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                  <i class="fa-solid fa-hard-drive text-purple-500"></i>
+                  <span class="font-medium">LFS Status</span>
+                </div>
+                <span id="lfsHealthStatus" class="health-status"
+                  >Checking...</span
+                >
+              </div>
+              <p
+                id="lfsHealthDetails"
+                class="text-sm text-gray-600 dark:text-gray-400 mt-2"
+              ></p>
+            </div>
+
+            <div id="performanceCard" class="health-card">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                  <i class="fa-solid fa-gauge text-yellow-500"></i>
+                  <span class="font-medium">Performance</span>
+                </div>
+                <span id="performanceStatus" class="health-status"
+                  >Checking...</span
+                >
+              </div>
+              <p
+                id="performanceDetails"
+                class="text-sm text-gray-600 dark:text-gray-400 mt-2"
+              ></p>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 

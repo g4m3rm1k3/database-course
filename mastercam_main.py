@@ -245,7 +245,6 @@ class AppConfig(BaseModel):
     local: dict = Field(default_factory=dict)
     ui: dict = Field(default_factory=dict)
     security: dict = Field(default_factory=lambda: {
-        "admin_users": ["admin"],
         "allow_insecure_ssl": False
     })
     polling: dict = Field(default_factory=lambda: {
@@ -475,7 +474,7 @@ class ConfigManager:
             'username': gitlab_cfg.get('username'),
             'has_token': bool(gitlab_cfg.get('token')),
             'repo_path': local_cfg.get('repo_path'),
-            'is_admin': gitlab_cfg.get('username') in security_cfg.get('admin_users', [])
+            'is_admin': gitlab_cfg.get('username') in ADMIN_USERS
         }
 
 
@@ -486,7 +485,7 @@ def get_config_summary(self) -> Dict[str, Any]:
     security_cfg = cfg.get('security', {})
     return {
         'gitlab_url': gitlab_cfg.get('base_url'), 'project_id': gitlab_cfg.get('project_id'), 'username': gitlab_cfg.get('username'), 'has_token': bool(gitlab_cfg.get('token')), 'repo_path': local_cfg.get('repo_path'),
-        'is_admin': gitlab_cfg.get('username') in security_cfg.get('admin_users', [])
+        'is_admin': gitlab_cfg.get('username') in ADMIN_USERS
     }
 
 
@@ -1378,7 +1377,7 @@ async def send_message(request: SendMessageRequest):
         if not all([cfg_manager, git_repo]):
             raise HTTPException(
                 status_code=500, detail="Repository not initialized.")
-        admin_users = cfg_manager.config.security.get("admin_users", [])
+        admin_users = ADMIN_USERS
         if request.sender not in admin_users:
             raise HTTPException(status_code=403, detail="Permission denied.")
         messages_dir = git_repo.repo_path / ".messages"
@@ -1857,7 +1856,7 @@ async def admin_override(filename: str, request: AdminOverrideRequest):
         if not all([cfg_manager, git_repo, metadata_manager]):
             raise HTTPException(
                 status_code=500, detail="Repository not initialized.")
-        admin_users = cfg_manager.config.security.get("admin_users", [])
+        admin_users = ADMIN_USERS
         if request.admin_user not in ADMIN_USERS:
             raise HTTPException(
                 status_code=403, detail="Permission denied. Admin access required.")
@@ -1970,7 +1969,7 @@ async def admin_delete_file(filename: str, request: AdminDeleteRequest):
             raise HTTPException(
                 status_code=500, detail="Repository not initialized.")
 
-        admin_users = cfg_manager.config.security.get("admin_users", [])
+        admin_users = ADMIN_USERS
         if request.admin_user not in ADMIN_USERS:
             raise HTTPException(
                 status_code=403, detail="Permission denied. Admin access required.")
@@ -2516,7 +2515,7 @@ async def revert_commit(filename: str, request: AdminRevertRequest):
             status_code=500, detail="Repository not initialized.")
 
     # 1. Admin Permission Check
-    admin_users = cfg_manager.config.security.get("admin_users", [])
+    admin_users = ADMIN_USERS
     if request.admin_user not in admin_users:
         raise HTTPException(
             status_code=403, detail="Permission denied. Admin access required.")
