@@ -87,8 +87,7 @@
                   ><span class="hidden lg:inline">Admin</span>
                 </button>
                 <button id="sendMessageBtn" class="btn btn-secondary hidden">
-                  <i class="fa-solid fa-envelope"></i
-                  ><span class="hidden lg:inline">Message</span>
+                  <i class="fa-solid fa-envelope"></i>
                 </button>
               </div>
 
@@ -160,9 +159,6 @@
           <i class="fa-solid fa-xmark text-2xl"></i>
         </button>
       </div>
-      <div class="mt-8 pt-4 border-t border-gray-200 dark:border-gray-700">
-        <h4 class="text-lg font-semibold mb-3">Accent Color</h4>
-      </div>
       <form id="configForm" class="space-y-4">
         <div>
           <label for="gitlabUrl" class="block text-sm font-medium"
@@ -194,6 +190,32 @@
             autocomplete="current-password"
             class="input-field"
           />
+        </div>
+        <div class="mt-6 pt-4 border-t border-gray-300 dark:border-gray-600">
+          <label
+            for="allowInsecureSsl"
+            class="flex items-center space-x-3 cursor-pointer"
+          >
+            <input
+              type="checkbox"
+              id="allowInsecureSsl"
+              name="allowInsecureSsl"
+              class="h-5 w-5 rounded border-gray-400 text-accent focus:ring-accent-hover"
+            />
+            <div class="flex flex-col">
+              <span class="font-semibold text-gray-800 dark:text-gray-200"
+                >Allow Insecure SSL</span
+              >
+              <span class="text-sm text-red-600 dark:text-red-400 font-bold"
+                >(Not Recommended)</span
+              >
+            </div>
+          </label>
+          <p class="mt-2 text-xs text-gray-600 dark:text-gray-400">
+            Only enable this if you are running this application on a trusted
+            internal network that does not use HTTPS. This bypasses SSL
+            certificate verification.
+          </p>
         </div>
         <button
           type="submit"

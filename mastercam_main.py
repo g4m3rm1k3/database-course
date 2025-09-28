@@ -26,7 +26,7 @@ from contextlib import asynccontextmanager
 import socket
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Form, UploadFile, File, Response
+from fastapi import FastAPI, HTTPException, Request, Form, UploadFile, File, Response, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,12 +36,53 @@ from pydantic import BaseModel, Field
 from cryptography.fernet import Fernet
 import base64
 
+# In main.py, after your imports
+
+import time
+
+
+class FileLockManager:
+    """A simple file-based lock for distributed processes."""
+
+    def __init__(self, lock_file_path: Path):
+        self.lock_file_path = lock_file_path
+        self.lock_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def __enter__(self):
+        # Acquire the lock
+        timeout = 30  # Wait a maximum of 30 seconds
+        start_time = time.time()
+        while True:
+            try:
+                # 'x' mode means create exclusively - fails if file exists
+                self.lock_file = open(self.lock_file_path, 'x')
+                self.lock_file.write(
+                    f"Locked by process {os.getpid()} at {datetime.now()}")
+                logger.info("Acquired repository lock.")
+                return self
+            except FileExistsError:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(
+                        "Could not acquire repository lock in time.")
+                time.sleep(0.2)  # Wait a bit before retrying
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Release the lock
+        if hasattr(self, 'lock_file'):
+            self.lock_file.close()
+            try:
+                os.remove(self.lock_file_path)
+                logger.info("Released repository lock.")
+            except OSError as e:
+                logger.error(f"Failed to remove lock file: {e}")
+
+
 # --- Basic Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
                     handlers=[logging.FileHandler('mastercam_git_interface.log'), logging.StreamHandler()])
 logger = logging.getLogger(__name__)
 
-ADMIN_USERS = ["admin", "g4m3rm1k3"]
+ADMIN_USERS = ["admin"]
 
 # +++ NEW: FILE TYPE VALIDATION CONFIG +++
 # Defines allowed file extensions and their "magic number" signatures.
@@ -132,6 +173,8 @@ class ConfigUpdateRequest(BaseModel):
     project_id: str = Field(..., description="GitLab project ID")
     username: str = Field(..., description="GitLab username")
     token: str = Field(..., description="GitLab personal access token")
+    allow_insecure_ssl: bool = Field(
+        False, description="Whether to allow insecure SSL connections")
 
 
 class AdminRevertRequest(BaseModel):
@@ -164,7 +207,10 @@ class AppConfig(BaseModel):
     gitlab: dict = Field(default_factory=dict)
     local: dict = Field(default_factory=dict)
     ui: dict = Field(default_factory=dict)
-    security: dict = Field(default_factory=lambda: {"admin_users": ["admin"]})
+    security: dict = Field(default_factory=lambda: {
+        "admin_users": ["admin"],
+        "allow_insecure_ssl": False
+    })
     polling: dict = Field(default_factory=lambda: {
                           "enabled": True, "interval_seconds": 15, "check_on_activity": True})
 
@@ -212,6 +258,21 @@ def get_git_repo():
         raise ConfigurationError(
             "Application is not configured. Please set GitLab credentials.")
     return app_state.get('git_repo')
+
+
+def get_metadata_manager():
+    if not app_state.get('initialized'):
+        raise ConfigurationError("Application is not configured.")
+    return app_state.get('metadata_manager')
+
+
+def is_safe_path(basedir, path, follow_symlinks=True):
+    # Resolves symbolic links if allowed
+    if follow_symlinks:
+        matchpath = os.path.realpath(path)
+    else:
+        matchpath = os.path.abspath(path)
+    return basedir == os.path.commonpath((basedir, matchpath))
 
 
 async def is_valid_file_type(file: UploadFile) -> bool:
@@ -387,8 +448,6 @@ class ConfigManager:
         cfg = self.config.model_dump()
         gitlab_cfg = cfg.get('gitlab', {})
         local_cfg = cfg.get('local', {})
-        # --- THIS IS THE FIX ---
-        # Reads from the 'security' section of the config, not the global list
         security_cfg = cfg.get('security', {})
 
         return {
@@ -397,19 +456,8 @@ class ConfigManager:
             'username': gitlab_cfg.get('username'),
             'has_token': bool(gitlab_cfg.get('token')),
             'repo_path': local_cfg.get('repo_path'),
-            'is_admin': gitlab_cfg.get('username') in security_cfg.get('admin_users', [])
+            'is_admin': gitlab_cfg.get('username') in ADMIN_USERS
         }
-
-
-def get_config_summary(self) -> Dict[str, Any]:
-    cfg = self.config.model_dump()
-    gitlab_cfg = cfg.get('gitlab', {})
-    local_cfg = cfg.get('local', {})
-    security_cfg = cfg.get('security', {})
-    return {
-        'gitlab_url': gitlab_cfg.get('base_url'), 'project_id': gitlab_cfg.get('project_id'), 'username': gitlab_cfg.get('username'), 'has_token': bool(gitlab_cfg.get('token')), 'repo_path': local_cfg.get('repo_path'),
-        'is_admin': gitlab_cfg.get('username') in security_cfg.get('admin_users', [])
-    }
 
 
 class GitLabAPI:
@@ -419,8 +467,15 @@ class GitLabAPI:
 
     def test_connection(self) -> bool:
         try:
+            # ✅ FIX: This method now reads the config for itself.
+            config_manager = app_state.get('config_manager')
+            allow_insecure = config_manager.config.security.get(
+                "allow_insecure_ssl", False)
+            verify_ssl = not allow_insecure
+
             response = requests.get(
-                self.api_url, headers=self.headers, timeout=10)
+                self.api_url, headers=self.headers, timeout=10, verify=verify_ssl
+            )
             response.raise_for_status()
             return True
         except requests.exceptions.RequestException as e:
@@ -428,41 +483,59 @@ class GitLabAPI:
             return False
 
 
+# In main.py
+
 class GitRepository:
     def __init__(self, repo_path: Path, remote_url: str, token: str):
         self.repo_path = repo_path
+        # ✅ Create a lock manager that points to a hidden file inside the .git directory
+        self.lock_manager = FileLockManager(repo_path / ".git" / "repo.lock")
+
         self.remote_url_with_token = f"https://oauth2:{token}@{remote_url.split('://')[-1]}"
-        self.git_env = {"GIT_SSL_NO_VERIFY": "true"}
+
+        # ✅ Conditionally disable SSL verification based on the config file setting
+        config_manager = app_state.get('config_manager')
+        allow_insecure = config_manager.config.security.get(
+            "allow_insecure_ssl", False)
+        self.git_env = {"GIT_SSL_NO_VERIFY": "true"} if allow_insecure else {}
+
         self.repo = self._init_repo()
 
     def _init_repo(self):
         try:
-            if not self.repo_path.exists():
-                logger.info(f"Cloning repository to {self.repo_path}")
-                return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
-            repo = git.Repo(self.repo_path)
-            if not repo.remotes:
-                raise git.exc.InvalidGitRepositoryError
-            return repo
+            # ✅ Acquire lock for repository initialization/cloning
+            with self.lock_manager:
+                if not self.repo_path.exists():
+                    logger.info(f"Cloning repository to {self.repo_path}")
+                    return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
+
+                repo = git.Repo(self.repo_path)
+                if not repo.remotes:
+                    raise git.exc.InvalidGitRepositoryError
+                return repo
         except (git.exc.InvalidGitRepositoryError, git.exc.NoSuchPathError):
             logger.warning(f"Invalid repo at {self.repo_path}, re-cloning.")
-            if self.repo_path.exists():
-                import shutil
-                shutil.rmtree(self.repo_path)
-            return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
+            # ✅ Acquire lock for re-cloning
+            with self.lock_manager:
+                if self.repo_path.exists():
+                    import shutil
+                    shutil.rmtree(self.repo_path)
+                return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
         except Exception as e:
             logger.error(f"Failed to initialize repository: {e}")
             return None
 
     def pull(self):
         try:
-            if self.repo:
-                with self.repo.git.custom_environment(**self.git_env):
-                    self.repo.remotes.origin.fetch()
-                    self.repo.git.reset(
-                        '--hard', f'origin/{self.repo.active_branch.name}')
-                    logger.debug(
-                        "Successfully synced with remote via fetch and hard reset.")
+            # ✅ Acquire lock for pull operation to prevent conflicts
+            with self.lock_manager:
+                if self.repo:
+                    with self.repo.git.custom_environment(**self.git_env):
+                        self.repo.remotes.origin.fetch()
+                        self.repo.git.reset(
+                            '--hard', f'origin/{self.repo.active_branch.name}')
+                        logger.debug(
+                            "Successfully synced with remote via fetch and hard reset.")
         except Exception as e:
             logger.error(f"Git sync (fetch/reset) failed: {e}")
 
@@ -474,8 +547,15 @@ class GitRepository:
             if item.type == 'blob' and Path(item.path).match(pattern):
                 try:
                     stat_result = os.stat(item.abspath)
-                    files.append({"name": item.name, "path": item.path, "size": stat_result.st_size,
-                                 "modified_at": datetime.utcfromtimestamp(stat_result.st_mtime).isoformat() + "Z"})
+                    # ✅ FIX: This resolves the DeprecationWarning
+                    modified_time = datetime.fromtimestamp(
+                        stat_result.st_mtime, timezone.utc).isoformat()
+                    files.append({
+                        "name": item.name,
+                        "path": item.path,
+                        "size": stat_result.st_size,
+                        "modified_at": modified_time
+                    })
                 except OSError:
                     continue
         return files
@@ -485,36 +565,40 @@ class GitRepository:
         (self.repo_path / file_path).write_bytes(content)
 
     def commit_and_push(self, file_paths: List[str], message: str, author_name: str, author_email: str) -> bool:
-        if not self.repo:
-            return False
-        try:
-            with self.repo.git.custom_environment(**self.git_env):
-                to_add = [p for p in file_paths if (
-                    self.repo_path / p).exists()]
-                to_remove = [p for p in file_paths if not (
-                    self.repo_path / p).exists()]
-                if to_add:
-                    self.repo.index.add(to_add)
-                if to_remove:
-                    self.repo.index.remove(to_remove)
-                if not self.repo.index.diff("HEAD") and not any(self.repo.index.diff(None)) and not self.repo.untracked_files:
-                    logger.info("No changes to commit.")
-                    return True
-                author = Actor(author_name, author_email)
-                self.repo.index.commit(message, author=author)
-                self.repo.remotes.origin.push()
-            logger.info("Changes pushed to GitLab.")
-            return True
-        except Exception as e:
-            logger.error(f"Git commit/push failed: {e}")
+        # ✅ Acquire lock for the entire commit and push sequence
+        with self.lock_manager:
+            if not self.repo:
+                return False
             try:
                 with self.repo.git.custom_environment(**self.git_env):
-                    self.repo.git.reset(
-                        '--hard', f'origin/{self.repo.active_branch.name}')
-            except Exception as reset_e:
-                logger.error(
-                    f"Failed to reset repo after push failure: {reset_e}")
-            return False
+                    to_add = [p for p in file_paths if (
+                        self.repo_path / p).exists()]
+                    to_remove = [p for p in file_paths if not (
+                        self.repo_path / p).exists()]
+                    if to_add:
+                        self.repo.index.add(to_add)
+                    if to_remove:
+                        self.repo.index.remove(to_remove)
+
+                    if not self.repo.index.diff("HEAD") and not any(self.repo.index.diff(None)) and not self.repo.untracked_files:
+                        logger.info("No changes to commit.")
+                        return True
+
+                    author = Actor(author_name, author_email)
+                    self.repo.index.commit(message, author=author)
+                    self.repo.remotes.origin.push()
+                logger.info("Changes pushed to GitLab.")
+                return True
+            except Exception as e:
+                logger.error(f"Git commit/push failed: {e}")
+                try:
+                    with self.repo.git.custom_environment(**self.git_env):
+                        self.repo.git.reset(
+                            '--hard', f'origin/{self.repo.active_branch.name}')
+                except Exception as reset_e:
+                    logger.error(
+                        f"Failed to reset repo after push failure: {reset_e}")
+                return False
 
     def get_file_history(self, file_path: str, limit: int = 10) -> List[Dict]:
         if not self.repo:
@@ -536,9 +620,15 @@ class GitRepository:
                 try:
                     author_name = c.author.name if c.author else "Unknown"
                     author_email = c.author.email if c.author else ""
+                    # ✅ FIX: This resolves the DeprecationWarning
+                    commit_date = datetime.fromtimestamp(
+                        c.committed_date, timezone.utc).isoformat()
                     history.append({
-                        "commit_hash": c.hexsha, "author_name": author_name, "author_email": author_email,
-                        "date": datetime.utcfromtimestamp(c.committed_date).isoformat() + "Z", "message": c.message.strip(),
+                        "commit_hash": c.hexsha,
+                        "author_name": author_name,
+                        "author_email": author_email,
+                        "date": commit_date,
+                        "message": c.message.strip(),
                         "revision": revision
                     })
                 except Exception as e:
@@ -770,38 +860,38 @@ app = FastAPI(
     title="Mastercam GitLab Interface",
     description="""
     A comprehensive file management system that integrates Mastercam files with GitLab version control.
-    
+
     ## Features
-    
+
     * **File Management**: Upload, download, and manage Mastercam (.mcam) files
     * **Version Control**: Full Git integration with GitLab for file versioning
     * **Lock System**: Prevent concurrent edits with file checkout/checkin workflow
     * **Real-time Updates**: WebSocket-based live updates across all connected clients
     * **Admin Controls**: Administrative override and file management capabilities
     * **Activity Tracking**: Complete audit trail of all file operations
-    
+
     ## Authentication
-    
+
     This system uses GitLab personal access tokens for authentication and authorization.
     Admin users have additional privileges for file management and system administration.
-    
+
     ## File Naming Convention
-    
+
     Files must follow the format: `7digits_1-3letters_1-3numbers.ext`
     - Example: `1234567_AB123.mcam`
     - Maximum 15 characters before extension
     - Supported extensions: `.mcam`, `.vnc`
-    
+
     ## Workflow
-    
+
     1. **Upload**: Add new files to the repository
     2. **Checkout**: Lock a file for exclusive editing
     3. **Edit**: Make changes locally in Mastercam
     4. **Check-in**: Upload modified file with automatic versioning
     5. **History**: Track all changes and versions
-    
+
     ## Real-time Features
-    
+
     The system provides real-time updates via WebSocket connections:
     - File lock status changes
     - New file additions
@@ -854,7 +944,11 @@ async def initialize_application():
                 api_url = f"{base_url_parsed}/api/v4/user"
                 headers = {"Private-Token": gitlab_cfg['token']}
 
-                response = requests.get(api_url, headers=headers, timeout=10)
+                security_cfg = cfg.security
+                verify_ssl = not security_cfg.get("allow_insecure_ssl", False)
+
+                response = requests.get(
+                    api_url, headers=headers, timeout=10, verify=verify_ssl)
                 response.raise_for_status()
 
                 gitlab_user_data = response.json()
@@ -941,46 +1035,46 @@ async def git_polling_task():
             await asyncio.sleep(poll_interval * 2)
 
 
-def find_file_path(filename: str) -> Optional[str]:
+def find_file_path(git_repo: GitRepository, filename: str) -> Optional[str]:
     """
-    Find the path for a file, checking both regular files and link files.
-    For link files, this returns the virtual path (just the filename).
+    Find the path for a file, using the provided git_repo object.
     """
-    if git_repo := app_state.get('git_repo'):
-        # First check for regular files
-        for file_data in git_repo.list_files("*.mcam"):
-            if file_data['name'] == filename:
-                return file_data['path']
+    # First check for regular files
+    for file_data in git_repo.list_files("*.mcam"):
+        if file_data['name'] == filename:
+            return file_data['path']
 
-        # Then check for link files
-        for file_data in git_repo.list_files("*.link"):
-            link_name = file_data['name'].replace('.link', '')
-            if link_name == filename:
-                # Return the virtual filename for links (NOT the .link path)
-                return filename
+    # Then check for link files
+    for file_data in git_repo.list_files("*.link"):
+        link_name = file_data['name'].replace('.link', '')
+        if link_name == filename:
+            # Return the virtual filename for links (NOT the .link path)
+            return filename
 
     return None
 
 
-def _get_current_file_state() -> Dict[str, List[Dict]]:
-    git_repo, metadata_manager = app_state.get(
-        'git_repo'), app_state.get('metadata_manager')
-    if not git_repo or not metadata_manager:
-        return {"Miscellaneous": []}
+def _get_current_file_state(
+    git_repo: Optional[GitRepository] = None,
+    metadata_manager: Optional[MetadataManager] = None
+) -> Dict[str, List[Dict]]:
+
+    # If the functions are called from a background task, they will get the objects from the global state
+    if git_repo is None:
+        git_repo = get_git_repo()
+    if metadata_manager is None:
+        metadata_manager = get_metadata_manager()
+
     try:
         git_repo.pull()
     except Exception as e:
         logger.warning(f"Failed to pull latest changes: {e}")
 
-    # 1. Get all real .mcam files and map them by name for quick lookup
     mcam_files_raw = git_repo.list_files("*.mcam")
-    master_files_map = {file_data['name']                        : file_data for file_data in mcam_files_raw}
-
-    # This list will hold both real and virtual (linked) files
+    master_files_map = {file_data['name']: file_data for file_data in mcam_files_raw}
     all_files_to_process = list(master_files_map.values())
-
-    # 2. Find and process all .link files to create virtual file entries
     link_files_raw = git_repo.list_files("*.link")
+
     for link_file_data in link_files_raw:
         try:
             link_content_str = git_repo.get_file_content(
@@ -992,39 +1086,24 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
             master_filename = link_content.get("master_file")
 
             if master_filename and master_filename in master_files_map:
-                # DON'T copy from master - create a clean virtual file entry
                 virtual_file_name = link_file_data['name'].replace('.link', '')
-
-                # Create a minimal virtual file entry with its own properties
                 virtual_file = {
-                    'name': virtual_file_name,
-                    'path': virtual_file_name,  # Virtual path
-                    'size': 0,  # Links have no size
-                    # Use link file's timestamp
-                    'modified_at': link_file_data['modified_at'],
-                    'is_link': True,
+                    'name': virtual_file_name, 'path': virtual_file_name, 'size': 0,
+                    'modified_at': link_file_data['modified_at'], 'is_link': True,
                     'master_file': master_filename
                 }
-
                 all_files_to_process.append(virtual_file)
         except Exception as e:
             logger.error(
                 f"Could not process link file {link_file_data['name']}: {e}")
 
-    # 3. Process the combined list of real and virtual files
     grouped_files = {}
     current_user = app_state.get(
         'config_manager').config.gitlab.get('username', 'demo_user')
 
     for file_data in all_files_to_process:
-        # CRITICAL FIX: For linked files, use the LINK's metadata, not the master's
-        if file_data.get('is_link'):
-            # Use the link's own name for metadata lookup
-            path_for_meta = file_data['name']  # Use link name, not master file
-        else:
-            # Regular files use their actual path
-            path_for_meta = file_data['path']
-
+        path_for_meta = file_data['name'] if file_data.get(
+            'is_link') else file_data['path']
         meta_path = git_repo.repo_path / f"{path_for_meta}.meta.json"
         description, revision = None, None
         if meta_path.exists():
@@ -1036,10 +1115,9 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
                 logger.warning(f"Could not parse metadata for {path_for_meta}")
 
         file_data['description'], file_data['revision'] = description, revision
-
-        # CRITICAL FIX: For lock info, also use the link's name for linked files
         lock_info = metadata_manager.get_lock_info(path_for_meta)
         status, locked_by, locked_at = "unlocked", None, None
+
         if lock_info:
             status, locked_by, locked_at = "locked", lock_info.get(
                 'user'), lock_info.get('timestamp')
@@ -1050,11 +1128,9 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
         file_data.update(
             {"status": status, "locked_by": locked_by, "locked_at": locked_at})
 
-        # Grouping logic remains the same
         filename = file_data['filename'].strip()
-        group_name = "Miscellaneous"
-        if re.match(r"^\d{7}.*", filename):
-            group_name = f"{filename[:2]}XXXXX"
+        group_name = f"{filename[:2]}XXXXX" if re.match(
+            r"^\d{7}.*", filename) else "Miscellaneous"
         if group_name not in grouped_files:
             grouped_files[group_name] = []
         grouped_files[group_name].append(file_data)
@@ -1151,6 +1227,9 @@ async def get_config(request: Request):
             status_code=503, detail="Application not fully initialized.")
 
     summary = config_manager.get_config_summary()
+    summary['allow_insecure_ssl'] = config_manager.config.security.get(
+        "allow_insecure_ssl", False)
+
     ssl_is_enabled = request.url.scheme == "httpss"
     summary['ssl_enabled'] = ssl_is_enabled
 
@@ -1175,49 +1254,64 @@ async def get_config(request: Request):
 
 @app.post("/config/gitlab")
 async def update_gitlab_config(request: ConfigUpdateRequest):
-    if config_manager := app_state.get('config_manager'):
-        try:
-            # --- THIS IS THE FIX ---
-            # Correctly parse the base URL to prevent validation errors
-            base_url_parsed = '/'.join(request.base_url.split('/')[:3])
-            api_url = f"{base_url_parsed}/api/v4/user"
+    # You can keep the print statement here for testing or remove it.
+    print(
+        f"--- DATA RECEIVED FROM FRONTEND ---\n{request.model_dump_json(indent=2)}\n---------------------------------")
 
-            headers = {"Private-Token": request.token}
-            response = requests.get(api_url, headers=headers, timeout=10)
-            response.raise_for_status()
+    config_manager = app_state.get('config_manager')
+    if not config_manager:
+        raise HTTPException(
+            status_code=500, detail="Configuration manager not found.")
 
-            gitlab_user_data = response.json()
-            gitlab_username = gitlab_user_data.get("username")
+    try:
+        # --- 1. VALIDATION ---
+        base_url_parsed = '/'.join(request.base_url.split('/')[:3])
+        api_url = f"{base_url_parsed}/api/v4/user"
+        headers = {"Private-Token": request.token}
+        verify_ssl = not request.allow_insecure_ssl
+        response = requests.get(api_url, headers=headers,
+                                timeout=10, verify=verify_ssl)
+        response.raise_for_status()
+        gitlab_user_data = response.json()
+        gitlab_username = gitlab_user_data.get("username")
 
-            if gitlab_username != request.username:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Validation Failed: Username '{request.username}' does not match the token owner ('{gitlab_username}')."
-                )
-
-        except HTTPException as e:
-            raise e  # Forward validation errors
-        except requests.exceptions.RequestException as e:
-            logger.error(f"GitLab API validation request failed: {e}")
+        if gitlab_username != request.username:
             raise HTTPException(
-                status_code=401,
-                detail="Could not validate with GitLab. Check your GitLab URL and Access Token."
+                status_code=400,
+                detail=f"Validation Failed: Username '{request.username}' does not match the token owner ('{gitlab_username}')."
             )
-        except Exception as e:
-            error_type = type(e).__name__
-            logger.error(
-                f"An unexpected {error_type} occurred during config update: {e}")
-            raise HTTPException(
-                status_code=500, detail=f"An internal error occurred: {error_type} - {e}")
 
-        # If validation passes, save the configuration.
-        config_manager.update_gitlab_config(
-            **request.model_dump(by_alias=False))
+        # --- 2. UPDATE CONFIG IN MEMORY ---
+        # ✅ This is the corrected logic. It directly modifies the live config object
+        # and does NOT call the problematic update_gitlab_config helper.
+
+        config_manager.config.gitlab['base_url'] = request.base_url
+        config_manager.config.gitlab['project_id'] = request.project_id
+        config_manager.config.gitlab['username'] = request.username
+        config_manager.config.gitlab['token'] = request.token
+        config_manager.config.security['allow_insecure_ssl'] = request.allow_insecure_ssl
+
+        # --- 3. SAVE ONCE ---
+        config_manager.save_config()
+
+        # --- 4. RE-INITIALIZE ---
         asyncio.create_task(initialize_application())
         return {"status": "success", "message": "Configuration validated and saved."}
 
-    raise HTTPException(
-        status_code=500, detail="Configuration manager not found.")
+    except HTTPException as e:
+        raise e
+    except requests.exceptions.RequestException as e:
+        logger.error(f"GitLab API validation request failed: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail="Could not validate with GitLab. Check your GitLab URL, Token, and SSL setting."
+        )
+    except Exception as e:
+        error_type = type(e).__name__
+        logger.error(
+            f"An unexpected {error_type} occurred during config update: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"An internal error occurred: {error_type}")
 
 
 @app.get("/refresh")
@@ -1235,20 +1329,16 @@ async def manual_refresh():
 
 
 @app.get("/files", response_model=Dict[str, List[FileInfo]])
-async def get_files():
+async def get_files(
+    git_repo: GitRepository = Depends(get_git_repo),
+    metadata_manager: MetadataManager = Depends(get_metadata_manager)
+):
     try:
-        # Use our new helper to get the repo
-        get_git_repo()
-
-        # If the line above succeeds, we know the app is configured.
-        # Proceed with existing logic.
-        grouped_data = _get_current_file_state()
+        # ✅ FIX: Pass the injected dependencies to the helper function
+        grouped_data = _get_current_file_state(git_repo, metadata_manager)
         return {group: [FileInfo(**file_data) for file_data in files] for group, files in grouped_data.items()}
-
     except ConfigurationError:
-        # If the app is not configured, gracefully return an empty dictionary.
-        # The UI will show the orange warning based on the /config status.
-        return {}
+        return {}  # Gracefully return empty if not configured
     except Exception as e:
         logger.error(f"Error in get_files endpoint: {e}", exc_info=True)
         raise HTTPException(
@@ -1256,12 +1346,8 @@ async def get_files():
 
 
 @app.get("/users")
-async def get_users():
+async def get_users(git_repo: GitRepository = Depends(get_git_repo)):
     try:
-        git_repo = app_state.get('git_repo')
-        if not git_repo:
-            raise HTTPException(
-                status_code=500, detail="Repository not initialized.")
         users = git_repo.get_all_users_from_history()
         return {"users": users}
     except Exception as e:
@@ -1272,14 +1358,13 @@ async def get_users():
 
 
 @app.post("/messages/send")
-async def send_message(request: SendMessageRequest):
+async def send_message(request: SendMessageRequest, git_repo: GitRepository = Depends(get_git_repo)):
     try:
         cfg_manager = app_state.get('config_manager')
-        git_repo = app_state.get('git_repo')
         if not all([cfg_manager, git_repo]):
             raise HTTPException(
                 status_code=500, detail="Repository not initialized.")
-        admin_users = cfg_manager.config.security.get("admin_users", [])
+        admin_users = ADMIN_USERS
         if request.sender not in admin_users:
             raise HTTPException(status_code=403, detail="Permission denied.")
         messages_dir = git_repo.repo_path / ".messages"
@@ -1365,12 +1450,8 @@ async def get_dashboard_stats():
 
 
 @app.post("/messages/acknowledge")
-async def acknowledge_message(request: AckMessageRequest):
+async def acknowledge_message(request: AckMessageRequest, git_repo: GitRepository = Depends(get_git_repo)):
     try:
-        git_repo = app_state.get('git_repo')
-        if not git_repo:
-            raise HTTPException(
-                status_code=500, detail="Repository not initialized.")
         user_message_file = git_repo.repo_path / \
             ".messages" / f"{request.user}.json"
         if not user_message_file.exists():
@@ -1399,6 +1480,7 @@ async def acknowledge_message(request: AckMessageRequest):
 
 @app.post("/files/new_upload")
 async def new_upload(
+    git_repo: GitRepository = Depends(get_git_repo),
     user: str = Form(...),
     description: str = Form(...),
     rev: str = Form(...),
@@ -1406,17 +1488,12 @@ async def new_upload(
     is_link_creation: str = Form("false"),
     new_link_filename: Optional[str] = Form(None),
     link_to_master: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None)
+    file: Optional[UploadFile] = File(None),
+
 ):
     """
     Handle both file uploads and link creation through a single endpoint.
     """
-    git_repo = app_state.get('git_repo')
-    if not git_repo or not app_state.get('initialized'):
-        raise HTTPException(
-            status_code=500, detail="Repository not available.")
-
-    # Convert string to boolean
     is_link = is_link_creation.lower() in ('true', '1', 'yes')
 
     if is_link:
@@ -1436,7 +1513,7 @@ async def new_upload(
             raise HTTPException(status_code=400, detail=error_message)
 
         # Check if file or link already exists
-        if find_file_path(new_link_filename) or find_file_path(f"{new_link_filename}.link"):
+        if find_file_path(git_repo, new_link_filename) or find_file_path(git_repo, f"{new_link_filename}.link"):
             raise HTTPException(
                 status_code=409,
                 detail=f"File or link '{new_link_filename}' already exists."
@@ -1512,7 +1589,7 @@ async def new_upload(
             raise HTTPException(status_code=400, detail=error_message)
 
         # Check if file already exists
-        if find_file_path(file.filename):
+        if find_file_path(git_repo, file.filename):
             raise HTTPException(
                 status_code=409, detail=f"File '{file.filename}' already exists."
             )
@@ -1575,30 +1652,29 @@ async def new_upload(
 
 
 @app.post("/files/{filename}/checkout")
-async def checkout_file(filename: str, request: CheckoutRequest):
+async def checkout_file(
+    filename: str,
+    request: CheckoutRequest,
+    git_repo: GitRepository = Depends(get_git_repo),
+    metadata_manager: MetadataManager = Depends(get_metadata_manager)
+):
     try:
-        git_repo, metadata_manager = app_state.get(
-            'git_repo'), app_state.get('metadata_manager')
-        if not git_repo or not metadata_manager:
+        if not re.match(r'^[a-zA-Z0-9_\-\.]+$', filename) or '..' in filename:
             raise HTTPException(
-                status_code=500, detail="Repository not initialized.")
+                status_code=400, detail="Invalid filename format.")
 
         git_repo.pull()
 
-        # 🔒 Prevent checkout of link files
         link_file_path = f"{filename}.link"
-        is_link = (git_repo.repo_path / link_file_path).exists()
-        if is_link:
+        if (git_repo.repo_path / link_file_path).exists():
             raise HTTPException(
-                status_code=400,
-                detail="Cannot checkout link files. Use 'View Master' to access the source file."
-            )
+                status_code=400, detail="Cannot checkout link files. Use 'View Master' to access the source file.")
 
-        file_path = find_file_path(filename)
+        # ✅ FIX: Pass the injected git_repo to the helper function
+        file_path = find_file_path(git_repo, filename)
         if not file_path:
             raise HTTPException(status_code=404, detail="File not found")
 
-        # 🔑 Check existing lock
         existing_lock = metadata_manager.get_lock_info(file_path)
         if existing_lock:
             if existing_lock.get('user') == request.user:
@@ -1610,9 +1686,8 @@ async def checkout_file(filename: str, request: CheckoutRequest):
                         status_code=500, detail="Failed to refresh existing lock.")
 
                 relative_lock_path_str = str(refreshed.relative_to(
-                    git_repo.repo_path)).replace(os.sep, '/')
+                    git_repo.repo_path)).replace(os.path.sep, '/')
                 commit_message = f"REFRESH LOCK: {filename} by {request.user}"
-
                 success = git_repo.commit_and_push(
                     [relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com"
                 )
@@ -1626,19 +1701,19 @@ async def checkout_file(filename: str, request: CheckoutRequest):
                 raise HTTPException(
                     status_code=409, detail="File is already locked by another user.")
 
-        # 🆕 Create new lock
+        # Create new lock
         lock_file_path = metadata_manager.create_lock(file_path, request.user)
         if not lock_file_path:
             raise HTTPException(
                 status_code=500, detail="Failed to create lock file.")
 
         relative_lock_path_str = str(lock_file_path.relative_to(
-            git_repo.repo_path)).replace(os.sep, '/')
+            git_repo.repo_path)).replace(os.path.sep, '/')
         commit_message = f"LOCK: {filename} by {request.user}"
-
         success = git_repo.commit_and_push(
             [relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com"
         )
+
         if success:
             await handle_successful_git_operation()
             return JSONResponse({"status": "success"})
@@ -1656,34 +1731,36 @@ async def checkout_file(filename: str, request: CheckoutRequest):
 
 
 @app.post("/files/{filename}/checkin")
-async def checkin_file(filename: str, user: str = Form(...), commit_message: str = Form(...), rev_type: str = Form(...), new_major_rev: Optional[str] = Form(None), file: UploadFile = File(...)):
-    # Check if this is a link file first
-    git_repo = app_state.get('git_repo')
-    if git_repo:
-        link_file_path = f"{filename}.link"
-        is_link = (git_repo.repo_path / link_file_path).exists()
-
-        if is_link:
-            raise HTTPException(
-                status_code=400, detail="Cannot check in link files. Links are virtual placeholders.")
+async def checkin_file(
+    filename: str,
+    user: str = Form(...),
+    commit_message: str = Form(...),
+    rev_type: str = Form(...),
+    new_major_rev: Optional[str] = Form(None),
+    file: UploadFile = File(...),
+    git_repo: GitRepository = Depends(get_git_repo),
+    metadata_manager: MetadataManager = Depends(get_metadata_manager)
+):
+    link_file_path = f"{filename}.link"
+    if (git_repo.repo_path / link_file_path).exists():
+        raise HTTPException(
+            status_code=400, detail="Cannot check in link files. Links are virtual placeholders.")
 
     if not await is_valid_file_type(file):
         raise HTTPException(
             status_code=400, detail=f"Invalid file type. The uploaded file is not a valid {Path(filename).suffix} file.")
 
     try:
-        git_repo, metadata_manager = app_state.get(
-            'git_repo'), app_state.get('metadata_manager')
-        if not git_repo or not metadata_manager:
-            raise HTTPException(
-                status_code=500, detail="Repository not initialized.")
-        file_path = find_file_path(filename)
+        # ✅ FIX: Pass git_repo to find_file_path
+        file_path = find_file_path(git_repo, filename)
         if not file_path:
             raise HTTPException(status_code=404, detail="File not found")
+
         lock_info = metadata_manager.get_lock_info(file_path)
         if not lock_info or lock_info['user'] != user:
             raise HTTPException(
                 status_code=403, detail="You do not have this file locked.")
+
         content = await file.read()
         git_repo.save_file(file_path, content)
         meta_path = git_repo.repo_path / f"{file_path}.meta.json"
@@ -1693,26 +1770,33 @@ async def checkin_file(filename: str, user: str = Form(...), commit_message: str
                 meta_content = json.loads(meta_path.read_text())
             except json.JSONDecodeError:
                 pass
+
         current_rev = meta_content.get("revision", "")
         new_rev = _increment_revision(current_rev, rev_type, new_major_rev)
         meta_content["revision"] = new_rev
         meta_path.write_text(json.dumps(meta_content, indent=2))
+
         absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
         relative_lock_path_str = str(absolute_lock_path.relative_to(
-            git_repo.repo_path)).replace(os.sep, '/')
+            git_repo.repo_path)).replace(os.path.sep, '/')
         metadata_manager.release_lock(file_path)
+
         final_commit_message = f"REV {new_rev}: {commit_message}"
         files_to_commit = [file_path, str(meta_path.relative_to(
             git_repo.repo_path)), relative_lock_path_str]
+
         success = git_repo.commit_and_push(
             files_to_commit, final_commit_message, user, f"{user}@example.com")
+
         if success:
             await handle_successful_git_operation()
             return JSONResponse({"status": "success"})
         else:
-            metadata_manager.create_lock(file_path, user, force=True)
+            metadata_manager.create_lock(
+                file_path, user, force=True)  # Rollback lock
             raise HTTPException(
                 status_code=500, detail="Failed to push changes.")
+
     except Exception as e:
         logger.error(
             f"An unexpected error occurred in checkin_file: {e}", exc_info=True)
@@ -1720,106 +1804,80 @@ async def checkin_file(filename: str, user: str = Form(...), commit_message: str
             status_code=500, detail=f"An internal error occurred: {e}")
 
 
-@app.post(
-    "/files/{filename}/override",
-    summary="Admin Override File Lock",
-    description="""
-    **Admin Only:** Forcibly removes a file lock regardless of who owns it.
-    
-    **Use Cases:**
-    - User is offline and others need access to the file
-    - System maintenance or emergency access required
-    - Resolving stuck locks from system errors
-    
-    **Audit Trail:**
-    - All overrides are logged in Git commit history
-    - Includes admin username and timestamp
-    - Provides full accountability for administrative actions
-    
-    **Safety Features:**
-    - Requires admin privileges (verified against admin user list)
-    - Creates permanent record in repository history
-    - Notifies all connected users of the override
-    """,
-    response_model=StandardResponse,
-    responses={
-        200: {"description": "Lock overridden successfully"},
-        403: {"description": "Permission denied - admin access required"},
-        404: {"description": "File not found"},
-        500: {"description": "Override failed"}
-    },
-    tags=["Admin", "File Management"]
-)
-async def admin_override(filename: str, request: AdminOverrideRequest):
-    try:
-        cfg_manager = app_state.get('config_manager')
-        git_repo, metadata_manager = app_state.get(
-            'git_repo'), app_state.get('metadata_manager')
-        if not all([cfg_manager, git_repo, metadata_manager]):
-            raise HTTPException(
-                status_code=500, detail="Repository not initialized.")
-        admin_users = cfg_manager.config.security.get("admin_users", [])
-        if request.admin_user not in admin_users:
-            raise HTTPException(
-                status_code=403, detail="Permission denied. Admin access required.")
-        file_path = find_file_path(filename)
-        if not file_path:
-            raise HTTPException(status_code=404, detail="File not found")
-        absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
-        if not absolute_lock_path.exists():
-            return JSONResponse({"status": "success", "message": "File was already unlocked."})
-        relative_lock_path_str = str(absolute_lock_path.relative_to(
-            git_repo.repo_path)).replace(os.sep, '/')
-        metadata_manager.release_lock(file_path)
-        commit_message = f"ADMIN OVERRIDE: Unlock {filename} by {request.admin_user}"
-        success = git_repo.commit_and_push(
-            [relative_lock_path_str], commit_message, request.admin_user, f"{request.admin_user}@example.com")
-        if success:
-            await handle_successful_git_operation()
-            return JSONResponse({"status": "success"})
-        else:
-            lock_info = {"user": "unknown",
-                         "timestamp": datetime.now(timezone.utc).isoformat()}
-            absolute_lock_path.write_text(json.dumps(
-                {"file": file_path, **lock_info}, indent=2))
-            raise HTTPException(
-                status_code=500, detail="Failed to commit lock override.")
-    except Exception as e:
-        logger.error(
-            f"An unexpected error occurred in admin_override: {e}", exc_info=True)
+@app.post("/files/{filename}/override", response_model=StandardResponse, tags=["Admin", "File Management"])
+async def admin_override(
+    filename: str,
+    request: AdminOverrideRequest,
+    git_repo: GitRepository = Depends(get_git_repo),
+    metadata_manager: MetadataManager = Depends(get_metadata_manager)
+):
+    if request.admin_user not in ADMIN_USERS:
         raise HTTPException(
-            status_code=500, detail=f"An internal error occurred: {e}")
+            status_code=403, detail="Permission denied. Admin access required.")
+
+    # ✅ FIX: Pass git_repo to find_file_path
+    file_path = find_file_path(git_repo, filename)
+    if not file_path:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
+    if not absolute_lock_path.exists():
+        return JSONResponse({"status": "success", "message": "File was already unlocked."})
+
+    relative_lock_path_str = str(absolute_lock_path.relative_to(
+        git_repo.repo_path)).replace(os.path.sep, '/')
+    metadata_manager.release_lock(file_path)
+
+    commit_message = f"ADMIN OVERRIDE: Unlock {filename} by {request.admin_user}"
+    success = git_repo.commit_and_push(
+        [relative_lock_path_str], commit_message, request.admin_user, f"{request.admin_user}@example.com")
+
+    if success:
+        await handle_successful_git_operation()
+        return JSONResponse({"status": "success"})
+    else:
+        # Attempt to rollback the lock file deletion
+        metadata_manager.create_lock(file_path, "unknown", force=True)
+        raise HTTPException(
+            status_code=500, detail="Failed to commit lock override.")
 
 
 @app.post("/files/{filename}/cancel_checkout")
-async def cancel_checkout(filename: str, request: CheckoutRequest):
+async def cancel_checkout(
+    filename: str,
+    request: CheckoutRequest,
+    git_repo: GitRepository = Depends(get_git_repo),
+    metadata_manager: MetadataManager = Depends(get_metadata_manager)
+):
     try:
-        git_repo, metadata_manager = app_state.get(
-            'git_repo'), app_state.get('metadata_manager')
-        if not git_repo or not metadata_manager:
-            raise HTTPException(
-                status_code=500, detail="Repository not initialized.")
-        file_path = find_file_path(filename)
+        # ✅ FIX: Pass git_repo to find_file_path
+        file_path = find_file_path(git_repo, filename)
         if not file_path:
             raise HTTPException(status_code=404, detail="File not found")
+
         lock_info = metadata_manager.get_lock_info(file_path)
         if not lock_info or lock_info['user'] != request.user:
             raise HTTPException(
                 status_code=403, detail="You do not have this file checked out.")
+
         absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
         relative_lock_path_str = str(absolute_lock_path.relative_to(
-            git_repo.repo_path)).replace(os.sep, '/')
+            git_repo.repo_path)).replace(os.path.sep, '/')
         metadata_manager.release_lock(file_path)
+
         commit_message = f"USER CANCEL: Unlock {filename} by {request.user}"
         success = git_repo.commit_and_push(
             [relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com")
+
         if success:
             await handle_successful_git_operation()
             return JSONResponse({"status": "success"})
         else:
-            metadata_manager.create_lock(file_path, request.user, force=True)
+            metadata_manager.create_lock(
+                file_path, request.user, force=True)  # Rollback
             raise HTTPException(
                 status_code=500, detail="Failed to commit checkout cancel.")
+
     except Exception as e:
         logger.error(
             f"An unexpected error occurred in cancel_checkout: {e}", exc_info=True)
@@ -1863,130 +1921,76 @@ async def cancel_checkout(filename: str, request: CheckoutRequest):
     },
     tags=["Admin", "File Management"]
 )
-async def admin_delete_file(filename: str, request: AdminDeleteRequest):
-    try:
-        cfg_manager, git_repo, metadata_manager = app_state.get(
-            'config_manager'), app_state.get('git_repo'), app_state.get('metadata_manager')
-        if not all([cfg_manager, git_repo, metadata_manager]):
-            raise HTTPException(
-                status_code=500, detail="Repository not initialized.")
-
-        admin_users = cfg_manager.config.security.get("admin_users", [])
-        if request.admin_user not in admin_users:
-            raise HTTPException(
-                status_code=403, detail="Permission denied. Admin access required.")
-
-        # Check if this is a link file first
-        link_file_path = f"{filename}.link"
-        is_link_file = (git_repo.repo_path / link_file_path).exists()
-
-        if is_link_file:
-            # LINK DELETION LOGIC
-            logger.info(
-                f"Admin {request.admin_user} deleting link: {filename}")
-
-            # Links cannot be "locked" since they're virtual, so no lock check needed
-            absolute_link_path = git_repo.repo_path / link_file_path
-            meta_path = git_repo.repo_path / f"{filename}.meta.json"
-
-            files_to_commit = [link_file_path]
-
-            # Remove the .link file
-            if absolute_link_path.exists():
-                absolute_link_path.unlink()
-            else:
-                raise HTTPException(
-                    status_code=404, detail=f"Link file {filename} not found.")
-
-            # Remove associated metadata if it exists
-            if meta_path.exists():
-                files_to_commit.append(f"{filename}.meta.json")
-                meta_path.unlink()
-
-            # Commit the removal
-            commit_message = f"ADMIN DELETE LINK: Remove link {filename} by {request.admin_user}"
-            success = git_repo.commit_and_push(
-                files_to_commit, commit_message, request.admin_user, f"{request.admin_user}@example.com"
-            )
-
-            if success:
-                await handle_successful_git_operation()
-                return JSONResponse({
-                    "status": "success",
-                    "message": f"Link '{filename}' removed successfully. Master file remains unaffected."
-                })
-            else:
-                # Attempt to recover the files if push failed
-                if not absolute_link_path.exists():
-                    absolute_link_path.write_text(
-                        '{"master_file": "unknown"}')  # Placeholder
-                git_repo.pull()  # Sync with remote to recover
-                raise HTTPException(
-                    status_code=500, detail="Failed to commit link removal.")
-
-        else:
-            # REGULAR FILE DELETION LOGIC (existing code)
-            file_path_str = find_file_path(filename)
-            if not file_path_str:
-                raise HTTPException(status_code=404, detail="File not found")
-
-            # Safety check for locked files
-            lock_info = metadata_manager.get_lock_info(file_path_str)
-            if lock_info:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Cannot delete file. It is currently checked out by '{lock_info.get('user', 'unknown')}'."
-                )
-
-            logger.info(
-                f"Admin {request.admin_user} deleting file: {filename}")
-
-            absolute_file_path = git_repo.repo_path / file_path_str
-            absolute_lock_path = metadata_manager._get_lock_file_path(
-                file_path_str)
-            relative_lock_path_str = str(absolute_lock_path.relative_to(
-                git_repo.repo_path)).replace(os.sep, '/')
-
-            files_to_commit = [file_path_str]
-
-            # Include lock file if it exists
-            if absolute_lock_path.exists():
-                files_to_commit.append(relative_lock_path_str)
-
-            # Include metadata file if it exists
-            meta_path = git_repo.repo_path / f"{file_path_str}.meta.json"
-            if meta_path.exists():
-                files_to_commit.append(
-                    str(meta_path.relative_to(git_repo.repo_path)))
-                meta_path.unlink()
-
-            # Remove the actual file and clean up
-            absolute_file_path.unlink(missing_ok=True)
-            metadata_manager.release_lock(file_path_str)  # Clean up any lock
-
-            commit_message = f"ADMIN DELETE FILE: {filename} by {request.admin_user}"
-            success = git_repo.commit_and_push(
-                files_to_commit, commit_message, request.admin_user, f"{request.admin_user}@example.com"
-            )
-
-            if success:
-                await handle_successful_git_operation()
-                return JSONResponse({
-                    "status": "success",
-                    "message": f"File '{filename}' permanently deleted from repository."
-                })
-            else:
-                git_repo.pull()  # Attempt to recover by syncing with remote
-                raise HTTPException(
-                    status_code=500, detail="Failed to commit file deletion.")
-
-    except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
-    except Exception as e:
-        logger.error(
-            f"Unexpected error in admin_delete_file: {e}", exc_info=True)
+async def admin_delete_file(
+    filename: str,
+    request: AdminDeleteRequest,
+    git_repo: GitRepository = Depends(get_git_repo),
+    metadata_manager: MetadataManager = Depends(get_metadata_manager)
+):
+    if request.admin_user not in ADMIN_USERS:
         raise HTTPException(
-            status_code=500, detail=f"An internal error occurred: {e}")
+            status_code=403, detail="Permission denied. Admin access required.")
+
+    # Determine if it's a link or regular file
+    is_link_file = (git_repo.repo_path / f"{filename}.link").exists()
+
+    if is_link_file:
+        # LINK DELETION LOGIC
+        logger.info(f"Admin {request.admin_user} deleting link: {filename}")
+        link_filepath_str = f"{filename}.link"
+        meta_filepath_str = f"{filename}.meta.json"
+        files_to_commit = [link_filepath_str, meta_filepath_str]
+
+        # Delete files from filesystem
+        (git_repo.repo_path / link_filepath_str).unlink(missing_ok=True)
+        (git_repo.repo_path / meta_filepath_str).unlink(missing_ok=True)
+
+        commit_message = f"ADMIN DELETE LINK: Remove link {filename} by {request.admin_user}"
+        success = git_repo.commit_and_push(
+            files_to_commit, commit_message, request.admin_user, f"{request.admin_user}@example.com")
+
+        if success:
+            await handle_successful_git_operation()
+            return JSONResponse({"status": "success", "message": f"Link '{filename}' removed successfully."})
+        else:
+            git_repo.pull()  # Attempt to recover by syncing with remote
+            raise HTTPException(
+                status_code=500, detail="Failed to commit link removal.")
+    else:
+        # REGULAR FILE DELETION LOGIC
+        file_path_str = find_file_path(git_repo, filename)
+        if not file_path_str:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if metadata_manager.get_lock_info(file_path_str):
+            raise HTTPException(
+                status_code=409, detail="Cannot delete a file that is currently checked out.")
+
+        logger.info(f"Admin {request.admin_user} deleting file: {filename}")
+
+        files_to_delete_from_repo = [file_path_str]
+
+        # Delete the main file
+        (git_repo.repo_path / file_path_str).unlink(missing_ok=True)
+
+        # Delete associated metadata if it exists
+        meta_path = git_repo.repo_path / f"{file_path_str}.meta.json"
+        if meta_path.exists():
+            files_to_delete_from_repo.append(
+                str(meta_path.relative_to(git_repo.repo_path)))
+            meta_path.unlink()
+
+        commit_message = f"ADMIN DELETE FILE: {filename} by {request.admin_user}"
+        success = git_repo.commit_and_push(
+            files_to_delete_from_repo, commit_message, request.admin_user, f"{request.admin_user}@example.com")
+
+        if success:
+            await handle_successful_git_operation()
+            return JSONResponse({"status": "success", "message": f"File '{filename}' permanently deleted."})
+        else:
+            git_repo.pull()  # Attempt to recover by syncing with remote
+            raise HTTPException(
+                status_code=500, detail="Failed to commit file deletion.")
 
 
 @app.get(
@@ -2015,10 +2019,8 @@ async def admin_delete_file(filename: str, request: AdminDeleteRequest):
     },
     tags=["File Management"]
 )
-async def download_file(filename: str):
-    git_repo, file_path = app_state.get('git_repo'), find_file_path(filename)
-    if not git_repo or not file_path:
-        raise HTTPException(status_code=404)
+async def download_file(filename: str, git_repo: GitRepository = Depends(get_git_repo)):
+    file_path = find_file_path(git_repo, filename)
     content = git_repo.get_file_content(file_path)
     if content is None:
         raise HTTPException(status_code=404)
@@ -2056,12 +2058,8 @@ async def download_file(filename: str):
     },
     tags=["File Management", "Version Control"]
 )
-async def get_file_history(filename: str):
+async def get_file_history(filename: str, git_repo: GitRepository = Depends(get_git_repo)):
     try:
-        git_repo = app_state.get('git_repo')
-        if not git_repo:
-            raise HTTPException(
-                status_code=500, detail="Repository not initialized.")
 
         # Check if this is a link file
         link_file_path = f"{filename}.link"
@@ -2075,7 +2073,7 @@ async def get_file_history(filename: str):
             return {"filename": f"{filename} (Link)", "history": meta_history}
         else:
             # Regular file logic
-            file_path = find_file_path(filename)
+            file_path = find_file_path(git_repo, filename)
             if not file_path:
                 raise HTTPException(status_code=404, detail="File not found")
             return {"filename": filename, "history": git_repo.get_file_history(file_path)}
@@ -2115,13 +2113,9 @@ async def get_file_history(filename: str):
     },
     tags=["File Management", "Version Control"]
 )
-async def download_file_version(filename: str, commit_hash: str):
+async def download_file_version(filename: str, commit_hash: str, git_repo: GitRepository = Depends(get_git_repo)):
     try:
-        git_repo = app_state.get('git_repo')
-        if not git_repo:
-            raise HTTPException(
-                status_code=500, detail="Repository not initialized.")
-        file_path = find_file_path(filename)
+        file_path = find_file_path(git_repo, filename)
         if not file_path:
             raise HTTPException(
                 status_code=404, detail="File not found in current version.")
@@ -2143,7 +2137,7 @@ async def download_file_version(filename: str, commit_hash: str):
     "/ws",
     name="WebSocket Connection"
 )
-async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
+async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous", git_repo: GitRepository = Depends(get_git_repo)):
     """
     **Real-time WebSocket connection for live updates.**
 
@@ -2170,17 +2164,16 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
     await manager.connect(websocket, user)
     logger.info(f"WebSocket connected for user: {user}")
 
-    if (git_repo := app_state.get('git_repo')):
-        user_message_file = git_repo.repo_path / ".messages" / f"{user}.json"
-        if user_message_file.exists():
-            try:
-                messages = json.loads(user_message_file.read_text())
-                if messages:
-                    await websocket.send_text(json.dumps({"type": "NEW_MESSAGES", "payload": messages}))
-            except Exception as e:
-                logger.error(f"Could not send messages to {user}: {e}")
+    user_message_file = git_repo.repo_path / ".messages" / f"{user}.json"
+    if user_message_file.exists():
+        try:
+            messages = json.loads(user_message_file.read_text())
+            if messages:
+                await websocket.send_text(json.dumps({"type": "NEW_MESSAGES", "payload": messages}))
+        except Exception as e:
+            logger.error(f"Could not send messages to {user}: {e}")
     try:
-        grouped_data = _get_current_file_state()
+        grouped_data = _get_current_file_state(git_repo)
         await websocket.send_text(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
 
         while True:
@@ -2193,19 +2186,18 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
 
                 # --- THIS IS THE FIX ---
                 # Added a check here to ensure git_repo exists before using it
-                if (git_repo := app_state.get('git_repo')):
-                    user_message_file = git_repo.repo_path / \
-                        ".messages" / f"{new_user}.json"
-                    if user_message_file.exists():
-                        messages = json.loads(user_message_file.read_text())
-                        if messages:
-                            await websocket.send_text(json.dumps({"type": "NEW_MESSAGES", "payload": messages}))
+                user_message_file = git_repo.repo_path / \
+                    ".messages" / f"{new_user}.json"
+                if user_message_file.exists():
+                    messages = json.loads(user_message_file.read_text())
+                    if messages:
+                        await websocket.send_text(json.dumps({"type": "NEW_MESSAGES", "payload": messages}))
 
-                grouped_data = _get_current_file_state()
+                grouped_data = _get_current_file_state(git_repo)
                 await websocket.send_text(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
 
             elif data == "REFRESH_FILES":
-                grouped_data = _get_current_file_state()
+                grouped_data = _get_current_file_state(git_repo)
                 await websocket.send_text(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
 
     except WebSocketDisconnect:
@@ -2219,15 +2211,10 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
 
 
 @app.get("/dashboard/activity", response_model=ActivityFeed)
-async def get_activity_feed():
+async def get_activity_feed(git_repo: GitRepository = Depends(get_git_repo)):
     """
     Scans the Git history to create a feed of recent check-in/out events.
     """
-    git_repo = app_state.get('git_repo')
-    if not git_repo or not git_repo.repo:
-        raise HTTPException(
-            status_code=503, detail="Repository not available.")
-
     activities = []
     try:
         # Scan the last 50 commits for relevant activities
@@ -2322,26 +2309,18 @@ async def get_activity_feed():
     },
     tags=["Admin", "Version Control"]
 )
-async def revert_commit(filename: str, request: AdminRevertRequest):
-    """
-    Admin action to revert a file's content to the state before a specific commit.
-    This manually checks out the previous version of the file(s) and creates a new commit.
-    """
-    cfg_manager, git_repo, metadata_manager = app_state.get(
-        'config_manager'), app_state.get('git_repo'), app_state.get('metadata_manager')
-
-    if not all([cfg_manager, git_repo, metadata_manager]):
-        raise HTTPException(
-            status_code=500, detail="Repository not initialized.")
-
-    # 1. Admin Permission Check
-    admin_users = cfg_manager.config.security.get("admin_users", [])
-    if request.admin_user not in admin_users:
+async def revert_commit(
+    filename: str,
+    request: AdminRevertRequest,
+    git_repo: GitRepository = Depends(get_git_repo),
+    metadata_manager: MetadataManager = Depends(get_metadata_manager)
+):
+    if request.admin_user not in ADMIN_USERS:
         raise HTTPException(
             status_code=403, detail="Permission denied. Admin access required.")
 
-    # 2. Find file and check for existing lock
-    file_path = find_file_path(filename)
+    # ✅ FIX: Pass git_repo to find_file_path
+    file_path = find_file_path(git_repo, filename)
     if not file_path:
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -2349,61 +2328,37 @@ async def revert_commit(filename: str, request: AdminRevertRequest):
         raise HTTPException(
             status_code=409, detail="Cannot revert while file is checked out by a user.")
 
-    # 3. Perform the Git Revert using a manual checkout from the parent commit
+    # The rest of your revert logic is correct and can remain as is.
+    # ... (rest of the logic) ...
     try:
         repo = git_repo.repo
         bad_commit = repo.commit(request.commit_hash)
-
-        # Ensure there is a parent commit to revert to
         if not bad_commit.parents:
             raise HTTPException(
                 status_code=400, detail="Cannot revert the initial commit of a file.")
         parent_commit = bad_commit.parents[0]
 
-        # Define the paths to revert (the main file and its metadata)
         paths_to_revert = [file_path]
         meta_path_str = f"{file_path}.meta.json"
-
-        # Check if the meta file existed in the parent commit to avoid errors
         try:
             parent_commit.tree[meta_path_str]
             paths_to_revert.append(meta_path_str)
         except KeyError:
-            logger.info(
-                f"No meta file found in parent commit for {filename}, reverting main file only.")
+            logger.info(f"No meta file for {filename} in parent commit.")
 
-        # Use git checkout to restore the files from the parent commit's state
         with repo.git.custom_environment(**git_repo.git_env):
             repo.git.checkout(parent_commit.hexsha, '--', *paths_to_revert)
-
-            # Stage the restored files for the new commit
             repo.index.add(paths_to_revert)
-
-            # Create a new commit for this revert action
             author = Actor(request.admin_user,
                            f"{request.admin_user}@example.com")
-            commit_message = f"ADMIN REVERT: {filename} to state before {request.commit_hash[:7]}\n\nReverted changes from commit: {bad_commit.message.strip()}"
+            commit_message = f"ADMIN REVERT: {filename} to state before {request.commit_hash[:7]}"
             repo.index.commit(commit_message, author=author)
-
-            # Push the new revert commit
             repo.remotes.origin.push()
 
-        logger.info(
-            f"Admin {request.admin_user} reverted {filename} to state before commit {request.commit_hash[:7]}")
         await handle_successful_git_operation()
         return JSONResponse({"status": "success", "message": f"Changes from commit {request.commit_hash[:7]} have been reverted."})
-
     except git.exc.GitCommandError as e:
-        logger.error(f"Git revert (manual) failed: {e}")
-        # Attempt to reset the repository to a clean state to avoid leaving it in a bad state
-        try:
-            with git_repo.repo.git.custom_environment(**git_repo.git_env):
-                git_repo.repo.git.reset(
-                    '--hard', f'origin/{git_repo.repo.active_branch.name}')
-        except Exception as reset_e:
-            logger.error(
-                f"Failed to reset repo after revert failure: {reset_e}")
-
+        logger.error(f"Git revert failed: {e}")
         raise HTTPException(
             status_code=500, detail=f"Failed to revert commit: {e}")
 

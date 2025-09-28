@@ -4,7 +4,7 @@
     "base_url": "https://gitlab.com/g4m3rm1k3-group/test.git",
     "project_id": "74609002",
     "username": "g4m3rm1k3",
-    "token": "Z0FBQUFBQm8ySk5TWUppUzVnZ2I5NXdvTGhnZ1pMN0lldEV6YVZ2Z0NLQU5OcFg2d2g0MmtDTGE1UjByVGZxTE9yT21sT0NWUzhhc0ZycWhWdjY5SUV1Ymhsd05rTVNEWFB3OGlaSlVtUVJhWjVGN0Z6WTFvOFcxSzNHU0RrRFF2c2dSLXpodnc5WElzUUF2T29JRUczWlVzbFhzVVUxMElBPT0="
+    "token": "Z0FBQUFBQm8yU20wTE43OXBiM1hUamNVVjRZa3NqUTFPcUNSanduRmFDdW1rOEwxdFdkSnQ5TUJaV1Q3cURmRDZtZVVYakhBR0hRaGxBZ2NNRmRrOFIyeGVSbG42eVc4TDIwMUczOUdyUFlaV0pBT3RSV3lpT0JNc0lMZHBvenRfR25aN0dtak1OTHM2bnR2V3JrY0JrTVFHOEhSX2JyZnBRPT0="
   },
   "local": {},
   "ui": {},
@@ -12,7 +12,8 @@
     "admin_users": [
       "admin",
       "g4m3rm1k3"
-    ]
+    ],
+    "allow_insecure_ssl": false
   },
   "polling": {
     "enabled": true,

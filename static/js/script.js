@@ -1463,6 +1463,8 @@ function updateConfigDisplay() {
     document.getElementById("gitlabUrl").value = currentConfig.gitlab_url || "";
     document.getElementById("projectId").value = currentConfig.project_id || "";
     document.getElementById("username").value = currentConfig.username || "";
+    document.getElementById("allowInsecureSsl").checked =
+      currentConfig.allow_insecure_ssl || false;
     if (currentConfig.username) {
       currentUser = currentConfig.username;
       document.getElementById("currentUser").textContent = currentUser;
@@ -2960,18 +2962,19 @@ document.addEventListener("DOMContentLoaded", function () {
       acknowledgeMessage(messageId);
     }
   });
-
-  // Configuration form
   document
     .getElementById("configForm")
     .addEventListener("submit", async function (e) {
       e.preventDefault();
       const tokenInput = document.getElementById("token");
+
+      // ✅ This object now correctly reads the checkbox's true/false state
       const formData = {
         gitlab_url: document.getElementById("gitlabUrl").value,
         project_id: document.getElementById("projectId").value,
         username: document.getElementById("username").value,
         token: document.getElementById("token").value,
+        allow_insecure_ssl: document.getElementById("allowInsecureSsl").checked,
       };
 
       try {
@@ -2986,10 +2989,10 @@ document.addEventListener("DOMContentLoaded", function () {
         debounceNotifications("Configuration saved! Refreshing...", "success");
         toggleConfigPanel();
         await loadConfig();
-        await loadFiles();
+        // Disconnect and reconnect WebSocket to apply new user/config if changed
         disconnectWebSocket();
         connectWebSocket();
-        tokenInput.value = "";
+        tokenInput.value = ""; // Clear token field for security
       } catch (error) {
         debounceNotifications(`Config Error: ${error.message}`, "error");
       }
