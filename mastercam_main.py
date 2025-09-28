@@ -82,7 +82,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
                     handlers=[logging.FileHandler('mastercam_git_interface.log'), logging.StreamHandler()])
 logger = logging.getLogger(__name__)
 
-ADMIN_USERS = ["admin"]
+ADMIN_USERS = ["admin", "g4m3rm1k3"]
 
 # +++ NEW: FILE TYPE VALIDATION CONFIG +++
 # Defines allowed file extensions and their "magic number" signatures.
@@ -293,20 +293,15 @@ async def is_valid_file_type(file: UploadFile) -> bool:
         return True
 
     try:
-        # Find the length of the longest signature to know how much to read
+        # Read only the length of the longest signature
         max_len = max(len(s) for s in signatures)
         file_header = await file.read(max_len)
-
-        # Check if the file header starts with ANY of the valid signatures
-        for s in signatures:
-            if file_header.startswith(s):
-                return True
-
-        # If no signature matched
-        return False
-    finally:
-        # IMPORTANT: Reset the file pointer so it can be read again later
         await file.seek(0)
+        return any(file_header.startswith(s) for s in signatures)
+    except Exception as e:
+        logger.error(f"Error validating file type: {e}")
+        await file.seek(0)
+        return False
 
 
 def validate_filename_format(filename: str) -> tuple[bool, str]:
@@ -322,7 +317,7 @@ def validate_filename_format(filename: str) -> tuple[bool, str]:
         return False, f"Filename (before extension) cannot exceed {MAX_LENGTH} characters."
 
     # Check 2: Format using Regular Expression
-    pattern = re.compile(r"^\d{7,}(_[a-zA-Z]{1,3}\d{1,3})?$")
+    pattern = re.compile(r"^\d{7}(_[A-Z]{1,3}\d{1,3})?$")
     if not pattern.match(stem):
         return False, "Filename must follow the format: 7digits_1-3letters_1-3numbers (e.g., 1234567_AB123)."
 
@@ -539,25 +534,28 @@ class GitRepository:
         except Exception as e:
             logger.error(f"Git sync (fetch/reset) failed: {e}")
 
-    def list_files(self, pattern: str = "*.mcam") -> List[Dict]:
+    def list_files(self, pattern: str = "*") -> List[Dict]:
         if not self.repo:
             return []
         files = []
+        supported_extensions = list(ALLOWED_FILE_TYPES.keys())
         for item in self.repo.tree().traverse():
             if item.type == 'blob' and Path(item.path).match(pattern):
-                try:
-                    stat_result = os.stat(item.abspath)
-                    # ✅ FIX: This resolves the DeprecationWarning
-                    modified_time = datetime.fromtimestamp(
-                        stat_result.st_mtime, timezone.utc).isoformat()
-                    files.append({
-                        "name": item.name,
-                        "path": item.path,
-                        "size": stat_result.st_size,
-                        "modified_at": modified_time
-                    })
-                except OSError:
-                    continue
+                file_ext = Path(item.path).suffix.lower()
+                if file_ext in supported_extensions:
+                    try:
+                        stat_result = os.stat(item.abspath)
+                        # ✅ FIX: This resolves the DeprecationWarning
+                        modified_time = datetime.fromtimestamp(
+                            stat_result.st_mtime, timezone.utc).isoformat()
+                        files.append({
+                            "name": item.name,
+                            "path": item.path,
+                            "size": stat_result.st_size,
+                            "modified_at": modified_time
+                        })
+                    except OSError:
+                        continue
         return files
 
     def save_file(self, file_path: str, content: bytes):
@@ -1070,9 +1068,18 @@ def _get_current_file_state(
     except Exception as e:
         logger.warning(f"Failed to pull latest changes: {e}")
 
-    mcam_files_raw = git_repo.list_files("*.mcam")
-    master_files_map = {file_data['name']: file_data for file_data in mcam_files_raw}
+    # Get all supported file types dynamically using ALLOWED_FILE_TYPES
+    all_files_raw = []
+    for ext in ALLOWED_FILE_TYPES.keys():
+        pattern = f"*{ext}"
+        all_files_raw.extend(git_repo.list_files(pattern))
+
+    # Create map of all files (not just mcam files)
+    master_files_map = {file_data['name']
+        : file_data for file_data in all_files_raw}
     all_files_to_process = list(master_files_map.values())
+
+    # Process link files
     link_files_raw = git_repo.list_files("*.link")
 
     for link_file_data in link_files_raw:
@@ -1155,51 +1162,63 @@ def find_available_port(start_port=8000, max_attempts=100):
     raise IOError("Could not find an available port.")
 
 
-async def broadcast_updates():
+async def broadcast_updates(changed_files: Optional[List[str]] = None):
     try:
         logger.info("Broadcasting all updates...")
         # Small delay to ensure FS changes are settled
         await asyncio.sleep(0.2)
 
-        # Prepare file list payload once
-        grouped_data = _get_current_file_state()
-        file_list_message = json.dumps({
-            "type": "FILE_LIST_UPDATED",
-            "payload": grouped_data,
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        })
-
+        # Check for active connections early
         if not manager.active_connections:
             logger.debug("No active WebSocket connections to broadcast to.")
             return
 
-        # Iterate through a copy of connections to handle disconnections safely
-        for websocket, user in list(manager.active_connections.items()):
-            # 1. Send file list update to everyone
-            try:
-                await websocket.send_text(file_list_message)
-            except Exception as e:
-                logger.warning(f"Could not send file list to {user}: {e}")
-                manager.disconnect(websocket)
-                continue
+        # Prepare file list payload
+        grouped_data = _get_current_file_state()
+        if changed_files:
+            grouped_data = {
+                group: files for group, files in grouped_data.items()
+                if any(f['filename'] in changed_files for f in files)
+            }
 
-            # 2. Check for and send specific messages to each user
-            if git_repo := app_state.get('git_repo'):
-                user_message_file = git_repo.repo_path / \
-                    ".messages" / f"{user}.json"
-                if user_message_file.exists():
-                    try:
-                        messages = json.loads(user_message_file.read_text())
-                        if messages:
-                            message_payload = json.dumps(
-                                {"type": "NEW_MESSAGES", "payload": messages})
-                            await websocket.send_text(message_payload)
-                    except Exception as e:
-                        logger.error(
-                            f"Could not check or send messages to {user}: {e}")
+        # Only broadcast if there’s data to send
+        if grouped_data:
+            file_list_message = json.dumps({
+                "type": "FILE_LIST_UPDATED",
+                "payload": grouped_data,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            })
 
-        logger.info(
-            f"Broadcast complete to {len(manager.active_connections)} clients.")
+            # Iterate through a copy of connections to handle disconnections safely
+            for websocket, user in list(manager.active_connections.items()):
+                # 1. Send file list update to everyone
+                try:
+                    await websocket.send_text(file_list_message)
+                except Exception as e:
+                    logger.warning(f"Could not send file list to {user}: {e}")
+                    manager.disconnect(websocket)
+                    continue
+
+                # 2. Check for and send specific messages to each user
+                if git_repo := app_state.get('git_repo'):
+                    user_message_file = git_repo.repo_path / \
+                        ".messages" / f"{user}.json"
+                    if user_message_file.exists():
+                        try:
+                            messages = json.loads(
+                                user_message_file.read_text())
+                            if messages:
+                                message_payload = json.dumps({
+                                    "type": "NEW_MESSAGES",
+                                    "payload": messages
+                                })
+                                await websocket.send_text(message_payload)
+                        except Exception as e:
+                            logger.error(
+                                f"Could not check or send messages to {user}: {e}")
+
+            logger.info(
+                f"Broadcast complete to {len(manager.active_connections)} clients.")
 
     except Exception as e:
         logger.error(f"Failed to broadcast updates: {e}")
