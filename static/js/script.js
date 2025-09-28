@@ -15,6 +15,21 @@ let isManualDisconnect = false;
 let lastNotification = { message: null, timestamp: 0 };
 let tooltipsEnabled =
   localStorage.getItem("tooltipsEnabled") === "true" || false;
+let lastFileListHash = null;
+let currentNotification = null; // Add this line
+
+const domCache = {
+  fileList: document.getElementById("fileList"),
+  searchInput: document.getElementById("searchInput"),
+  clearSearchBtn: document.getElementById("clearSearchBtn"),
+  dashboardModal: document.getElementById("dashboardModal"),
+  messagesModal: document.getElementById("messagesModal"), // Messages modal
+  configModal: document.getElementById("configModal"), // Configuration modal
+  mainContent: document.getElementById("mainContent"), // Replace with your main container ID
+  tooltipToggle: document.getElementById("tooltip-toggle"),
+  repoStatus: document.getElementById("repo-status"),
+  connectionStatus: document.getElementById("connection-status"),
+};
 
 // -- Enhanced Tooltip System with HTML Element Support --
 const tooltips = {
@@ -642,40 +657,46 @@ function showTooltip(event) {
 
   const tooltipKey = event.currentTarget.dataset.tooltip;
   const tooltipData = tooltips[tooltipKey];
-
   if (!tooltipData) return;
 
-  // Remove existing tooltips
-  document.querySelectorAll(".tooltip").forEach((tooltip) => tooltip.remove());
+  // Hide any other tooltips that might be visible
+  document.querySelectorAll(".tooltip.show").forEach((t) => {
+    if (t.cleanup) t.cleanup();
+    t.classList.remove("show");
+  });
 
-  // Create new tooltip
-  const tooltip = document.createElement("div");
-  tooltip.className = `tooltip position-${tooltipData.position || "top"}`;
+  // ✅ Check the cache for an existing tooltip element
+  let tooltip = tooltipCache.get(tooltipKey);
 
-  const titleHtml = tooltipData.title
-    ? `<div class="tooltip-title">${tooltipData.title}</div>`
-    : "";
-  const contentHtml = tooltipData.multiline
-    ? tooltipData.content.replace(/\n/g, "<br>")
-    : tooltipData.content;
+  // If the tooltip is NOT in the cache, create it ONCE and store it
+  if (!tooltip) {
+    console.log(`Creating new tooltip for: ${tooltipKey}`); // Log for debugging
+    tooltip = document.createElement("div");
+    tooltip.className = `tooltip position-${tooltipData.position || "top"}`;
 
-  tooltip.innerHTML = `${titleHtml}<div class="tooltip-content">${contentHtml}</div>`;
+    const titleHtml = tooltipData.title
+      ? `<div class="tooltip-title">${tooltipData.title}</div>`
+      : "";
+    const contentHtml = tooltipData.multiline
+      ? tooltipData.content.replace(/\n/g, "<br>")
+      : tooltipData.content;
+    tooltip.innerHTML = `${titleHtml}<div class="tooltip-content">${contentHtml}</div>`;
 
-  document.body.appendChild(tooltip);
+    document.body.appendChild(tooltip);
+    tooltipCache.set(tooltipKey, tooltip); // Add the new element to our cache
+  }
 
-  // Store reference to target element for repositioning
+  // --- Position and show the tooltip (whether new or from cache) ---
   tooltip.targetElement = event.currentTarget;
   tooltip.preferredPosition = tooltipData.position || "top";
+  positionTooltip(tooltip, tooltip.targetElement, tooltip.preferredPosition);
 
-  // Position tooltip
-  positionTooltip(tooltip, event.currentTarget, tooltipData.position || "top");
-
-  // Show tooltip with animation
+  // Show with animation
   setTimeout(() => tooltip.classList.add("show"), 10);
 
   // Add scroll listener for repositioning
   const repositionOnScroll = () => {
-    if (tooltip.parentNode && tooltip.targetElement) {
+    if (tooltip.classList.contains("show") && tooltip.targetElement) {
       positionTooltip(
         tooltip,
         tooltip.targetElement,
@@ -687,7 +708,7 @@ function showTooltip(event) {
   window.addEventListener("scroll", repositionOnScroll, { passive: true });
   window.addEventListener("resize", repositionOnScroll);
 
-  // Store cleanup function
+  // Store a cleanup function on the tooltip element itself
   tooltip.cleanup = () => {
     window.removeEventListener("scroll", repositionOnScroll);
     window.removeEventListener("resize", repositionOnScroll);
@@ -698,11 +719,13 @@ function hideTooltip() {
   const tooltip = document.querySelector(".tooltip.show");
   if (tooltip) {
     tooltip.classList.remove("show");
-    // Clean up event listeners
+    // Clean up the event listeners
     if (tooltip.cleanup) {
       tooltip.cleanup();
     }
-    setTimeout(() => tooltip.remove(), 200);
+    // ✅ IMPORTANT: We no longer remove the element from the DOM.
+    // This keeps it in our cache for the next time it's needed.
+    // The line "setTimeout(() => tooltip.remove(), 200);" is now gone.
   }
 }
 
@@ -752,6 +775,8 @@ function positionTooltip(tooltip, targetElement, position) {
   tooltip.style.top = top + "px";
 }
 
+const tooltipCache = new Map();
+
 // -- Notification Debounce --
 function debounceNotifications(message, type, delay = 5000) {
   const now = Date.now();
@@ -763,6 +788,7 @@ function debounceNotifications(message, type, delay = 5000) {
     return;
   }
   lastNotification = { message, timestamp: now };
+  console.log(`[${type.toUpperCase()}] ${message}`);
   showNotification(message, type);
 }
 
@@ -803,10 +829,7 @@ function connectWebSocket() {
         connectWebSocket();
       }, delay);
     } else {
-      debounceNotifications(
-        "Connection lost. Please refresh the page.",
-        "error"
-      );
+      handleOfflineStatus();
     }
   };
 
@@ -817,11 +840,11 @@ function connectWebSocket() {
 }
 
 function disconnectWebSocket() {
-  isManualDisconnect = true;
-  if (ws) ws.close();
-  if (reconnectTimeout) {
-    clearTimeout(reconnectTimeout);
-    reconnectTimeout = null;
+  if (ws) {
+    isManualDisconnect = true;
+    ws.close();
+    ws = null;
+    updateConnectionStatus(false);
   }
 }
 
@@ -829,9 +852,17 @@ function handleWebSocketMessage(message) {
   try {
     const data = JSON.parse(message);
     if (data.type === "FILE_LIST_UPDATED") {
+      const newHash = JSON.stringify(data.payload);
+      if (newHash === lastFileListHash) {
+        console.log("Skipping duplicate file list update");
+        return;
+      }
+      lastFileListHash = newHash;
       groupedFiles = data.payload || {};
-      const dashboardModal = document.getElementById("dashboardModal");
-      if (dashboardModal && dashboardModal.classList.contains("hidden")) {
+      if (
+        domCache.dashboardModal &&
+        domCache.dashboardModal.classList.contains("hidden")
+      ) {
         renderFiles();
       }
     } else if (data.type === "NEW_MESSAGES") {
@@ -841,12 +872,52 @@ function handleWebSocketMessage(message) {
     }
   } catch (error) {
     console.error("Error handling WebSocket message:", error);
+    if (!navigator.onLine) {
+      handleOfflineStatus();
+    }
   }
 }
 
 function manualRefresh() {
   loadFiles();
 }
+
+// -- Offline Detection --
+function handleOfflineStatus() {
+  if (!navigator.onLine) {
+    disconnectWebSocket();
+    if (domCache.mainContent) {
+      domCache.mainContent.innerHTML = `
+        <div class="flex flex-col items-center justify-center py-12 text-gray-600 dark:text-gray-400">
+          <i class="fa-solid fa-wifi text-6xl mb-4 text-red-500"></i>
+          <h3 class="text-2xl font-semibold">Offline</h3>
+          <p class="mt-2 text-center">You are offline. Please check your network connection and try again.</p>
+          <button onclick="window.location.reload()" class="mt-4 px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-md hover:bg-opacity-80">Retry</button>
+        </div>`;
+    }
+    document
+      .querySelectorAll(".modal:not(.hidden)")
+      .forEach((modal) => modal.classList.add("hidden"));
+    document.querySelectorAll(".tooltip").forEach((t) => t.remove());
+    debounceNotifications(
+      "You are offline. The application is paused.",
+      "error"
+    );
+  }
+}
+
+function handleOnlineStatus() {
+  if (navigator.onLine) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      connectWebSocket();
+    }
+    loadFiles();
+    debounceNotifications("Connection restored. Reloading data...", "success");
+  }
+}
+
+window.addEventListener("online", handleOnlineStatus);
+window.addEventListener("offline", handleOfflineStatus);
 
 // -- Data Loading and Rendering --
 async function loadFiles() {
@@ -864,6 +935,9 @@ async function loadFiles() {
     console.error("Error loading files:", error);
     debounceNotifications(`Error loading files: ${error.message}`, "error");
     updateRepoStatus("Error");
+    if (!navigator.onLine) {
+      handleOfflineStatus();
+    }
   }
 }
 
@@ -915,6 +989,9 @@ function viewMasterFile(masterFilename) {
   }
 }
 
+// Keep a reference to the previous state to compare against
+let previousGroupedFiles = {};
+
 function renderFiles() {
   const fileListEl = document.getElementById("fileList");
   const searchTerm = document.getElementById("searchInput").value.toLowerCase();
@@ -922,11 +999,14 @@ function renderFiles() {
     JSON.parse(localStorage.getItem("expandedGroups")) || [];
   const expandedSubGroups =
     JSON.parse(localStorage.getItem("expandedSubGroups")) || [];
-  fileListEl.innerHTML = "";
+
+  // Create a temporary, in-memory container to build the new UI
+  const newFileListContainer = fileListEl.cloneNode(false);
   let totalFilesFound = 0;
 
   if (!groupedFiles || Object.keys(groupedFiles).length === 0) {
-    fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-gray-600 dark:text-gray-400"><i class="fa-solid fa-exclamation-triangle text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No Connection</h3><p class="mt-2 text-center">Unable to load files. Check your configuration.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-md hover:bg-opacity-80">Try Again</button></div>`;
+    newFileListContainer.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-gray-600 dark:text-gray-400"><i class="fa-solid fa-exclamation-triangle text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No Connection</h3><p class="mt-2 text-center">Unable to load files. Check your configuration.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-md hover:bg-opacity-80">Try Again</button></div>`;
+    morphdom(fileListEl, newFileListContainer);
     return;
   }
 
@@ -942,7 +1022,6 @@ function renderFiles() {
     const filesInGroup = groupedFiles[groupName];
     if (!Array.isArray(filesInGroup)) return;
 
-    // Group files by the first 7 digits of their filename
     const subGroupedFiles = {};
     filesInGroup.forEach((file) => {
       const sevenDigitPrefix =
@@ -953,7 +1032,6 @@ function renderFiles() {
       subGroupedFiles[sevenDigitPrefix].push(file);
     });
 
-    // Filter and count total files after search
     let groupFileCount = 0;
     const filteredSubGroups = {};
     Object.keys(subGroupedFiles).forEach((subGroupName) => {
@@ -975,7 +1053,6 @@ function renderFiles() {
     if (groupFileCount === 0) return;
     totalFilesFound += groupFileCount;
 
-    // Create top-level group (by first two digits)
     const detailsEl = document.createElement("details");
     detailsEl.className =
       "file-group group border-t border-gray-300 dark:border-gray-600";
@@ -993,16 +1070,13 @@ function renderFiles() {
     }</span></div><span class="text-sm font-medium text-gray-600 dark:text-gray-400">(${groupFileCount} files)</span>`;
     detailsEl.appendChild(summaryEl);
 
-    // Create container for subgroups
     const subGroupsContainer = document.createElement("div");
     subGroupsContainer.className = "pl-4";
 
-    // Render subgroups (by seven-digit prefix)
     Object.keys(filteredSubGroups)
       .sort()
       .forEach((subGroupName) => {
         const filesInSubGroup = filteredSubGroups[subGroupName];
-
         const subDetailsEl = document.createElement("details");
         subDetailsEl.className =
           "sub-file-group group border-t border-gray-200 dark:border-gray-600";
@@ -1031,13 +1105,11 @@ function renderFiles() {
           let statusClass = "",
             statusBadgeText = "";
 
-          // Different status handling for linked vs regular files
           if (file.is_link) {
             statusClass =
               "bg-purple-100 text-purple-900 dark:bg-purple-900 dark:text-purple-200";
             statusBadgeText = `Links to ${file.master_file}`;
           } else {
-            // Regular file status logic
             switch (file.status) {
               case "unlocked":
                 statusClass =
@@ -1065,103 +1137,201 @@ function renderFiles() {
           fileEl.className =
             "py-6 px-4 bg-white dark:bg-gray-800 hover:bg-opacity-80 transition-colors duration-200 border-b border-gray-300 dark:border-gray-600";
 
-          // Enhanced file display with link indicators
           const linkBadge = file.is_link
             ? `<span class="text-xs font-bold px-2.5 py-1 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" title="Linked to: ${file.master_file}"><i class="fa-solid fa-link"></i> Linked</span>`
             : "";
-
           const revisionBadge = file.revision
             ? `<span class="text-xs font-semibold px-2.5 py-1 rounded-full bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200">REV ${file.revision}</span>`
             : "";
+          const attachmentBadge =
+            file.attachments && file.attachments.length > 0
+              ? `<span class="text-xs font-semibold px-2.5 py-1 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" title="${file.attachments.length} attachments"><i class="fa-solid fa-paperclip"></i> ${file.attachments.length}</span>`
+              : "";
 
           fileEl.innerHTML = `
-            <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
-                <div class="flex items-center space-x-4 flex-wrap">
-                    <div class="flex items-center space-x-2">
+                      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
+                          <div class="flex items-center space-x-4 flex-wrap">
+                              <div class="flex items-center space-x-2">
+                                  ${
+                                    file.is_link
+                                      ? '<i class="fa-solid fa-link text-purple-600 dark:text-purple-400"></i>'
+                                      : '<i class="fa-solid fa-file text-blue-600 dark:text-blue-400"></i>'
+                                  }
+                                  <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">${
+                                    file.filename
+                                  }</h3>
+                              </div>
+                              <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
+                              ${revisionBadge}
+                              ${linkBadge}
+                          </div>
+                          <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
+                      </div>
                       ${
-                        file.is_link
-                          ? '<i class="fa-solid fa-link text-purple-600 dark:text-purple-400"></i>'
-                          : '<i class="fa-solid fa-file text-blue-600 dark:text-blue-400"></i>'
+                        file.description
+                          ? `<div class="mt-2 text-sm text-gray-700 dark:text-gray-300 italic">${file.description}</div>`
+                          : ""
                       }
-                      <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">${
-                        file.filename
-                      }</h3>
-                    </div>
-                    <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
-                    ${revisionBadge}
-                    ${linkBadge}
-                </div>
-                <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
-            </div>
-            ${
-              file.description
-                ? `<div class="mt-2 text-sm text-gray-700 dark:text-gray-300 italic">${file.description}</div>`
-                : ""
-            }
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-gray-700 dark:text-gray-300 text-sm">
-                ${
-                  file.is_link
-                    ? `
-                  <div class="flex items-center space-x-2">
-                    <i class="fa-solid fa-link text-purple-600 dark:text-purple-400"></i>
-                    <span>Points to: ${file.master_file}</span>
-                  </div>
-                  <div class="flex items-center space-x-2">
-                    <i class="fa-solid fa-info-circle text-gray-600 dark:text-gray-400"></i>
-                    <span>Type: Virtual Link</span>
-                  </div>
-                `
-                    : `
-                  <div class="flex items-center space-x-2">
-                    <i class="fa-solid fa-file text-gray-600 dark:text-gray-400"></i>
-                    <span>Path: ${file.path}</span>
-                  </div>
-                  <div class="flex items-center space-x-2">
-                    <i class="fa-solid fa-hard-drive text-gray-600 dark:text-gray-400"></i>
-                    <span>Size: ${formatBytes(file.size)}</span>
-                  </div>
-                `
-                }
-                <div class="flex items-center space-x-2">
-                  <i class="fa-solid fa-clock text-gray-600 dark:text-gray-400"></i>
-                  <span>Modified: ${formatDate(file.modified_at)}</span>
-                </div>
-                ${
-                  file.locked_by && file.status !== "checked_out_by_user"
-                    ? `
-                  <div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1">
-                    <i class="fa-solid fa-lock text-gray-600 dark:text-gray-400"></i>
-                    <span>Locked by: ${file.locked_by} at ${formatDate(
-                        file.locked_at
-                      )}</span>
-                  </div>
-                `
-                    : ""
-                }
-            </div>
-          `;
+                      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-gray-700 dark:text-gray-300 text-sm">
+                          ${
+                            file.is_link
+                              ? `
+                            <div class="flex items-center space-x-2">
+                              <i class="fa-solid fa-link text-purple-600 dark:text-purple-400"></i>
+                              <span>Points to: ${file.master_file}</span>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                              <i class="fa-solid fa-info-circle text-gray-600 dark:text-gray-400"></i>
+                              <span>Type: Virtual Link</span>
+                            </div>`
+                              : `
+                            <div class="flex items-center space-x-2">
+                              <i class="fa-solid fa-file text-gray-600 dark:text-gray-400"></i>
+                              <span>Path: ${file.path}</span>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                              <i class="fa-solid fa-hard-drive text-gray-600 dark:text-gray-400"></i>
+                              <span>Size: ${formatBytes(file.size)}</span>
+                            </div>`
+                          }
+                          <div class="flex items-center space-x-2">
+                            <i class="fa-solid fa-clock text-gray-600 dark:text-gray-400"></i>
+                            <span>Modified: ${formatDate(
+                              file.modified_at
+                            )}</span>
+                          </div>
+                          ${
+                            file.locked_by &&
+                            file.status !== "checked_out_by_user"
+                              ? `
+                            <div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1">
+                              <i class="fa-solid fa-lock text-gray-600 dark:text-gray-400"></i>
+                              <span>Locked by: ${
+                                file.locked_by
+                              } at ${formatDate(file.locked_at)}</span>
+                            </div>`
+                              : ""
+                          }
+                      </div>`;
           filesContainer.appendChild(fileEl);
         });
-
         subDetailsEl.appendChild(filesContainer);
         subGroupsContainer.appendChild(subDetailsEl);
       });
-
     detailsEl.appendChild(subGroupsContainer);
-    fileListEl.appendChild(detailsEl);
+    // *** IMPORTANT: Append to the temporary container, not the live one ***
+    newFileListContainer.appendChild(detailsEl);
   });
 
   if (totalFilesFound === 0) {
-    fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-gray-600 dark:text-gray-400"><i class="fa-solid fa-folder-open text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No files found</h3><p class="mt-2 text-center">No Mastercam files match your search criteria.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-md hover:bg-opacity-80">Refresh</button></div>`;
+    newFileListContainer.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-gray-600 dark:text-gray-400"><i class="fa-solid fa-folder-open text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No files found</h3><p class="mt-2 text-center">No Mastercam files match your search criteria.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-md hover:bg-opacity-80">Refresh</button></div>`;
   }
 
-  // Re-apply tooltips to newly rendered elements
+  // This is the magic line that intelligently updates the page
+  morphdom(fileListEl, newFileListContainer);
+
+  // Re-apply tooltips to any new elements that were created
   setTimeout(() => {
     addDynamicTooltips();
     addDataElementTooltips();
   }, 100);
 }
 
+function createFileElement(file) {
+  const fileEl = document.createElement("div");
+  fileEl.id = `file-${file.filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
+  fileEl.className = "py-6 px-4 bg-white dark:bg-gray-800 ..."; // Your classes
+
+  // Build the inner HTML using your existing logic
+  const innerHTML = getFileHTML(file); // Another helper to generate the string
+  fileEl.innerHTML = innerHTML;
+
+  return fileEl;
+}
+
+function updateFileElement(fileEl, file) {
+  console.log(`Updating element for: ${file.filename}`);
+
+  // --- Update Status Badge ---
+  const statusBadge = fileEl.querySelector("span[class*='rounded-full']");
+  if (statusBadge) {
+    let statusClass = "";
+    let statusBadgeText = "";
+    // Your existing switch/case logic to determine statusClass and statusBadgeText
+    // ...
+    statusBadge.className = `text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}`;
+    statusBadge.textContent = statusBadgeText;
+  }
+
+  // --- Update Revision Badge ---
+  const revisionBadge = fileEl.querySelector("span.text-gray-800"); // Use a more specific selector
+  if (revisionBadge) {
+    revisionBadge.textContent = `REV ${file.revision}`;
+  }
+
+  // --- Update Action Buttons ---
+  const actionsContainer = fileEl.querySelector(
+    ".flex.items-center.space-x-2.flex-wrap"
+  );
+  if (actionsContainer) {
+    // This is the simplest way to update buttons: just replace them all.
+    // It's a good middle-ground.
+    actionsContainer.innerHTML = getActionButtons(file);
+  }
+
+  // --- Update Modified Date ---
+  const modifiedSpan = Array.from(fileEl.querySelectorAll("span")).find(
+    (span) => span.textContent.includes("Modified:")
+  );
+  if (modifiedSpan) {
+    modifiedSpan.innerHTML = `<i class="fa-solid fa-clock text-gray-600 dark:text-gray-400"></i>
+                                  <span>Modified: ${formatDate(
+                                    file.modified_at
+                                  )}</span>`;
+  }
+
+  // --- Update Lock Info ---
+  const lockInfoDiv = Array.from(
+    fileEl.querySelectorAll("div.flex.items-center")
+  ).find((div) => div.textContent.includes("Locked by:"));
+  if (file.locked_by && !lockInfoDiv) {
+    // Add lock info if it's newly locked
+    const grid = fileEl.querySelector(".grid");
+    const newLockInfo = document.createElement("div");
+    // ... create and append new lock info element
+  } else if (!file.locked_by && lockInfoDiv) {
+    // Remove lock info if it's now unlocked
+    lockInfoDiv.remove();
+  } else if (file.locked_by && lockInfoDiv) {
+    // Update existing lock info
+    lockInfoDiv.innerHTML = `<i class="fa-solid fa-lock ..."></i> <span>Locked by: ${
+      file.locked_by
+    } at ${formatDate(file.locked_at)}</span>`;
+  }
+}
+
+// Helper function to find a file in the previous data state
+function findFileInPreviousState(filename) {
+  for (const groupName in previousGroupedFiles) {
+    const file = previousGroupedFiles[groupName].find(
+      (f) => f.filename === filename
+    );
+    if (file) return file;
+  }
+  return null;
+}
+
+// Helper function to check for changes
+function hasFileChanged(oldFile, newFile) {
+  if (!oldFile) return true; // It's new
+  // Compare key properties
+  return (
+    oldFile.status !== newFile.status ||
+    oldFile.revision !== newFile.revision ||
+    oldFile.locked_by !== newFile.locked_by ||
+    (oldFile.attachments?.length || 0) !== (newFile.attachments?.length || 0)
+  );
+}
 function getActionButtons(file) {
   const btnClass =
     "flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold";
@@ -1221,37 +1391,66 @@ async function loadConfig() {
     const response = await fetch("/config");
     currentConfig = await response.json();
     console.log("Loaded config:", currentConfig);
+
+    // ✅ Update the repo status immediately based on the new connection status
+    if (currentConfig && currentConfig.gitlab_connection_status) {
+      updateRepoStatus(currentConfig.gitlab_connection_status);
+    }
+
+    if (currentConfig && currentConfig.ssl_enabled === false) {
+      const sslBanner = document.getElementById("ssl-warning-banner");
+      if (sslBanner) {
+        sslBanner.classList.remove("hidden");
+      }
+    }
+
     updateConfigDisplay();
     setupAdminUI();
   } catch (error) {
     console.error("Error loading config:", error);
+    updateRepoStatus("error"); // Fallback to error on fetch failure
   }
 }
 
-function updateConnectionStatus(connected) {
-  const statusEl = document.getElementById("connectionStatus");
-  const textEl = document.getElementById("connectionText");
-  if (statusEl && textEl) {
-    statusEl.className = `w-3 h-3 rounded-full ${
-      connected
-        ? "bg-green-600 dark:bg-green-400"
-        : "bg-red-600 dark:bg-red-400 animate-pulse"
-    }`;
-    textEl.textContent = connected
+function updateConnectionStatus(isConnected) {
+  if (domCache.connectionStatus) {
+    domCache.connectionStatus.textContent = isConnected
       ? "Connected"
-      : reconnectAttempts > 0
-      ? `Reconnecting... (${reconnectAttempts}/${maxReconnectAttempts})`
       : "Disconnected";
+    domCache.connectionStatus.className = `status ${
+      isConnected ? "connected" : "disconnected"
+    }`;
   }
 }
 
 function updateRepoStatus(status) {
-  // Find the element by its ID
-  const el = document.getElementById("repoStatus");
+  if (domCache.repoStatus) {
+    let statusText = "";
+    let statusClass = "";
 
-  // IMPORTANT: Only update the text if the element was actually found
-  if (el) {
-    el.textContent = status;
+    switch (status.toLowerCase()) {
+      case "ok":
+        statusText = "Ready";
+        statusClass = "connected"; // Green
+        break;
+
+      // ✅ Add this new case for the orange warning
+      case "warning":
+        statusText = "Not Configured";
+        statusClass = "warning"; // Orange
+        break;
+
+      case "error":
+        statusText = "Error";
+        statusClass = "disconnected"; // Red
+        break;
+      default:
+        statusText = "Unknown";
+        statusClass = "disconnected";
+    }
+
+    domCache.repoStatus.textContent = statusText;
+    domCache.repoStatus.className = `status ${statusClass}`;
   }
 }
 
@@ -1793,7 +1992,7 @@ async function sendMessage(recipient, message) {
 }
 
 function populateAndShowMessagesModal(messages) {
-  const modal = document.getElementById("viewMessagesModal");
+  const modal = domCache.messagesModal; //document.getElementById("viewMessagesModal");
   const container = document.getElementById("messageListContainer");
   container.innerHTML = "";
   messages.forEach((msg) => {
@@ -1892,78 +2091,72 @@ function applyThemePreference() {
   }
 }
 
-// function showNotification(message, type = "info") {
-//   const notification = document.createElement("div");
-//   let bgColor;
-//   const isDarkMode = document.documentElement.classList.contains("dark");
-//   switch (type) {
-//     case "success":
-//       bgColor = isDarkMode
-//         ? "bg-gradient-to-r from-green-900 to-green-800"
-//         : "bg-gradient-to-r from-green-600 to-green-700";
-//       break;
-//     case "error":
-//       bgColor = isDarkMode
-//         ? "bg-gradient-to-r from-red-900 to-red-800"
-//         : "bg-gradient-to-r from-red-600 to-red-700";
-//       break;
-//     default:
-//       bgColor = isDarkMode
-//         ? "bg-gradient-to-r from-accent-hover to-accent"
-//         : "bg-gradient-to-r from-accent to-accent-hover";
-//       break;
-//   }
-//   notification.className = `fixed bottom-4 right-4 z-[1000] p-4 rounded-lg shadow-lg text-white transform transition-transform duration-300 translate-x-full ${bgColor} bg-opacity-90`;
-//   notification.textContent = message;
-//   document.body.appendChild(notification);
-//   setTimeout(() => notification.classList.remove("translate-x-full"), 100);
-//   setTimeout(() => {
-//     notification.classList.add("translate-x-full");
-//     setTimeout(() => notification.remove(), 300);
-//   }, 4000);
-// }
-
 function showNotification(message, type = "info") {
-  // Find the dedicated container for notifications
   const container = document.getElementById("notification-container");
   if (!container) {
-    // Fallback if the container isn't found for some reason
     console.error("Notification container not found!");
     return;
   }
 
+  if (currentNotification) {
+    currentNotification.remove();
+  }
+
   const notification = document.createElement("div");
-  let bgColor;
-  const isDarkMode = document.documentElement.classList.contains("dark");
+  notification.className = `p-4 rounded-lg shadow-lg transform transition-all duration-300 translate-x-full bg-opacity-95`;
 
   switch (type) {
     case "success":
-      bgColor = isDarkMode ? "bg-green-800" : "bg-green-600";
+      notification.classList.add(
+        "bg-green-600",
+        "text-white",
+        "dark:bg-green-800",
+        "dark:text-white"
+      );
       break;
     case "error":
-      bgColor = isDarkMode ? "bg-red-800" : "bg-red-600";
+      notification.classList.add(
+        "bg-red-600",
+        "text-white",
+        "dark:bg-red-800",
+        "dark:text-white"
+      );
       break;
+    // ✅ NEW: A dedicated case for the gold/amber notification
+    case "warning":
+      notification.classList.add(
+        "bg-amber-400",
+        "text-gray-900",
+        "dark:bg-amber-500",
+        "dark:text-gray-900"
+      );
+      break;
+    // ✅ RESTORED: "info" and the default case now use the original blue accent color
+    case "info":
     default:
-      bgColor = isDarkMode ? "bg-accent-hover" : "bg-accent";
+      notification.classList.add(
+        "bg-accent",
+        "text-white",
+        "dark:bg-accent-hover"
+      );
       break;
   }
 
-  // The notification itself no longer needs positioning classes, only appearance classes.
-  notification.className = `p-4 rounded-lg shadow-lg text-white transform transition-transform duration-300 translate-x-full ${bgColor} bg-opacity-95`;
   notification.textContent = message;
+  currentNotification = notification;
 
-  // Add the new notification to our fixed container
-  container.appendChild(notification);
-
-  // Animate it into view
-  setTimeout(() => notification.classList.remove("translate-x-full"), 100);
-
-  // Set a timer to remove it
-  setTimeout(() => {
+  const notificationTimer = setTimeout(() => {
     notification.classList.add("translate-x-full");
-    // Wait for the slide-out animation to finish before removing from the DOM
-    notification.addEventListener("transitionend", () => notification.remove());
+    notification.addEventListener("transitionend", () => {
+      notification.remove();
+      if (currentNotification === notification) {
+        currentNotification = null;
+      }
+    });
   }, 4000);
+
+  container.appendChild(notification);
+  setTimeout(() => notification.classList.remove("translate-x-full"), 50);
 }
 
 function formatBytes(bytes) {
@@ -1972,6 +2165,14 @@ function formatBytes(bytes) {
   const sizes = ["Bytes", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+}
+
+function debounce(func, delay) {
+  let timeout;
+  return function (...args) {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(this, args), delay);
+  };
 }
 
 function formatDate(dateString) {
@@ -2418,16 +2619,71 @@ function showConfirmModal(message, onConfirm, onCancel = () => {}) {
   }, 100);
 }
 
+// Modify WebSocket onclose to handle persistent connection failures
+function connectWebSocket() {
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${protocol}//${
+    window.location.host
+  }/ws?user=${encodeURIComponent(currentUser)}`;
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = function () {
+    console.log("WebSocket connected successfully");
+    updateConnectionStatus(true);
+    reconnectAttempts = 0;
+    ws.send(`SET_USER:${currentUser}`);
+    ws.send("REFRESH_FILES");
+  };
+
+  ws.onmessage = function (event) {
+    handleWebSocketMessage(event.data);
+  };
+
+  ws.onclose = function (event) {
+    updateConnectionStatus(false);
+    if (isManualDisconnect) {
+      isManualDisconnect = false;
+      return;
+    }
+    if (reconnectAttempts < maxReconnectAttempts) {
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+      reconnectTimeout = setTimeout(() => {
+        reconnectAttempts++;
+        connectWebSocket();
+      }, delay);
+    } else {
+      // If max reconnect attempts are reached, treat as offline
+      handleOfflineStatus();
+    }
+  };
+
+  ws.onerror = function (error) {
+    console.error("WebSocket error:", error);
+    updateConnectionStatus(false);
+  };
+}
+
 // -- DOM Content Loaded Event Handler --
 document.addEventListener("DOMContentLoaded", function () {
+  if (!navigator.onLine) {
+    handleOfflineStatus();
+  } else {
+    connectWebSocket();
+    loadFiles();
+  }
+  if (domCache.tooltipToggle) {
+    domCache.tooltipToggle.addEventListener("change", updateTooltipVisibility);
+  }
   applyThemePreference();
   loadConfig();
   loadFiles();
 
   // Initialize tooltip system
   initTooltipSystem();
-
-  setTimeout(() => connectWebSocket(), 1000);
 
   // Revision type radio button handlers
   document.querySelectorAll('input[name="rev_type"]').forEach((radio) => {
@@ -2483,11 +2739,12 @@ document.addEventListener("DOMContentLoaded", function () {
   }, 30000);
 
   // Search field logic with clear button
+
   const searchInput = document.getElementById("searchInput");
-  const clearSearchBtn = document.getElementById("clearSearchBtn");
+  const debouncedRender = debounce(renderFiles, 300); // Create a debounced version of renderFiles
 
   searchInput.addEventListener("input", () => {
-    renderFiles();
+    debouncedRender(); // Only runs after 300ms of inactivity
     if (searchInput.value.length > 0) {
       clearSearchBtn.classList.remove("hidden");
     } else {
@@ -2527,32 +2784,37 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
-  // Main click event listener for file actions
-  document.addEventListener("click", (e) => {
-    const fileListButton = e.target.closest("#fileList button, #fileList a");
-    if (fileListButton && fileListButton.dataset.filename) {
-      const filename = fileListButton.dataset.filename;
+  domCache.fileList.addEventListener("click", (e) => {
+    // We can simplify the selector since we know we're inside the file list
+    const actionButton = e.target.closest("button, a");
 
-      if (fileListButton.classList.contains("js-checkout-btn")) {
+    if (actionButton && actionButton.dataset.filename) {
+      const filename = actionButton.dataset.filename;
+
+      if (actionButton.classList.contains("js-checkout-btn")) {
         checkoutFile(filename);
-      } else if (fileListButton.classList.contains("js-checkin-btn")) {
+      } else if (actionButton.classList.contains("js-checkin-btn")) {
         showCheckinDialog(filename);
-      } else if (fileListButton.classList.contains("js-cancel-checkout-btn")) {
+      } else if (actionButton.classList.contains("js-cancel-checkout-btn")) {
         cancelCheckout(filename);
-      } else if (fileListButton.classList.contains("js-override-btn")) {
+      } else if (actionButton.classList.contains("js-override-btn")) {
         adminOverride(filename);
-      } else if (fileListButton.classList.contains("js-delete-btn")) {
+      } else if (actionButton.classList.contains("js-delete-btn")) {
         adminDeleteFile(filename);
-      } else if (fileListButton.classList.contains("js-history-btn")) {
+      } else if (actionButton.classList.contains("js-history-btn")) {
         viewFileHistory(filename);
-      } else if (fileListButton.classList.contains("js-view-master-btn")) {
-        const masterFile = fileListButton.dataset.masterFile;
+      } else if (actionButton.classList.contains("js-view-master-btn")) {
+        const masterFile = actionButton.dataset.masterFile;
         if (masterFile) {
           viewMasterFile(masterFile);
         }
       }
     }
+  });
 
+  // ✅ Listener 2: Handles clicks for elements OUTSIDE the file list (like modal buttons).
+  // This correctly remains on the 'document'.
+  document.addEventListener("click", (e) => {
     const revertButton = e.target.closest(".js-revert-btn");
     if (revertButton) {
       const { filename, commitHash } = revertButton.dataset;

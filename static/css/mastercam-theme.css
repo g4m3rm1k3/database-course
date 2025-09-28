@@ -1,0 +1,235 @@
+/* ===============================
+   Mastercam / Apple-inspired Theme
+   =============================== */
+
+/* -------------------------
+   Base Styles
+   ------------------------- */
+body,
+.app-container,
+.panel,
+.content {
+  font-family: "Segoe UI", Roboto, sans-serif;
+  line-height: 1.4;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+/* Thin borders and subtle gaps */
+.panel,
+.card,
+.modal {
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 8px;
+  margin: 4px;
+  box-shadow: none;
+}
+
+/* Smooth transitions for interactions */
+button,
+input,
+textarea,
+select,
+.modal {
+  transition: background 0.2s ease, color 0.2s ease, border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+/* -------------------------
+   Buttons
+   ------------------------- */
+button,
+.btn {
+  padding: 6px 12px;
+  border: 1px solid #555;
+  border-radius: 4px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+button:hover,
+.btn:hover {
+  border-color: #888;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+/* -------------------------
+   Inputs
+   ------------------------- */
+input,
+textarea,
+select {
+  border: 1px solid #555;
+  border-radius: 4px;
+  padding: 4px 6px;
+  background: none;
+  color: inherit;
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: #c0392b;
+  box-shadow: 0 0 3px rgba(192, 57, 43, 0.3);
+  outline: none;
+}
+
+/* -------------------------
+   Tables / Rows
+   ------------------------- */
+table,
+th,
+td {
+  border-collapse: collapse;
+  border: 1px solid #444;
+  padding: 4px 6px;
+}
+tr:nth-child(even) {
+  background-color: transparent;
+}
+tr:hover {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+.file-row.selected,
+.highlight {
+  background-color: #c0392b;
+  color: #fff;
+}
+
+/* -------------------------
+   Modals
+   ------------------------- */
+.modal,
+.dialog {
+  background-color: inherit;
+  color: inherit;
+  border: 1px solid #555;
+  border-radius: 6px;
+  padding: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+.modal.show,
+.dialog.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+.modal.hide,
+.dialog.hide {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* -------------------------
+   Links
+   ------------------------- */
+a {
+  color: #3498db;
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+  color: #5dade2;
+}
+
+/* -------------------------
+   Scrollbars
+   ------------------------- */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgba(100, 100, 100, 0.5);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 100, 100, 0.8);
+}
+
+/* -------------------------
+   Theme Variables
+   ------------------------- */
+:root {
+  --bg-dark: #1a1a1a;
+  --fg-dark: #eee;
+  --bg-light: #f5f5f5;
+  --fg-light: #222;
+}
+
+/* -------------------------
+   Dark Theme
+   ------------------------- */
+body.dark {
+  background-color: var(--bg-dark);
+  color: var(--fg-dark);
+}
+body.dark input,
+body.dark textarea,
+body.dark select {
+  border-color: #555;
+  color: var(--fg-dark);
+  background-color: #2a2a2a;
+}
+body.dark .modal,
+body.dark .dialog {
+  background-color: #222;
+  border-color: #444;
+}
+
+/* -------------------------
+   Light Theme
+   ------------------------- */
+body.light {
+  background-color: var(--bg-light);
+  color: var(--fg-light);
+}
+body.light input,
+body.light textarea,
+body.light select {
+  border-color: #ccc;
+  color: var(--fg-light);
+  background-color: #fff;
+}
+body.light .modal,
+body.light .dialog {
+  background-color: #fff;
+  border-color: #ddd;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+/* -------------------------
+   Headers
+   ------------------------- */
+.group-header,
+.subgroup-header,
+.modal-header {
+  font-family: "Segoe UI", Roboto, sans-serif;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #111; /* dark header text */
+  background-color: #f5f5f5; /* light theme */
+  border-bottom: 1px solid #ccc;
+  padding: 6px 8px;
+  margin: 0;
+  border-radius: 4px 4px 0 0;
+  transition: background 0.25s ease, color 0.25s ease;
+}
+
+body.dark .group-header,
+body.dark .subgroup-header,
+body.dark .modal-header {
+  color: #eee;
+  background-color: #222;
+  border-bottom: 1px solid #444;
+}
+
+/* Optional hover effect for headers */
+.group-header:hover,
+.subgroup-header:hover,
+.modal-header:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+/* Subtle inner gaps for content under headers */
+.group-header + .panel,
+.subgroup-header + .panel {
+  margin-top: 2px;
+}

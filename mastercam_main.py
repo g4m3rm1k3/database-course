@@ -199,7 +199,19 @@ class FileHistory(BaseModel):
     history: List[Dict[str, Any]
                   ] = Field(..., description="List of historical commits for this file")
 
+
+class ConfigurationError(HTTPException):
+    def __init__(self, detail: str):
+        super().__init__(status_code=503, detail=detail)
+
 # --- Core Application Classes & Functions ---
+
+
+def get_git_repo():
+    if not app_state.get('initialized'):
+        raise ConfigurationError(
+            "Application is not configured. Please set GitLab credentials.")
+    return app_state.get('git_repo')
 
 
 async def is_valid_file_type(file: UploadFile) -> bool:
@@ -962,8 +974,7 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
 
     # 1. Get all real .mcam files and map them by name for quick lookup
     mcam_files_raw = git_repo.list_files("*.mcam")
-    master_files_map = {file_data['name']
-        : file_data for file_data in mcam_files_raw}
+    master_files_map = {file_data['name']                        : file_data for file_data in mcam_files_raw}
 
     # This list will hold both real and virtual (linked) files
     all_files_to_process = list(master_files_map.values())
@@ -1133,11 +1144,33 @@ async def root(request: Request): return templates.TemplateResponse(
 
 
 @app.get("/config")
-async def get_config():
-    if config_manager := app_state.get('config_manager'):
-        return config_manager.get_config_summary()
-    raise HTTPException(
-        status_code=503, detail="Application not fully initialized.")
+async def get_config(request: Request):
+    config_manager = app_state.get('config_manager')
+    if not config_manager:
+        raise HTTPException(
+            status_code=503, detail="Application not fully initialized.")
+
+    summary = config_manager.get_config_summary()
+    ssl_is_enabled = request.url.scheme == "httpss"
+    summary['ssl_enabled'] = ssl_is_enabled
+
+    connection_status = "ok"  # Assume OK
+
+    if not summary.get('has_token'):
+        connection_status = "warning"  # No token, so it's a warning
+    else:
+        # If token exists, try to test the actual connection
+        try:
+            cfg = config_manager.config.gitlab
+            base_url_parsed = '/'.join(cfg['base_url'].split('/')[:3])
+            api = GitLabAPI(base_url_parsed, cfg['token'], cfg['project_id'])
+            if not api.test_connection():
+                connection_status = "error"  # Token is present but invalid/unreachable
+        except Exception:
+            connection_status = "error"
+
+    summary['gitlab_connection_status'] = connection_status
+    return summary
 
 
 @app.post("/config/gitlab")
@@ -1204,8 +1237,18 @@ async def manual_refresh():
 @app.get("/files", response_model=Dict[str, List[FileInfo]])
 async def get_files():
     try:
+        # Use our new helper to get the repo
+        get_git_repo()
+
+        # If the line above succeeds, we know the app is configured.
+        # Proceed with existing logic.
         grouped_data = _get_current_file_state()
         return {group: [FileInfo(**file_data) for file_data in files] for group, files in grouped_data.items()}
+
+    except ConfigurationError:
+        # If the app is not configured, gracefully return an empty dictionary.
+        # The UI will show the orange warning based on the /config status.
+        return {}
     except Exception as e:
         logger.error(f"Error in get_files endpoint: {e}", exc_info=True)
         raise HTTPException(

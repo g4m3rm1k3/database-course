@@ -10,6 +10,8 @@
 /build
 /dist
 ./app_data
+/mastercam_repo
+./mastercam_repo
 # In your main .gitignore file
 
 # --- Add these lines at the very bottom ---
