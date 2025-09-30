@@ -933,7 +933,8 @@ class GitRepository:
                     author_name = c.author.name if c.author else "Unknown"
                     author_email = c.author.email if c.author else ""
                     history.append({
-                        "date": datetime.fromtimestamp(c.committed_date, tz=timezone.utc).isoformat(), "message": c.message.strip(),
+                        "commit_hash": c.hexsha, "author_name": author_name, "author_email": author_email,
+                        "date": datetime.utcfromtimestamp(c.committed_date).isoformat() + "Z", "message": c.message.strip(),
                         "revision": revision
                     })
                 except Exception as e:
