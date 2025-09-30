@@ -5,6 +5,15 @@ This script handles all application logic, from server startup to Git operations
 with a focus on stability, modern practices, and user experience.
 """
 
+import psutil  # Add to imports at the top of mastercam_main.py
+from typing import Optional
+import os
+import stat
+import sys
+import subprocess
+from pathlib import Path
+from typing import Optional
+import logging
 import os
 import sys
 import asyncio
@@ -26,6 +35,8 @@ from contextlib import asynccontextmanager
 import socket
 import subprocess
 from datetime import datetime, timezone
+import shutil
+import psutil
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Form, UploadFile, File, Response
@@ -46,49 +57,34 @@ import sys
 import subprocess
 import logging
 
+
 logger = logging.getLogger(__name__)
-
-
-def get_bundled_git_lfs_path() -> Path | None:
-    """
-    Return path to bundled git-lfs.exe (stable alias).
-    Works in both dev mode and frozen (PyInstaller) mode.
-    """
-    if getattr(sys, 'frozen', False):  # running as exe
-        base_path = Path(getattr(sys, '_MEIPASS', Path(sys.executable).parent))
-        git_lfs_path = base_path / 'git-lfs.exe'
-    else:  # dev mode
-        script_dir = Path(__file__).parent
-        git_lfs_path = script_dir / 'libs' / 'git-lfs.exe'
-
-    return git_lfs_path if git_lfs_path.exists() else None
 
 
 def setup_git_lfs_path() -> bool:
     """
-    Ensure git-lfs is in PATH.
-    Prefer bundled version, fall back to system.
-    Logs the version used.
+    Ensure git-lfs is in PATH. Prefer bundled version.
     """
     bundled_lfs = get_bundled_git_lfs_path()
 
     if bundled_lfs:
         lfs_dir = str(bundled_lfs.parent)
-        current_path = os.environ.get('PATH', '')
-        if lfs_dir not in current_path:
-            os.environ['PATH'] = f"{lfs_dir}{os.pathsep}{current_path}"
-            logger.info(f"Added bundled Git LFS to PATH: {bundled_lfs}")
-        return log_lfs_version("bundled", bundled_lfs)
+        # Add the directory of the bundled LFS to the start of the PATH
+        if lfs_dir not in os.environ.get('PATH', ''):
+            os.environ['PATH'] = f"{lfs_dir}{os.pathsep}{os.environ['PATH']}"
+            logger.info(
+                f"Temporarily added bundled Git LFS directory to PATH: {lfs_dir}")
+        return log_lfs_version("bundled", str(bundled_lfs))
 
-    # fallback: system
+    # Fallback to checking for a system-wide installation
     return log_lfs_version("system", "git-lfs")
 
 
-def log_lfs_version(source: str, exe_path) -> bool:
+def log_lfs_version(source: str, exe_path: str) -> bool:
     """Run 'git-lfs version' and log which binary is in use."""
     try:
         result = subprocess.run(
-            [exe_path, "version"], capture_output=True, text=True, check=True
+            [exe_path, "version"], capture_output=True, text=True, check=True, timeout=5
         )
         logger.info(f"Using {source} Git LFS: {result.stdout.strip()}")
         return True
@@ -97,146 +93,204 @@ def log_lfs_version(source: str, exe_path) -> bool:
         return False
 
 
+def run_git_lfs_command(args, check=True):
+    """
+    Run a git-lfs command using either bundled or system LFS.
+    Returns subprocess.CompletedProcess.
+    """
+    lfs_path = get_bundled_git_lfs_path()
+    cmd = [str(lfs_path) if lfs_path else 'git-lfs'] + args
+    try:
+        result = subprocess.run(
+            cmd, check=check, capture_output=True, text=True)
+        return result
+    except FileNotFoundError:
+        logger.error("Git LFS executable not found.")
+        raise
+
+
+logger = logging.getLogger(__name__)
+
+
+def get_bundled_git_lfs_path() -> Optional[Path]:
+    """
+    Return the Path to a bundled git-lfs executable if it exists.
+    Looks in a 'libs' sub-folder relative to the script or frozen .exe.
+    """
+    try:
+        if getattr(sys, "frozen", False):
+            # Path when running as a packaged executable
+            base_path = Path(sys._MEIPASS)
+        else:
+            # Path when running as a .py script
+            base_path = Path(__file__).parent
+
+        git_lfs_exe = base_path / "libs" / "git-lfs.exe"
+        if git_lfs_exe.is_file():
+            return git_lfs_exe
+    except Exception as e:
+        logger.error(f"Error finding bundled git-lfs: {e}")
+    return None
+
+
+def ensure_git_lfs_available() -> bool:
+    """
+    Ensures Git LFS is available by checking the system PATH first,
+    then adding a bundled version to the PATH if necessary.
+    Returns True if LFS is found and verified.
+    """
+    # 1. Try system-wide `git lfs` first.
+    try:
+        result = subprocess.run(
+            ["git", "lfs", "version"], capture_output=True, check=True, text=True)
+        logger.info(f"Using system Git LFS: {result.stdout.strip()}")
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        logger.info("System 'git lfs' not found. Checking for bundled version.")
+
+    # 2. If system fails, try to use the bundled one.
+    bundled_path = get_bundled_git_lfs_path()
+    if bundled_path:
+        lfs_dir = str(bundled_path.parent)
+        # Prepend to PATH to give it priority
+        os.environ["PATH"] = f"{lfs_dir}{os.pathsep}{os.environ.get('PATH', '')}"
+        logger.info(f"Added bundled Git LFS directory to PATH: {lfs_dir}")
+
+        # 3. Verify that it now works after modifying the PATH
+        try:
+            result = subprocess.run(
+                ["git", "lfs", "version"], capture_output=True, check=True, text=True)
+            logger.info(f"Bundled Git LFS verified: {result.stdout.strip()}")
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            logger.error(
+                "FATAL: Bundled Git LFS was found but failed to execute. Check executable permissions.")
+            return False
+
+    logger.error(
+        "FATAL: No Git LFS found on the system or bundled with the application.")
+    return False
+
+
+def prepend_git_lfs_to_hooks(repo_path: Path):
+    """
+    Modify all Git hooks in repo to ensure they use the bundled LFS if needed.
+    This avoids 'git-lfs not found in PATH' errors in hooks.
+    """
+    hooks_dir = repo_path / ".git" / "hooks"
+    bundled = get_bundled_git_lfs_path()
+    if not bundled:
+        return
+
+    for hook_file in hooks_dir.glob("*"):
+        if hook_file.is_file() and not hook_file.name.endswith(".sample"):
+            with open(hook_file, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            # Prepend PATH modification if not already present
+            path_line = f'SET PATH={bundled.parent};%PATH%' if sys.platform == "win32" else f'export PATH="{bundled.parent}:$PATH"'
+            if path_line not in content:
+                new_content = f"{path_line}\n{content}"
+                hook_file.write_text(new_content, encoding="utf-8")
+                logger.info(
+                    f"Prepended Git LFS path to hook: {hook_file.name}")
+
+
 class FileLockManager:
     """A simple file-based lock for distributed processes with force-break capability."""
 
     def __init__(self, lock_file_path: Path):
         self.lock_file_path = lock_file_path
         self.lock_file = None
-        # Don't create parent directories here - do it on demand
 
     def force_break_lock(self):
         """Force remove a lock file with retries to handle Windows file access issues."""
-        max_retries = 3
-        retry_delay = 1  # seconds
-        for attempt in range(max_retries):
+        for attempt in range(3):
             try:
                 if self.lock_file_path.exists():
-                    # Ensure any open file handle is closed
                     if self.lock_file:
                         try:
                             self.lock_file.close()
                         except Exception:
                             pass
                         self.lock_file = None
+
                     self.lock_file_path.unlink()
                     logger.info(
                         f"Force-broke lock file at {self.lock_file_path}")
                     return True
-                return True  # Lock file already gone
+                return True
             except PermissionError as e:
-                if attempt < max_retries - 1:
-                    logger.warning(
-                        f"Retry {attempt + 1}/{max_retries} to break lock: {e}")
-                    time.sleep(retry_delay)
+                if attempt < 2:
+                    time.sleep(0.5)  # Reduced from 1 second
                     continue
                 logger.error(
-                    f"Failed to force-break lock after {max_retries} attempts: {e}")
+                    f"Failed to force-break lock after 3 attempts: {e}")
                 return False
             except Exception as e:
                 logger.error(f"Unexpected error breaking lock: {e}")
                 return False
 
     def __enter__(self):
-        # Create parent directory only when acquiring lock
-        try:
-            self.lock_file_path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            logger.warning(f"Could not create lock directory: {e}")
-            # Continue anyway - we'll try to work without locking
-            return self
+        # Only create lock directory if needed
+        if not self.lock_file_path.parent.exists():
+            try:
+                self.lock_file_path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                return self
 
-        # Acquire the lock
-        timeout = 30  # Wait a maximum of 30 seconds
+        # Acquire the lock with shorter timeout
+        timeout = 10  # Reduced from 30 seconds
         start_time = time.time()
         while True:
             try:
-                # 'x' mode means create exclusively - fails if file exists
                 self.lock_file = open(self.lock_file_path, 'x')
                 self.lock_file.write(
                     f"Locked by process {os.getpid()} at {datetime.now()}")
-                logger.info("Acquired repository lock.")
+                self.lock_file.flush()
                 return self
             except FileExistsError:
-                # Check if the lock is stale
                 if self._is_stale_lock():
-                    logger.warning("Detected stale lock, breaking it...")
                     self.force_break_lock()
                     continue
 
                 if time.time() - start_time > timeout:
                     raise TimeoutError(
                         "Could not acquire repository lock in time.")
-                time.sleep(0.2)  # Wait a bit before retrying
+                time.sleep(0.1)  # Reduced from 0.2
             except FileNotFoundError:
-                # Lock directory doesn't exist yet (e.g., during initial clone)
-                logger.info(
-                    "Lock directory doesn't exist - proceeding without lock")
                 return self
 
     def _is_stale_lock(self) -> bool:
-        """Check if a lock file is stale (older than 5 minutes)"""
+        """Check if a lock file is stale (older than 2 minutes)"""
         try:
             if not self.lock_file_path.exists():
                 return False
 
-            # Check file age
+            # Reduced stale time from 5 minutes to 2 minutes
             file_age = time.time() - self.lock_file_path.stat().st_mtime
-            if file_age > 300:  # 5 minutes
+            if file_age > 120:  # 2 minutes
                 return True
 
-            # Try to read PID and check if process exists
-            try:
-                content = self.lock_file_path.read_text()
-                if "process" in content:
-                    import re
-                    match = re.search(r'process (\d+)', content)
-                    if match:
-                        pid = int(match.group(1))
-                        # Check if process is still running
-                        if not self._is_process_running(pid):
-                            return True
-            except:
-                pass
-
             return False
-        except Exception as e:
-            logger.error(f"Error checking stale lock: {e}")
-            return False
-
-    def _is_process_running(self, pid: int) -> bool:
-        """Check if a process with given PID is running"""
-        try:
-            if os.name == 'nt':  # Windows
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                PROCESS_QUERY_INFORMATION = 0x0400
-                handle = kernel32.OpenProcess(
-                    PROCESS_QUERY_INFORMATION, 0, pid)
-                if handle:
-                    kernel32.CloseHandle(handle)
-                    return True
-                return False
-            else:  # Unix/Linux
-                os.kill(pid, 0)
-                return True
-        except (OSError, AttributeError):
+        except Exception:
             return False
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        # Release the lock
         if self.lock_file:
             try:
                 self.lock_file.close()
-            except:
+            except Exception:
                 pass
+            finally:
+                self.lock_file = None
 
+        # Quick removal without retries - just log if it fails
         try:
             if self.lock_file_path.exists():
-                os.remove(self.lock_file_path)
-                logger.info("Released repository lock.")
+                self.lock_file_path.unlink()
         except OSError as e:
-            logger.error(f"Failed to remove lock file: {e}")
+            logger.warning(f"Failed to remove lock file: {e}")
 
 
 # --- Basic Setup ---
@@ -434,6 +488,10 @@ class ConfigSummary(BaseModel):
     repo_path: Optional[str] = Field(None, description="Local repository path")
     is_admin: bool = Field(...,
                            description="Whether the current user has admin privileges")
+
+
+class AdminRequest(BaseModel):
+    admin_user: str
 
 
 class UserList(BaseModel):
@@ -672,200 +730,419 @@ class GitRepository:
         self.lock_manager = FileLockManager(repo_path / ".git" / "repo.lock")
         self.remote_url_with_token = f"https://oauth2:{token}@{remote_url.split('://')[-1]}"
 
+        # Get the bundled LFS path
+        bundled_lfs = get_bundled_git_lfs_path()
+
+        # Start with a copy of the current environment
+        self.git_env = os.environ.copy()
+
+        # If we have a bundled LFS, prioritize it
+        if bundled_lfs:
+            lfs_dir = str(bundled_lfs.parent)
+            # Prepend to PATH to give it highest priority
+            self.git_env["PATH"] = f"{lfs_dir}{os.pathsep}{self.git_env.get('PATH', '')}"
+            # Also set GIT_LFS_PATH explicitly
+            self.git_env["GIT_LFS_PATH"] = str(bundled_lfs)
+            logger.info(f"Using bundled Git LFS at {bundled_lfs}")
+        else:
+            logger.warning(
+                "No bundled Git LFS found, relying on system installation")
+
+        # SSL configuration
         config_manager = app_state.get('config_manager')
-        allow_insecure = config_manager.config.security.get(
-            "allow_insecure_ssl", False)
-        self.git_env = {"GIT_SSL_NO_VERIFY": "true"} if allow_insecure else {}
+        if config_manager:
+            allow_insecure = config_manager.config.security.get(
+                "allow_insecure_ssl", False)
+            if allow_insecure:
+                self.git_env["GIT_SSL_NO_VERIFY"] = "true"
 
         self.repo = self._init_repo()
-        self._configure_lfs()
+        if self.repo:
+            self._configure_lfs()
 
     def _init_repo(self):
         max_retries = 3
         retry_delay = 1
+
         for attempt in range(max_retries):
             try:
-                with self.lock_manager:
-                    if not self.repo_path.exists():
-                        logger.info(f"Cloning repository to {self.repo_path}")
-                        return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
+                # Check if directory exists and has a .git folder BEFORE acquiring lock
+                git_dir = self.repo_path / ".git"
+                needs_clone = not self.repo_path.exists() or not git_dir.exists()
 
-                    repo = git.Repo(self.repo_path)
-                    if not repo.remotes:
-                        raise git.exc.InvalidGitRepositoryError
-                    return repo
-            except (git.exc.InvalidGitRepositoryError, git.exc.NoSuchPathError):
-                logger.warning(
-                    f"Invalid repo at {self.repo_path}, re-cloning (attempt {attempt + 1}/{max_retries}).")
-                with self.lock_manager:
-                    # Force break any stale lock before re-cloning
-                    self.lock_manager.force_break_lock()
-                    if self.repo_path.exists():
+                if needs_clone:
+                    # DON'T acquire lock before clone - let Git create the directory fresh
+                    logger.info(
+                        f"Cloning repository from {self.remote_url_with_token.split('@')[0]}@***")
+                    logger.info(f"Clone destination: {self.repo_path}")
+                    logger.info(
+                        f"Using environment: GIT_LFS_PATH={self.git_env.get('GIT_LFS_PATH', 'not set')}")
+
+                    try:
+                        repo = git.Repo.clone_from(
+                            self.remote_url_with_token,
+                            self.repo_path,
+                            env=self.git_env
+                        )
+                        logger.info(
+                            f"Successfully cloned repository to {self.repo_path}")
+                        return repo
+                    except git.exc.GitCommandError as clone_error:
+                        logger.error(
+                            f"Git clone command failed: {clone_error.stderr if hasattr(clone_error, 'stderr') else str(clone_error)}")
+                        raise
+                    except Exception as clone_error:
+                        logger.error(
+                            f"Clone failed with unexpected error: {clone_error}", exc_info=True)
+                        raise
+                else:
+                    # Only use lock when opening existing repo
+                    with self.lock_manager:
+                        # Try to open existing repo
+                        logger.info(
+                            f"Opening existing repository at {self.repo_path}")
+                        repo = git.Repo(self.repo_path)
+
+                        # Verify it's valid
+                        if not repo.remotes:
+                            raise git.exc.InvalidGitRepositoryError(
+                                "No remotes configured")
+                        if repo.bare:
+                            raise git.exc.InvalidGitRepositoryError(
+                                "Repository is bare")
+
+                        # Test that we can actually access the repo
                         try:
-                            import shutil
-                            shutil.rmtree(self.repo_path)
-                        except Exception as e:
-                            if attempt < max_retries - 1:
-                                logger.warning(
-                                    f"Retry {attempt + 1}/{max_retries}: {e}")
-                                time.sleep(retry_delay)
-                                continue
-                            raise Exception(
-                                f"Failed to delete repository after {max_retries} attempts: {e}")
-                    return git.Repo.clone_from(self.remote_url_with_token, self.repo_path, env=self.git_env)
-            except Exception as e:
-                logger.error(f"Failed to initialize repository: {e}")
+                            _ = repo.head.commit
+                        except Exception as head_error:
+                            raise git.exc.InvalidGitRepositoryError(
+                                f"Cannot access HEAD: {head_error}")
+
+                        logger.info(
+                            f"Successfully opened existing repository at {self.repo_path}")
+                        return repo
+
+            except (git.exc.InvalidGitRepositoryError, git.exc.NoSuchPathError) as e:
+                logger.warning(
+                    f"Repository at {self.repo_path} is invalid or corrupt (attempt {attempt + 1}/{max_retries}). Error: {e}")
+
                 if attempt < max_retries - 1:
-                    logger.warning(
-                        f"Retrying initialization ({attempt + 1}/{max_retries})")
+                    self._cleanup_corrupted_repo()
+                    self._wait_for_directory_removal()
                     time.sleep(retry_delay)
+
+            except git.exc.GitCommandError as e:
+                logger.error(
+                    f"Git command error (attempt {attempt + 1}/{max_retries}): {e}")
+                logger.error(
+                    f"Git stderr: {e.stderr if hasattr(e, 'stderr') else 'N/A'}")
+                logger.error(
+                    f"Git stdout: {e.stdout if hasattr(e, 'stdout') else 'N/A'}")
+
+                if attempt < max_retries - 1:
+                    self._cleanup_corrupted_repo()
+                    self._wait_for_directory_removal()
+                    time.sleep(retry_delay)
+
+            except Exception as e:
+                logger.error(
+                    f"Unexpected error initializing repository (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+
+                if attempt < max_retries - 1:
+                    self._cleanup_corrupted_repo()
+                    self._wait_for_directory_removal()
+                    time.sleep(retry_delay)
+
+        logger.error("Failed to initialize repository after all retries")
+        return None
+
+    def _cleanup_corrupted_repo(self):
+        """Aggressively clean up a corrupted repository, handling all lock files and processes."""
+        try:
+            logger.info(
+                f"Starting cleanup of corrupted repository at {self.repo_path}")
+
+            # Step 1: Kill any Git processes that might be holding locks
+            self._kill_git_processes()
+
+            # Step 2: Remove all Git lock files directly
+            self._remove_git_locks()
+
+            # Step 3: Wait for Windows to release file handles
+            time.sleep(0.5)
+
+            # Step 4: Remove the repository directory with aggressive retry
+            if self.repo_path.exists():
+                success = self._force_remove_directory(self.repo_path)
+                if success:
+                    logger.info(
+                        f"Successfully removed corrupted repository at {self.repo_path}")
+                else:
+                    logger.error(
+                        f"Failed to completely remove corrupted repository")
+
+        except Exception as e:
+            logger.error(
+                f"Failed to clean up corrupted repository: {e}", exc_info=True)
+
+    def _kill_git_processes(self):
+        """Terminate any Git processes that might be holding locks in this repository."""
+        try:
+            repo_path_str = str(self.repo_path).lower()
+            killed_count = 0
+
+            for proc in psutil.process_iter(['name', 'exe', 'cwd']):
+                try:
+                    proc_info = proc.info
+                    proc_name = proc_info.get('name', '').lower()
+
+                    # Check if it's a Git process
+                    if proc_name in ['git.exe', 'git-lfs.exe', 'git']:
+                        # Check if it's working in our repository
+                        try:
+                            cwd = proc.cwd().lower() if proc.cwd() else ''
+                            if repo_path_str in cwd:
+                                logger.info(
+                                    f"Terminating Git process {proc.pid} ({proc_name})")
+                                proc.kill()  # Use kill() for immediate effect
+                                try:
+                                    proc.wait(timeout=2)
+                                except psutil.TimeoutExpired:
+                                    pass
+                                killed_count += 1
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
-                return None
+
+            if killed_count > 0:
+                logger.info(f"Killed {killed_count} Git process(es)")
+                time.sleep(0.5)  # Extra wait after killing processes
+
+        except Exception as e:
+            logger.warning(f"Could not kill Git processes: {e}")
+
+    def _remove_git_locks(self):
+        """Remove all Git lock files from the repository."""
+        if not self.repo_path.exists():
+            return
+
+        git_dir = self.repo_path / ".git"
+        if not git_dir.exists():
+            return
+
+        # Find all .lock files in .git directory
+        removed_count = 0
+        try:
+            for lock_file in git_dir.rglob("*.lock"):
+                try:
+                    lock_file.unlink()
+                    logger.info(
+                        f"Removed Git lock file: {lock_file.relative_to(self.repo_path)}")
+                    removed_count += 1
+                except Exception as e:
+                    logger.warning(f"Could not remove {lock_file.name}: {e}")
+
+            if removed_count > 0:
+                logger.info(f"Removed {removed_count} lock file(s)")
+        except Exception as e:
+            logger.warning(f"Error scanning for lock files: {e}")
+
+    def _force_remove_directory(self, directory: Path) -> bool:
+        """Forcefully remove a directory, handling readonly files and retrying on Windows."""
+        if not directory.exists():
+            return True
+
+        def handle_remove_readonly(func, path, exc_info):
+            """Error handler for readonly files."""
+            try:
+                os.chmod(path, stat.S_IWRITE)
+                time.sleep(0.05)
+                func(path)
+            except Exception as e:
+                logger.warning(f"Could not remove {path}: {e}")
+
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            try:
+                shutil.rmtree(directory, onerror=handle_remove_readonly)
+
+                # CRITICAL: Actually verify it's gone
+                for check in range(10):  # Check 10 times over 1 second
+                    if not directory.exists():
+                        logger.info(
+                            f"Directory verified removed after {check * 0.1:.1f}s")
+                        return True
+                    time.sleep(0.1)
+
+                # If we get here, directory still exists
+                logger.warning(
+                    f"Directory still exists after rmtree attempt {attempt + 1}")
+                time.sleep(0.5)
+
+            except PermissionError as e:
+                if attempt < max_attempts - 1:
+                    logger.warning(
+                        f"Retry {attempt + 1}/{max_attempts} to remove directory: {e}")
+                    time.sleep(1)
+                else:
+                    logger.error(
+                        f"Failed to remove directory after {max_attempts} attempts: {e}")
+                    return False
+            except Exception as e:
+                logger.error(f"Unexpected error removing directory: {e}")
+                if attempt < max_attempts - 1:
+                    time.sleep(1)
+
+        # Final check with Windows command as last resort
+        if directory.exists() and os.name == 'nt':
+            logger.info("Attempting removal with Windows rmdir command")
+            try:
+                result = subprocess.run(
+                    ['cmd', '/c', 'rmdir', '/s', '/q', str(directory)],
+                    capture_output=True,
+                    timeout=10
+                )
+                time.sleep(1)  # Wait for Windows to finish
+
+                if not directory.exists():
+                    logger.info("Successfully removed with Windows rmdir")
+                    return True
+            except Exception as e:
+                logger.error(f"Windows rmdir failed: {e}")
+
+        final_result = not directory.exists()
+        if not final_result:
+            logger.error(f"FAILED: Directory still exists at {directory}")
+        return final_result
+
+    def _wait_for_directory_removal(self):
+        """Wait and verify that the repository directory is actually gone."""
+        max_wait = 5  # seconds
+        check_interval = 0.2
+        elapsed = 0
+
+        while self.repo_path.exists() and elapsed < max_wait:
+            logger.info(f"Waiting for directory removal... ({elapsed:.1f}s)")
+            time.sleep(check_interval)
+            elapsed += check_interval
+
+        if not self.repo_path.exists():
+            logger.info("Directory successfully removed and verified")
+        else:
+            logger.error(
+                f"Directory still exists after {max_wait}s wait - attempting final cleanup")
+            # One more aggressive attempt with Windows command
+            if os.name == 'nt':
+                try:
+                    subprocess.run(['cmd', '/c', 'rmdir', '/s', '/q', str(self.repo_path)],
+                                   check=False, capture_output=True, timeout=5)
+                    time.sleep(1)
+                    if not self.repo_path.exists():
+                        logger.info("Final cleanup with rmdir successful")
+                except Exception as e:
+                    logger.error(f"Final cleanup failed: {e}")
 
     def _configure_lfs(self):
-        """Configure Git LFS for the repository"""
+        """Configure Git LFS for the repository with smudge DISABLED for on-demand downloads"""
         if not self.repo:
             return
 
         try:
-            # Check if LFS is available
-            try:
-                result = subprocess.run(
-                    ['git', 'lfs', 'version'],
-                    capture_output=True,
-                    check=True,
-                    text=True,
-                    timeout=5
-                )
-                logger.info(f"Git LFS detected: {result.stdout.strip()}")
-            except Exception as e:
-                logger.error(f"Git LFS not available: {e}")
-                self._disable_lfs_hooks()
-                return
+            with self.repo.git.custom_environment(**self.git_env):
+                # Install LFS with --skip-smudge to NOT download files automatically
+                self.repo.git.lfs('install', '--local', '--skip-smudge')
+                logger.info(
+                    "LFS initialized with skip-smudge (on-demand download only)")
 
-            # Use a special environment that includes our PATH
-            lfs_env = self.git_env.copy()
-            # Skip downloading LFS files during setup
-            lfs_env['GIT_LFS_SKIP_SMUDGE'] = '1'
+                # Verify LFS is working
+                lfs_version = self.repo.git.lfs('version')
+                logger.info(f"Git LFS version in use: {lfs_version}")
 
-            with self.lock_manager:
-                with self.repo.git.custom_environment(**lfs_env):
-                    # Initialize LFS with skip-smudge to avoid downloading all LFS files
-                    try:
-                        self.repo.git.lfs(
-                            'install', '--local', '--skip-smudge')
-                        logger.info("LFS initialized in repository")
-                    except Exception as e:
-                        logger.error(f"Could not initialize LFS: {e}")
-                        return
+            # Disable the problematic post-commit hook
+            hook_path = self.repo_path / '.git' / 'hooks' / 'post-commit'
+            if hook_path.exists():
+                hook_path.unlink()
+                logger.info(
+                    "Removed post-commit hook to prevent Git LFS PATH issues.")
 
-                    # Track patterns
-                    lfs_patterns = ['*.mcam', '*.mcam-*',
-                                    '*.emcam', '*.emcam-*', '*.vnc']
-                    gitattributes_path = self.repo_path / '.gitattributes'
+            # Configure LFS patterns
+            lfs_patterns = ['*.mcam', '*.mcam-*',
+                            '*.emcam', '*.emcam-*', '*.vnc']
+            gitattributes_path = self.repo_path / '.gitattributes'
+            existing_lines = gitattributes_path.read_text(
+            ).splitlines() if gitattributes_path.exists() else []
+            existing_patterns = {
+                line.split()[0] for line in existing_lines if 'filter=lfs' in line}
+            new_patterns = [
+                f"{p} filter=lfs diff=lfs merge=lfs -text" for p in lfs_patterns if p not in existing_patterns]
 
-                    existing_lines = []
-                    if gitattributes_path.exists():
-                        existing_lines = gitattributes_path.read_text().splitlines()
+            if new_patterns:
+                with open(gitattributes_path, 'a') as f:
+                    if existing_lines:
+                        f.write('\n')
+                    f.write('\n'.join(new_patterns) + '\n')
 
-                    existing_patterns = {
-                        line.split()[0]
-                        for line in existing_lines
-                        if 'filter=lfs' in line
-                    }
+                with self.repo.git.custom_environment(**self.git_env):
+                    self.repo.index.add(['.gitattributes'])
+                    if self.repo.index.diff("HEAD"):
+                        self.repo.index.commit(
+                            "Configure Git LFS for Mastercam files", skip_hooks=True)
+                        self.repo.remotes.origin.push()
+                logger.info(
+                    f"Git LFS configured - tracking {len(new_patterns)} new patterns")
 
-                    new_patterns = []
-                    for pattern in lfs_patterns:
-                        if pattern not in existing_patterns:
-                            lfs_line = f"{pattern} filter=lfs diff=lfs merge=lfs -text"
-                            new_patterns.append(lfs_line)
-
-                    if new_patterns:
-                        with open(gitattributes_path, 'a') as f:
-                            if existing_lines:
-                                f.write('\n')
-                            f.write('\n'.join(new_patterns) + '\n')
-
-                        # Commit without triggering hooks initially
-                        self.repo.index.add(['.gitattributes'])
-                        if self.repo.index.diff("HEAD"):
-                            # Use skip_hooks to avoid the chicken-and-egg problem
-                            self.repo.index.commit(
-                                "Configure Git LFS for Mastercam files",
-                                skip_hooks=True
-                            )
-                            self.repo.remotes.origin.push()
-
-                        logger.info(
-                            f"Git LFS configured - tracking {len(new_patterns)} patterns")
+            # DON'T pull LFS files - only pointer files are downloaded
+            logger.info("LFS files will be downloaded on-demand only")
 
         except Exception as e:
             logger.error(f"Failed to configure Git LFS: {e}", exc_info=True)
 
-    def _disable_lfs_hooks(self):
-        """Remove LFS hooks that would fail without LFS installed"""
+    def download_lfs_file(self, file_path: str) -> bool:
+        """Download a specific LFS file on-demand"""
+        if not self.repo:
+            return False
+
         try:
-            hooks_dir = self.repo_path / '.git' / 'hooks'
-            if not hooks_dir.exists():
-                return
-
-            lfs_hooks = ['post-checkout',
-                         'post-commit', 'post-merge', 'pre-push']
-
-            for hook_name in lfs_hooks:
-                hook_path = hooks_dir / hook_name
-                if hook_path.exists():
-                    content = hook_path.read_text()
-                    if 'git-lfs' in content or 'git lfs' in content:
-                        # Rename instead of delete so we can restore later
-                        hook_path.rename(hook_path.with_suffix('.disabled'))
-                        logger.info(f"Disabled LFS hook: {hook_name}")
+            with self.repo.git.custom_environment(**self.git_env):
+                # Pull only the specific file
+                self.repo.git.lfs('pull', '--include', file_path)
+                logger.info(f"Downloaded LFS file: {file_path}")
+                return True
         except Exception as e:
-            logger.warning(f"Could not disable LFS hooks: {e}")
+            logger.error(f"Failed to download LFS file {file_path}: {e}")
+            return False
+
+    def is_lfs_pointer(self, file_path: str) -> bool:
+        """Check if a file is an LFS pointer (not downloaded yet)"""
+        full_path = self.repo_path / file_path
+        if not full_path.exists():
+            return False
+
+        try:
+            # LFS pointer files are small (< 200 bytes) and start with "version https://git-lfs"
+            if full_path.stat().st_size < 200:
+                content = full_path.read_text()
+                return content.startswith('version https://git-lfs')
+        except:
+            pass
+        return False
 
     def pull(self):
-        """Pull with LFS support"""
+        """Pull latest changes - called by polling task only"""
         try:
-            with self.lock_manager:
-                if self.repo:
-                    with self.repo.git.custom_environment(**self.git_env):
-                        # Fetch with LFS
-                        self.repo.remotes.origin.fetch()
-
-                        # Pull LFS files
-                        try:
-                            self.repo.git.lfs('pull')
-                        except Exception as lfs_error:
-                            logger.warning(
-                                f"LFS pull failed (may not be configured): {lfs_error}")
-
-                        self.repo.git.reset(
-                            '--hard', f'origin/{self.repo.active_branch.name}')
-                        logger.debug(
-                            "Successfully synced with remote via fetch and hard reset.")
+            if self.repo:
+                with self.repo.git.custom_environment(**self.git_env):
+                    # Use fetch + reset instead of pull for speed
+                    self.repo.remotes.origin.fetch()
+                    self.repo.git.reset(
+                        '--hard', f'origin/{self.repo.active_branch.name}')
+                    logger.debug("Successfully synced with remote.")
         except Exception as e:
-            logger.error(f"Git sync (fetch/reset) failed: {e}")
-
-    def list_files(self, pattern: str = "*.mcam") -> List[Dict]:
-        if not self.repo:
-            return []
-        files = []
-        for item in self.repo.tree().traverse():
-            if item.type == 'blob' and Path(item.path).match(pattern):
-                try:
-                    stat_result = os.stat(item.abspath)
-                    files.append({"name": item.name, "path": item.path, "size": stat_result.st_size,
-                                 "modified_at": datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc).isoformat()})
-                except OSError:
-                    continue
-        return files
-
-    def save_file(self, file_path: str, content: bytes):
-        (self.repo_path / file_path).parent.mkdir(parents=True, exist_ok=True)
-        (self.repo_path / file_path).write_bytes(content)
+            logger.error(f"Git sync (pull/reset) failed: {e}")
 
     def commit_and_push(self, file_paths: List[str], message: str, author_name: str, author_email: str) -> bool:
-        """Commit and push with LFS support"""
         with self.lock_manager:
             if not self.repo:
                 return False
@@ -881,28 +1158,19 @@ class GitRepository:
                     if to_remove:
                         self.repo.index.remove(to_remove)
 
-                    if not self.repo.index.diff("HEAD") and not any(self.repo.index.diff(None)) and not self.repo.untracked_files:
+                    if not self.repo.is_dirty(untracked_files=True):
                         logger.info("No changes to commit.")
                         return True
 
                     author = Actor(author_name, author_email)
-                    self.repo.index.commit(message, author=author)
-
-                    # Push with LFS
+                    self.repo.index.commit(
+                        message, author=author, skip_hooks=True)
                     self.repo.remotes.origin.push()
 
-                    # Ensure LFS files are pushed
-                    try:
-                        self.repo.git.lfs('push', 'origin',
-                                          self.repo.active_branch.name)
-                    except Exception as lfs_error:
-                        logger.warning(
-                            f"LFS push completed with warning: {lfs_error}")
-
-                logger.info("Changes pushed to GitLab with LFS support.")
+                logger.info("Changes pushed to GitLab.")
                 return True
             except Exception as e:
-                logger.error(f"Git commit/push failed: {e}")
+                logger.error(f"Git commit/push failed: {e}", exc_info=True)
                 try:
                     with self.repo.git.custom_environment(**self.git_env):
                         self.repo.git.reset(
@@ -912,39 +1180,27 @@ class GitRepository:
                         f"Failed to reset repo after push failure: {reset_e}")
                 return False
 
-    def get_file_history(self, file_path: str, limit: int = 10) -> List[Dict]:
+    def list_files(self, pattern: str = "*.mcam") -> List[Dict]:
         if not self.repo:
             return []
-        history = []
-        meta_path_str = f"{file_path}.meta.json"
-        try:
-            commits = self.repo.iter_commits(
-                paths=[file_path, meta_path_str], max_count=limit)
-            for c in commits:
-                revision = None
+        files = []
+        for item in self.repo.tree().traverse():
+            if item.type == 'blob' and Path(item.path).match(pattern):
                 try:
-                    meta_blob = c.tree / meta_path_str
-                    meta_content = json.loads(
-                        meta_blob.data_stream.read().decode('utf-8'))
-                    revision = meta_content.get("revision")
-                except Exception:
-                    pass
-                try:
-                    author_name = c.author.name if c.author else "Unknown"
-                    author_email = c.author.email if c.author else ""
-                    history.append({
-                        "commit_hash": c.hexsha, "author_name": author_name, "author_email": author_email,
-                        "date": datetime.utcfromtimestamp(c.committed_date).isoformat() + "Z", "message": c.message.strip(),
-                        "revision": revision
+                    stat_result = os.stat(item.abspath)
+                    files.append({
+                        "name": item.name,
+                        "path": item.path,
+                        "size": stat_result.st_size,
+                        "modified_at": datetime.fromtimestamp(stat_result.st_mtime, tz=timezone.utc).isoformat()
                     })
-                except Exception as e:
-                    logger.warning(
-                        f"Could not parse commit details for {c.hexsha}: {e}")
-            return history
-        except git.exc.GitCommandError as e:
-            logger.error(
-                f"Git command failed while getting history for {file_path}: {e}")
-            return []
+                except OSError:
+                    continue
+        return files
+
+    def save_file(self, file_path: str, content: bytes):
+        (self.repo_path / file_path).parent.mkdir(parents=True, exist_ok=True)
+        (self.repo_path / file_path).write_bytes(content)
 
     def get_all_users_from_history(self) -> List[str]:
         if not self.repo:
@@ -976,6 +1232,37 @@ class GitRepository:
                 f"Could not get file content at commit {commit_hash}: {e}")
             return None
 
+    def get_file_history(self, file_path: str, limit: int = 50) -> List[Dict]:
+        if not self.repo:
+            return []
+        history = []
+        meta_path_str = f"{file_path}.meta.json"
+        try:
+            commits = self.repo.iter_commits(
+                paths=[file_path, meta_path_str], max_count=limit)
+            for c in commits:
+                revision = None
+                try:
+                    meta_blob = c.tree / meta_path_str
+                    meta_content = json.loads(
+                        meta_blob.data_stream.read().decode('utf-8'))
+                    revision = meta_content.get("revision")
+                except Exception:
+                    pass
+
+                history.append({
+                    "commit_hash": c.hexsha,
+                    "author_name": c.author.name if c.author else "Unknown",
+                    "date": datetime.fromtimestamp(c.committed_date, tz=timezone.utc).isoformat(),
+                    "message": c.message.strip(),
+                    "revision": revision
+                })
+            return history
+        except git.exc.GitCommandError as e:
+            logger.error(
+                f"Git command failed while getting history for {file_path}: {e}")
+            return []
+
 
 class MetadataManager:
     def __init__(self, repo_path: Path):
@@ -986,12 +1273,16 @@ class MetadataManager:
         sanitized = file_path_str.replace(os.path.sep, '_').replace('.', '_')
         return self.locks_dir / f"{sanitized}.lock"
 
+    # In MetadataManager.create_lock
     def create_lock(self, file_path: str, user: str, force: bool = False) -> Optional[Path]:
         lock_file = self._get_lock_file_path(file_path)
         if lock_file.exists() and not force:
             return None
-        lock_data = {"file": file_path, "user": user,
-                     "timestamp": datetime.utcnow().isoformat() + "Z"}
+        lock_data = {
+            "file": file_path,
+            "user": user,
+            "timestamp": datetime.now(timezone.utc).isoformat()  # Updated line
+        }
         lock_file.write_text(json.dumps(lock_data, indent=2))
         return lock_file
 
@@ -1003,7 +1294,8 @@ class MetadataManager:
             data = json.loads(lock_file.read_text())
             if data.get('user') != user:
                 return None
-            data['timestamp'] = datetime.utcnow().isoformat() + "Z"
+            data['timestamp'] = datetime.now(
+                timezone.utc).isoformat()  # Updated line
             lock_file.write_text(json.dumps(data, indent=2))
             return lock_file
         except Exception as e:
@@ -1248,7 +1540,6 @@ async def initialize_application():
         gitlab_cfg = cfg.gitlab
 
         if all(gitlab_cfg.get(k) for k in ['base_url', 'token', 'project_id', 'username']):
-            # --- NEW: STARTUP VALIDATION BLOCK ---
             try:
                 logger.info("Validating stored credentials on startup...")
                 base_url_parsed = '/'.join(
@@ -1266,13 +1557,10 @@ async def initialize_application():
                 gitlab_user_data = response.json()
                 real_username = gitlab_user_data.get("username")
 
-                # Compare the username from the config with the one from the GitLab API
                 if real_username != gitlab_cfg['username']:
                     logger.warning(
                         f"SECURITY ALERT: Config username ('{gitlab_cfg['username']}') does not match token owner ('{real_username}'). Invalidating session.")
-                    # Invalidate the config in memory by clearing it
                     app_state['config_manager'].config.gitlab = {}
-                    # This will cause initialization to fail and fall into the except block below
                     raise ValueError(
                         "Username in config does not match token owner.")
 
@@ -1282,11 +1570,9 @@ async def initialize_application():
             except Exception as e:
                 logger.error(
                     f"Startup credential validation failed: {e}. Clearing credentials.")
-                # If validation fails for any reason, clear the bad config from memory
                 if 'config_manager' in app_state:
                     app_state['config_manager'].config.gitlab = {}
-                raise  # Re-raise to fall into the main except block
-            # --- END OF VALIDATION BLOCK ---
+                raise
 
             # If validation passes, proceed with normal initialization
             app_state['gitlab_api'] = GitLabAPI(
@@ -1296,6 +1582,8 @@ async def initialize_application():
                 logger.info("GitLab connection established.")
                 repo_path = Path(cfg.local.get(
                     'repo_path', Path.home() / 'MastercamGitRepo'))
+
+                logger.info(f"Initializing Git repository at {repo_path}")
                 app_state['git_repo'] = GitRepository(
                     repo_path, gitlab_cfg['base_url'], gitlab_cfg['token'])
 
@@ -1305,19 +1593,23 @@ async def initialize_application():
                     app_state['initialized'] = True
                     logger.info(
                         "Repository synchronized and application fully initialized.")
-                    # Start the polling task only after successful initialization
+
+                    # Start the polling task
                     if not any(isinstance(t, asyncio.Task) and t.get_name() == 'git_polling_task' for t in asyncio.all_tasks()):
                         task = asyncio.create_task(git_polling_task())
                         task.set_name('git_polling_task')
+                else:
+                    logger.error(
+                        "Failed to initialize Git repository. Repository object is None.")
+            else:
+                logger.error("GitLab connection test failed.")
 
     except Exception as e:
-        logger.error(
-            f"Initialization failed or was aborted due to invalid config: {e}")
+        logger.error(f"Initialization failed: {e}", exc_info=True)
 
     if not app_state.get('initialized'):
         logger.warning(
-            "Running in limited/unconfigured mode. Please check your settings.")
-        # Ensure a dummy metadata manager exists for basic UI functionality
+            "Running in limited/unconfigured mode. Please configure GitLab credentials in settings.")
         if 'metadata_manager' not in app_state:
             app_state['metadata_manager'] = MetadataManager(
                 Path(tempfile.gettempdir()) / 'mastercam_git_interface_temp')
@@ -1375,10 +1667,6 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
         'git_repo'), app_state.get('metadata_manager')
     if not git_repo or not metadata_manager:
         return {"Miscellaneous": []}
-    try:
-        git_repo.pull()
-    except Exception as e:
-        logger.warning(f"Failed to pull latest changes: {e}")
 
     # 1. Get all supported file types dynamically using ALLOWED_FILE_TYPES
     all_files_raw = []
@@ -1387,7 +1675,7 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
         all_files_raw.extend(git_repo.list_files(pattern))
 
     # Create map of all files (not just mcam files)
-    master_files_map = {file_data['name']                        : file_data for file_data in all_files_raw}
+    master_files_map = {file_data['name']: file_data for file_data in all_files_raw}
 
     # This list will hold both real and virtual (linked) files
     all_files_to_process = list(master_files_map.values())
@@ -1898,7 +2186,7 @@ async def new_upload(
                 "description": description.upper(),
                 "revision": rev,
                 "created_by": user,
-                "created_at": datetime.utcnow().isoformat() + "Z"
+                "created_at": datetime.now(timezone.utc).isoformat()
             }
             meta_full_path = git_repo.repo_path / meta_filename_str
             meta_full_path.write_text(json.dumps(meta_content, indent=2))
@@ -1971,7 +2259,7 @@ async def new_upload(
                 "description": description.upper(),
                 "revision": rev,
                 "uploaded_by": user,
-                "uploaded_at": datetime.utcnow().isoformat() + "Z"
+                "created_at": datetime.now(timezone.utc).isoformat()
             }
             meta_path = git_repo.repo_path / meta_filename
             meta_path.write_text(json.dumps(meta_content, indent=2))
@@ -2032,6 +2320,13 @@ async def checkout_file(filename: str, request: CheckoutRequest):
         file_path = find_file_path(filename)
         if not file_path:
             raise HTTPException(status_code=404, detail="File not found")
+
+        if git_repo.is_lfs_pointer(file_path):
+            logger.info(f"Downloading LFS file on-demand: {file_path}")
+            success = git_repo.download_lfs_file(file_path)
+            if not success:
+                raise HTTPException(
+                    status_code=500, detail="Failed to download file from LFS")
 
         # 🔑 Check existing lock
         existing_lock = metadata_manager.get_lock_info(file_path)
@@ -2234,32 +2529,61 @@ async def cancel_checkout(filename: str, request: CheckoutRequest):
         if not git_repo or not metadata_manager:
             raise HTTPException(
                 status_code=500, detail="Repository not initialized.")
+
         file_path = find_file_path(filename)
         if not file_path:
             raise HTTPException(status_code=404, detail="File not found")
+
         lock_info = metadata_manager.get_lock_info(file_path)
         if not lock_info or lock_info['user'] != request.user:
             raise HTTPException(
                 status_code=403, detail="You do not have this file checked out.")
+
         absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
         relative_lock_path_str = str(absolute_lock_path.relative_to(
             git_repo.repo_path)).replace(os.sep, '/')
+
         metadata_manager.release_lock(file_path)
+
+        # Clean up the downloaded LFS file - restore it to pointer
+        full_file_path = git_repo.repo_path / file_path
+        if full_file_path.exists() and not git_repo.is_lfs_pointer(file_path):
+            try:
+                with git_repo.repo.git.custom_environment(**git_repo.git_env):
+                    # Reset the file to its pointer state
+                    git_repo.repo.git.checkout('HEAD', '--', file_path)
+                logger.info(f"Cleaned up LFS file after cancel: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up LFS file {file_path}: {e}")
+
         commit_message = f"USER CANCEL: Unlock {filename} by {request.user}"
+
         success = git_repo.commit_and_push(
-            [relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com")
+            [relative_lock_path_str], commit_message, request.user, f"{request.user}@example.com"
+        )
+
         if success:
             await handle_successful_git_operation()
-            return JSONResponse({"status": "success"})
+            return JSONResponse({"status": "success", "message": "Checkout cancelled and file cleaned up."})
         else:
+            # Rollback: Restore the lock
             metadata_manager.create_lock(file_path, request.user, force=True)
             raise HTTPException(
-                status_code=500, detail="Failed to commit checkout cancel.")
+                status_code=500,
+                detail="Failed to commit checkout cancellation. Lock has been restored."
+            )
+
+    except HTTPException as he:
+        raise he
     except Exception as e:
         logger.error(
-            f"An unexpected error occurred in cancel_checkout: {e}", exc_info=True)
+            f"Unexpected error in cancel_checkout: {e}", exc_info=True)
+        try:
+            metadata_manager.create_lock(file_path, request.user, force=True)
+        except:
+            logger.error("Failed to restore lock after error")
         raise HTTPException(
-            status_code=500, detail=f"An internal error occurred: {e}")
+            status_code=500, detail=f"Failed to cancel checkout: {str(e)}")
 
 
 @app.delete(
@@ -2454,10 +2778,21 @@ async def download_file(filename: str):
     git_repo, file_path = app_state.get('git_repo'), find_file_path(filename)
     if not git_repo or not file_path:
         raise HTTPException(status_code=404)
+
+    # Download the actual LFS file if it's just a pointer
+    if git_repo.is_lfs_pointer(file_path):
+        logger.info(
+            f"Downloading LFS file on-demand for download: {file_path}")
+        success = git_repo.download_lfs_file(file_path)
+        if not success:
+            raise HTTPException(
+                status_code=500, detail="Failed to download file from LFS")
+
     content = git_repo.get_file_content(file_path)
     if content is None:
         raise HTTPException(status_code=404)
-    return Response(content, media_type='application/octet-stream', headers={'Content-Disposition': f'attachment; filename="{filename}"'})
+    return Response(content, media_type='application/octet-stream',
+                    headers={'Content-Disposition': f'attachment; filename="{filename}"'})
 
 
 @app.get(
@@ -2579,32 +2914,10 @@ async def download_file_version(filename: str, commit_hash: str):
     name="WebSocket Connection"
 )
 async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
-    """
-    **Real-time WebSocket connection for live updates.**
-
-    **Capabilities:**
-    - Real-time file list updates
-    - Instant lock status changes
-    - Message notifications
-    - System-wide activity broadcasts
-
-    **Message Types Sent:**
-    - `FILE_LIST_UPDATED`: Complete file list with current status
-    - `NEW_MESSAGES`: Messages for the connected user
-
-    **Message Types Received:**
-    - `SET_USER:username`: Changes the user context for this connection
-    - `REFRESH_FILES`: Requests immediate file list update
-
-    **Connection Management:**
-    - Automatic reconnection handling
-    - User context switching
-    - Graceful disconnection cleanup
-    """
-
     await manager.connect(websocket, user)
     logger.info(f"WebSocket connected for user: {user}")
 
+    # Send any pending messages immediately on connect
     if (git_repo := app_state.get('git_repo')):
         user_message_file = git_repo.repo_path / ".messages" / f"{user}.json"
         if user_message_file.exists():
@@ -2614,6 +2927,7 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
                     await websocket.send_text(json.dumps({"type": "NEW_MESSAGES", "payload": messages}))
             except Exception as e:
                 logger.error(f"Could not send messages to {user}: {e}")
+
     try:
         grouped_data = _get_current_file_state()
         await websocket.send_text(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
@@ -2626,15 +2940,19 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
                 manager.active_connections[websocket] = new_user
                 logger.info(f"User for WebSocket changed to: {new_user}")
 
-                # --- THIS IS THE FIX ---
-                # Added a check here to ensure git_repo exists before using it
+                # Check for messages for the new user
                 if (git_repo := app_state.get('git_repo')):
                     user_message_file = git_repo.repo_path / \
                         ".messages" / f"{new_user}.json"
                     if user_message_file.exists():
-                        messages = json.loads(user_message_file.read_text())
-                        if messages:
-                            await websocket.send_text(json.dumps({"type": "NEW_MESSAGES", "payload": messages}))
+                        try:
+                            messages = json.loads(
+                                user_message_file.read_text())
+                            if messages:
+                                await websocket.send_text(json.dumps({"type": "NEW_MESSAGES", "payload": messages}))
+                        except Exception as e:
+                            logger.error(
+                                f"Could not send messages to {new_user}: {e}")
 
                 grouped_data = _get_current_file_state()
                 await websocket.send_text(json.dumps({"type": "FILE_LIST_UPDATED", "payload": grouped_data}))
@@ -2780,6 +3098,28 @@ async def get_activity_feed(limit: int = 50, offset: int = 0):
         logger.error(f"Failed to generate activity feed: {e}")
         raise HTTPException(
             status_code=500, detail="Could not generate activity feed.")
+
+
+@app.get("/messages/check")
+async def check_messages(user: str):
+    """Check for pending messages for a user"""
+    try:
+        git_repo = app_state.get('git_repo')
+        if not git_repo:
+            return JSONResponse({"messages": []})
+
+        user_message_file = git_repo.repo_path / ".messages" / f"{user}.json"
+        if user_message_file.exists():
+            try:
+                messages = json.loads(user_message_file.read_text())
+                return JSONResponse({"messages": messages})
+            except json.JSONDecodeError:
+                logger.warning(f"Corrupted message file for {user}")
+                return JSONResponse({"messages": []})
+        return JSONResponse({"messages": []})
+    except Exception as e:
+        logger.error(f"Error checking messages: {e}", exc_info=True)
+        return JSONResponse({"messages": []})
 
 
 @app.get("/debug/file_types")
@@ -2967,100 +3307,77 @@ async def revert_commit(filename: str, request: AdminRevertRequest):
 
 
 @app.post("/admin/reset_repository")
-async def reset_repository(request: Request):
-    """Admin endpoint to reset local repository."""
+@app.post("/admin/reset_repository")
+async def reset_repository(request: AdminRequest):
+    if request.admin_user != "g4m3rm1k3":
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    repo_path = Path("C:/Users/g4m3r/MastercamGitRepo")
+    git_repo = app_state.get('git_repo')
+    if not git_repo:
+        raise HTTPException(
+            status_code=500, detail="Repository not initialized")
+
+    logger.info(
+        f"Admin {request.admin_user} resetting repository at {repo_path}")
     try:
-        body = await request.json()
-        admin_user = body.get('admin_user')
+        # Cancel any ongoing Git polling tasks
+        if 'git_poll_task' in app_state:
+            app_state['git_poll_task'].cancel()
+            logger.info("Cancelled git polling task")
 
-        if admin_user not in ADMIN_USERS:
-            raise HTTPException(
-                status_code=403, detail="Admin access required")
-
-        git_repo = app_state.get('git_repo')
-        config_manager = app_state.get('config_manager')
-
-        if not git_repo or not config_manager:
-            raise HTTPException(
-                status_code=500, detail="Repository not initialized")
-
-        repo_path = git_repo.repo_path
-        logger.info(f"Admin {admin_user} resetting repository at {repo_path}")
-
-        # Step 1: Cancel any running git polling tasks to prevent interference
-        for task in asyncio.all_tasks():
-            if task.get_name() == 'git_polling_task':
-                task.cancel()
+        # Terminate any Git processes holding file handles
+        for proc in psutil.process_iter(['name']):
+            if proc.info['name'] in ['git.exe', 'git-lfs.exe']:
                 try:
-                    await task  # Wait for cancellation to complete
-                except asyncio.CancelledError:
+                    proc.terminate()
+                    proc.wait(timeout=3)
+                    logger.info(f"Terminated process {proc.info['name']}")
+                except psutil.NoSuchProcess:
                     pass
-                logger.info("Cancelled git polling task")
+                except psutil.TimeoutExpired:
+                    logger.warning(
+                        f"Process {proc.info['name']} did not terminate in time")
 
-        # Step 2: Force break any existing locks
-        if git_repo.lock_manager:
-            if not git_repo.lock_manager.force_break_lock():
-                raise HTTPException(
-                    status_code=500, detail="Failed to break repository lock")
-
-        # Step 3: Close all repo connections
-        if git_repo.repo:
+        # Delete the repository directory
+        def handle_remove_readonly(func, path, exc_info):
             try:
-                git_repo.repo.close()
-                git_repo.repo.__del__()  # Force cleanup
-            except Exception as e:
-                logger.warning(f"Error closing repo: {e}")
+                os.chmod(path, stat.S_IWRITE)
+                func(path)
+            except Exception as chmod_error:
+                logger.error(f"Failed to handle readonly: {chmod_error}")
 
-        # Step 4: Clear from app state
-        app_state['git_repo'] = None
-        app_state['initialized'] = False
-
-        # Step 5: Wait longer for file handles to release (increased from 0.5s)
-        await asyncio.sleep(2.0)
-
-        # Step 6: Force delete with retry logic
-        max_retries = 3
-        for attempt in range(max_retries):
+        last_error = None
+        for attempt in range(3):
             try:
                 if repo_path.exists():
-                    def handle_remove_readonly(func, path, exc):
-                        """Error handler for Windows readonly files"""
-                        import stat
-                        if not os.access(path, os.W_OK):
-                            os.chmod(path, stat.S_IWUSR)
-                            func(path)
-                        else:
-                            raise
-
                     shutil.rmtree(repo_path, onerror=handle_remove_readonly)
-                    logger.info(
-                        f"Successfully deleted repository at {repo_path}")
                 break
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    logger.warning(f"Retry {attempt + 1}/{max_retries}: {e}")
-                    await asyncio.sleep(1)
-                else:
-                    raise Exception(
-                        f"Could not delete repository after {max_retries} attempts: {e}")
+            except Exception as delete_error:
+                last_error = delete_error
+                logger.warning(f"Retry {attempt+1}/3: {str(delete_error)}")
+                time.sleep(1)
+        else:
+            raise Exception(
+                f"Could not delete repository after 3 attempts: {str(last_error)}")
 
-        # Step 7: Re-initialize from scratch
-        await asyncio.sleep(0.5)
-        await initialize_application()
+        # Reinitialize the repository
+        git_repo.repo = None  # Clear existing repo object
+        git_repo._init_repo()  # Use the correct method name from GitRepository class
+        logger.info("Repository synchronized and application fully initialized")
 
-        return JSONResponse({
-            "status": "success",
-            "message": "Repository reset and re-cloned successfully"
-        })
+        # Restart polling task
+        if not any(isinstance(t, asyncio.Task) and t.get_name() == 'git_polling_task' for t in asyncio.all_tasks()):
+            task = asyncio.create_task(git_polling_task())
+            task.set_name('git_polling_task')
+            app_state['git_poll_task'] = task
+            logger.info("Restarted git polling task")
 
+        return JSONResponse({"status": "success", "message": "Repository reset successfully"})
     except Exception as e:
-        logger.error(f"Repository reset failed: {e}", exc_info=True)
-        # Try to recover by re-initializing anyway
-        try:
-            await initialize_application()
-        except Exception as init_e:
-            logger.error(f"Recovery initialization failed: {init_e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Repository reset failed: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Repository reset failed: {str(e)}")
 
 
 @app.post("/admin/create_backup")
@@ -3102,33 +3419,93 @@ async def create_backup(request: Request):
 
 
 @app.post("/admin/cleanup_lfs")
-async def cleanup_lfs(request: Request):
-    """Cleanup old LFS objects"""
+@app.post("/admin/cleanup_lfs")
+async def cleanup_lfs(request: AdminRequest):
+    """Cleanup old LFS objects and stale metadata files"""
+    if request.admin_user not in ADMIN_USERS:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    git_repo = app_state.get('git_repo')
+    metadata_manager = app_state.get('metadata_manager')
+    if not git_repo or not git_repo.repo or not metadata_manager:
+        raise HTTPException(
+            status_code=500, detail="Repository not initialized")
+
     try:
-        body = await request.json()
-        admin_user = body.get('admin_user')
-
-        if admin_user not in ADMIN_USERS:
-            raise HTTPException(
-                status_code=403, detail="Admin access required")
-
-        git_repo = app_state.get('git_repo')
-        if not git_repo or not git_repo.repo:
-            raise HTTPException(
-                status_code=500, detail="Repository not initialized")
+        files_to_commit = []
+        commit_message_lines = []
 
         # Run LFS prune
         with git_repo.repo.git.custom_environment(**git_repo.git_env):
             result = git_repo.repo.git.lfs('prune')
+            commit_message_lines.append(f"LFS cleanup: {result}")
 
-        return JSONResponse({
-            "status": "success",
-            "space_freed": "LFS cleanup complete"
-        })
+        # Clean stale lock files (older than 7 days)
+        locks_dir = metadata_manager.locks_dir
+        for lock_file in locks_dir.glob("*.lock"):
+            try:
+                lock_data = json.loads(lock_file.read_text())
+                lock_time = datetime.fromisoformat(
+                    lock_data.get("timestamp").replace('Z', '+00:00'))
+                if (datetime.now(timezone.utc) - lock_time).days > 7:
+                    relative_path = str(lock_file.relative_to(
+                        git_repo.repo_path)).replace(os.sep, '/')
+                    lock_file.unlink()
+                    files_to_commit.append(relative_path)
+                    commit_message_lines.append(
+                        f"Removed stale lock: {lock_file.name}")
+            except Exception as e:
+                logger.warning(
+                    f"Could not process lock file {lock_file.name}: {e}")
+
+        # Clean stale message files (empty or older than 7 days)
+        messages_dir = git_repo.repo_path / ".messages"
+        for message_file in messages_dir.glob("*.json"):
+            try:
+                messages = json.loads(message_file.read_text())
+                file_time = datetime.fromtimestamp(
+                    message_file.stat().st_mtime, tz=timezone.utc)
+                if not messages or (datetime.now(timezone.utc) - file_time).days > 7:
+                    relative_path = str(message_file.relative_to(
+                        git_repo.repo_path)).replace(os.sep, '/')
+                    message_file.unlink()
+                    files_to_commit.append(relative_path)
+                    commit_message_lines.append(
+                        f"Removed stale message file: {message_file.name}")
+            except Exception as e:
+                logger.warning(
+                    f"Could not process message file {message_file.name}: {e}")
+
+        # Commit cleanup changes
+        if files_to_commit:
+            success = git_repo.commit_and_push(
+                files_to_commit,
+                "ADMIN CLEANUP: Removed stale locks and messages\n" +
+                "\n".join(commit_message_lines),
+                request.admin_user,
+                f"{request.admin_user}@example.com"
+            )
+            if success:
+                await handle_successful_git_operation()
+                return JSONResponse({
+                    "status": "success",
+                    "message": "LFS cleanup and metadata cleanup complete",
+                    "details": commit_message_lines
+                })
+            else:
+                raise HTTPException(
+                    status_code=500, detail="Failed to commit cleanup changes")
+        else:
+            return JSONResponse({
+                "status": "success",
+                "message": "LFS cleanup complete, no stale metadata files found",
+                "details": commit_message_lines
+            })
 
     except Exception as e:
-        logger.error(f"LFS cleanup failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"LFS and metadata cleanup failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Cleanup failed: {str(e)}")
 
 
 @app.post("/admin/export_repository")

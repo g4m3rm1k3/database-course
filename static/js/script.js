@@ -800,6 +800,23 @@ function debounceNotifications(message, type, delay = 5000) {
 }
 
 // -- WebSocket Management --
+async function checkForMessages() {
+  try {
+    const response = await fetch(
+      `/messages/check?user=${encodeURIComponent(currentUser)}`
+    );
+    if (response.ok) {
+      const data = await response.json();
+      if (data.messages && data.messages.length > 0) {
+        populateAndShowMessagesModal(data.messages);
+      }
+    }
+  } catch (error) {
+    console.error("Failed to check messages:", error);
+  }
+}
+
+// Update the WebSocket connection handler
 function connectWebSocket() {
   if (reconnectTimeout) {
     clearTimeout(reconnectTimeout);
@@ -817,6 +834,9 @@ function connectWebSocket() {
     reconnectAttempts = 0;
     ws.send(`SET_USER:${currentUser}`);
     ws.send("REFRESH_FILES");
+
+    // Check for messages on connect
+    checkForMessages();
   };
 
   ws.onmessage = function (event) {
@@ -846,34 +866,22 @@ function connectWebSocket() {
   };
 }
 
-function disconnectWebSocket() {
-  if (ws) {
-    isManualDisconnect = true;
-    ws.close();
-    ws = null;
-    updateConnectionStatus(false);
-  }
-}
-
+// Update handleWebSocketMessage
 function handleWebSocketMessage(message) {
   try {
     const data = JSON.parse(message);
+
     if (data.type === "FILE_LIST_UPDATED") {
       const newHash = JSON.stringify(data.payload);
       if (newHash === lastFileListHash) {
-        console.log("Skipping duplicate file list update");
         return;
       }
       lastFileListHash = newHash;
       groupedFiles = data.payload || {};
-      if (
-        domCache.dashboardModal &&
-        domCache.dashboardModal.classList.contains("hidden")
-      ) {
-        renderFiles();
-      }
+      renderFiles();
     } else if (data.type === "NEW_MESSAGES") {
       if (data.payload && data.payload.length > 0) {
+        console.log(`Received ${data.payload.length} new messages.`);
         populateAndShowMessagesModal(data.payload);
       }
     }
@@ -882,6 +890,15 @@ function handleWebSocketMessage(message) {
     if (!navigator.onLine) {
       handleOfflineStatus();
     }
+  }
+}
+
+function disconnectWebSocket() {
+  if (ws) {
+    isManualDisconnect = true;
+    ws.close();
+    ws = null;
+    updateConnectionStatus(false);
   }
 }
 
@@ -1997,7 +2014,7 @@ async function sendMessage(recipient, message) {
   const submitBtn = document.querySelector(
     '#sendMessageForm button[type="submit"]'
   );
-  const originalText = submitBtn ? submitBtn.textContent : "";
+  const originalText = submitBtn.innerHTML; // Store original HTML content
 
   try {
     if (submitBtn) {
@@ -2012,25 +2029,24 @@ async function sendMessage(recipient, message) {
       body: JSON.stringify({
         recipient: recipient,
         message: message,
-        sender: currentUser,
+        sender: currentUser, // Ensure currentUser is up-to-date
       }),
     });
 
     const result = await response.json();
-
     if (!response.ok) {
       throw new Error(result.detail || "Failed to send message");
     }
 
     debounceNotifications(`✅ Message sent to ${recipient}`, "success");
-    return true;
+    return true; // Indicate success
   } catch (error) {
     debounceNotifications(`❌ Send Error: ${error.message}`, "error");
-    return false;
+    return false; // Indicate failure
   } finally {
     if (submitBtn) {
       submitBtn.disabled = false;
-      submitBtn.innerHTML = originalText;
+      submitBtn.innerHTML = originalText; // Restore original content
     }
   }
 }
@@ -3311,6 +3327,13 @@ document.addEventListener("DOMContentLoaded", function () {
     connectWebSocket();
     loadFiles();
   }
+
+  // Check for messages on page load
+  checkForMessages();
+
+  // Poll for messages every 30 seconds as backup
+  setInterval(checkForMessages, 30000);
+
   if (domCache.tooltipToggle) {
     domCache.tooltipToggle.addEventListener("change", updateTooltipVisibility);
   }
@@ -3583,6 +3606,7 @@ document.addEventListener("DOMContentLoaded", function () {
       document.getElementById("sendMessageModal").classList.add("hidden")
     );
 
+  // In your DOMContentLoaded event listener
   sendMessageForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const recipient = document.getElementById("recipientUserSelect").value;
@@ -3592,7 +3616,6 @@ document.addEventListener("DOMContentLoaded", function () {
       debounceNotifications("Please select a recipient.", "error");
       return;
     }
-
     if (!message) {
       debounceNotifications("Please write a message.", "error");
       return;
@@ -3600,6 +3623,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     const success = await sendMessage(recipient, message);
 
+    // Only close the modal and reset if the send was successful
     if (success) {
       sendMessageForm.reset();
       document.getElementById("sendMessageModal").classList.add("hidden");
