@@ -20,6 +20,7 @@ let currentNotification = null; // Add this line
 let currentActivityOffset = 0;
 const ACTIVITY_LIMIT = 50;
 let isLoadingMoreActivity = false;
+let currentConfigTab = "config";
 
 const domCache = {
   fileList: document.getElementById("fileList"),
@@ -1401,7 +1402,6 @@ async function loadConfig() {
     currentConfig = await response.json();
     console.log("Loaded config:", currentConfig);
 
-    // ✅ Update the repo status immediately based on the new connection status
     if (currentConfig && currentConfig.gitlab_connection_status) {
       updateRepoStatus(currentConfig.gitlab_connection_status);
     }
@@ -1415,9 +1415,19 @@ async function loadConfig() {
 
     updateConfigDisplay();
     setupAdminUI();
+
+    // ✅ NEW: Show/hide admin tab based on permissions
+    const adminTab = document.getElementById("adminTab");
+    if (adminTab) {
+      if (currentConfig && currentConfig.is_admin) {
+        adminTab.classList.remove("hidden");
+      } else {
+        adminTab.classList.add("hidden");
+      }
+    }
   } catch (error) {
     console.error("Error loading config:", error);
-    updateRepoStatus("error"); // Fallback to error on fetch failure
+    updateRepoStatus("error");
   }
 }
 
@@ -1984,7 +1994,18 @@ async function openSendMessageModal() {
 }
 
 async function sendMessage(recipient, message) {
+  const submitBtn = document.querySelector(
+    '#sendMessageForm button[type="submit"]'
+  );
+  const originalText = submitBtn ? submitBtn.textContent : "";
+
   try {
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.innerHTML =
+        '<i class="fa-solid fa-spinner fa-spin mr-2"></i>Sending...';
+    }
+
     const response = await fetch("/messages/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1994,11 +2015,23 @@ async function sendMessage(recipient, message) {
         sender: currentUser,
       }),
     });
+
     const result = await response.json();
-    if (!response.ok) throw new Error(result.detail);
-    debounceNotifications("Message sent successfully!", "success");
+
+    if (!response.ok) {
+      throw new Error(result.detail || "Failed to send message");
+    }
+
+    debounceNotifications(`✅ Message sent to ${recipient}`, "success");
+    return true;
   } catch (error) {
-    debounceNotifications(`Send Error: ${error.message}`, "error");
+    debounceNotifications(`❌ Send Error: ${error.message}`, "error");
+    return false;
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = originalText;
+    }
   }
 }
 
@@ -2822,6 +2855,454 @@ function connectWebSocket() {
   };
 }
 
+async function checkLFSStatus() {
+  try {
+    const response = await fetch("/system/lfs_status");
+    const lfsStatus = await response.json();
+
+    const statusContainer = document.getElementById("lfsStatusContainer");
+    if (!statusContainer) return;
+
+    let statusHtml = '<div class="p-4 rounded-lg border">';
+
+    if (!lfsStatus.lfs_installed) {
+      statusHtml += `
+                <div class="flex items-center space-x-2 text-yellow-600 dark:text-yellow-400">
+                    <i class="fa-solid fa-exclamation-triangle"></i>
+                    <span class="font-semibold">Git LFS Not Installed</span>
+                </div>
+                <p class="text-sm mt-2 text-gray-600 dark:text-gray-400">
+                    Large files will be stored directly in Git. Consider installing Git LFS for better performance.
+                </p>`;
+    } else if (!lfsStatus.lfs_configured) {
+      statusHtml += `
+                <div class="flex items-center space-x-2 text-blue-600 dark:text-blue-400">
+                    <i class="fa-solid fa-info-circle"></i>
+                    <span class="font-semibold">Git LFS Available (${lfsStatus.lfs_version})</span>
+                </div>
+                <p class="text-sm mt-2 text-gray-600 dark:text-gray-400">
+                    LFS is installed but not yet configured for this repository.
+                </p>`;
+    } else {
+      statusHtml += `
+                <div class="flex items-center space-x-2 text-green-600 dark:text-green-400">
+                    <i class="fa-solid fa-check-circle"></i>
+                    <span class="font-semibold">Git LFS Active (${
+                      lfsStatus.lfs_version
+                    })</span>
+                </div>
+                <p class="text-sm mt-2 text-gray-600 dark:text-gray-400">
+                    Tracking: ${lfsStatus.tracked_patterns.join(", ")}
+                </p>`;
+    }
+
+    statusHtml += "</div>";
+    statusContainer.innerHTML = statusHtml;
+  } catch (error) {
+    console.error("Failed to check LFS status:", error);
+  }
+}
+
+function switchConfigTab(tabName) {
+  currentConfigTab = tabName;
+
+  // Update tab buttons
+  const tabs = ["config", "admin", "health"];
+  tabs.forEach((tab) => {
+    const tabBtn = document.getElementById(`${tab}Tab`);
+    const tabContent = document.getElementById(`${tab}Content`);
+
+    if (tab === tabName) {
+      tabBtn?.classList.add("active");
+      tabContent?.classList.remove("hidden");
+    } else {
+      tabBtn?.classList.remove("active");
+      tabContent?.classList.add("hidden");
+    }
+  });
+
+  // Load data when switching to health tab
+  if (tabName === "health") {
+    refreshHealthStatus();
+  }
+}
+
+// ===== LFS STATUS CHECK =====
+async function checkLFSStatus() {
+  const container = document.getElementById("lfsStatusContainer");
+  if (!container) return;
+
+  try {
+    const response = await fetch("/system/lfs_status");
+    const lfsStatus = await response.json();
+
+    let statusHtml = '<div class="p-4 rounded-lg border">';
+
+    if (!lfsStatus.lfs_installed) {
+      statusHtml += `
+                <div class="flex items-center space-x-2 text-yellow-600 dark:text-yellow-400">
+                    <i class="fa-solid fa-exclamation-triangle"></i>
+                    <span class="font-semibold">Git LFS Not Installed</span>
+                </div>
+                <p class="text-sm mt-2 text-gray-600 dark:text-gray-400">
+                    Large files will be stored directly in Git. Consider installing Git LFS for better performance.
+                </p>
+                <a href="https://git-lfs.github.com/" target="_blank" class="text-xs text-blue-500 hover:underline mt-2 inline-block">
+                    Download Git LFS →
+                </a>`;
+    } else if (!lfsStatus.lfs_configured) {
+      statusHtml += `
+                <div class="flex items-center space-x-2 text-blue-600 dark:text-blue-400">
+                    <i class="fa-solid fa-info-circle"></i>
+                    <span class="font-semibold">Git LFS Available (${lfsStatus.lfs_version})</span>
+                </div>
+                <p class="text-sm mt-2 text-gray-600 dark:text-gray-400">
+                    LFS will be configured automatically on next file upload.
+                </p>`;
+    } else {
+      statusHtml += `
+                <div class="flex items-center space-x-2 text-green-600 dark:text-green-400">
+                    <i class="fa-solid fa-check-circle"></i>
+                    <span class="font-semibold">Git LFS Active (${
+                      lfsStatus.lfs_version
+                    })</span>
+                </div>
+                <p class="text-sm mt-2 text-gray-600 dark:text-gray-400">
+                    Tracking: ${lfsStatus.tracked_patterns.join(", ")}
+                </p>`;
+    }
+
+    statusHtml += "</div>";
+    container.innerHTML = statusHtml;
+  } catch (error) {
+    console.error("Failed to check LFS status:", error);
+    container.innerHTML = `
+            <div class="p-4 rounded-lg border border-red-300 dark:border-red-700">
+                <div class="flex items-center space-x-2 text-red-600 dark:text-red-400">
+                    <i class="fa-solid fa-xmark-circle"></i>
+                    <span class="font-semibold">Error Checking LFS Status</span>
+                </div>
+            </div>`;
+  }
+}
+
+// ===== HEALTH CHECK SYSTEM =====
+async function refreshHealthStatus() {
+  // Set all to checking state
+  const statusElements = [
+    "repoHealthStatus",
+    "networkHealthStatus",
+    "lfsHealthStatus",
+    "performanceStatus",
+  ];
+  statusElements.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.className = "health-status checking";
+      el.textContent = "Checking...";
+    }
+  });
+
+  // Run all checks in parallel
+  await Promise.all([
+    checkRepositoryHealth(),
+    checkNetworkHealth(),
+    checkLFSHealth(),
+    checkPerformanceHealth(),
+  ]);
+}
+
+async function checkRepositoryHealth() {
+  const statusEl = document.getElementById("repoHealthStatus");
+  const detailsEl = document.getElementById("repoHealthDetails");
+
+  try {
+    const response = await fetch("/config");
+    const config = await response.json();
+
+    if (config.has_token && config.repo_path) {
+      statusEl.className = "health-status ok";
+      statusEl.textContent = "Healthy";
+      detailsEl.textContent = `Repository at: ${config.repo_path}`;
+    } else {
+      statusEl.className = "health-status warning";
+      statusEl.textContent = "Not Configured";
+      detailsEl.textContent = "GitLab credentials not configured";
+    }
+  } catch (error) {
+    statusEl.className = "health-status error";
+    statusEl.textContent = "Error";
+    detailsEl.textContent = "Failed to check repository status";
+  }
+}
+
+async function checkNetworkHealth() {
+  const statusEl = document.getElementById("networkHealthStatus");
+  const detailsEl = document.getElementById("networkHealthDetails");
+
+  const startTime = performance.now();
+
+  try {
+    const response = await fetch("/config");
+    const endTime = performance.now();
+    const latency = Math.round(endTime - startTime);
+
+    if (response.ok) {
+      if (latency < 100) {
+        statusEl.className = "health-status ok";
+        statusEl.textContent = "Excellent";
+      } else if (latency < 500) {
+        statusEl.className = "health-status ok";
+        statusEl.textContent = "Good";
+      } else {
+        statusEl.className = "health-status warning";
+        statusEl.textContent = "Slow";
+      }
+      detailsEl.textContent = `Response time: ${latency}ms`;
+    }
+  } catch (error) {
+    statusEl.className = "health-status error";
+    statusEl.textContent = "Offline";
+    detailsEl.textContent = "Cannot connect to server";
+  }
+}
+
+async function checkLFSHealth() {
+  const statusEl = document.getElementById("lfsHealthStatus");
+  const detailsEl = document.getElementById("lfsHealthDetails");
+
+  try {
+    const response = await fetch("/system/lfs_status");
+    const lfsStatus = await response.json();
+
+    if (lfsStatus.lfs_installed && lfsStatus.lfs_configured) {
+      statusEl.className = "health-status ok";
+      statusEl.textContent = "Active";
+      detailsEl.textContent = `Tracking ${lfsStatus.tracked_patterns.length} patterns`;
+    } else if (lfsStatus.lfs_installed) {
+      statusEl.className = "health-status warning";
+      statusEl.textContent = "Not Configured";
+      detailsEl.textContent =
+        "LFS installed but not configured for this repository";
+    } else {
+      statusEl.className = "health-status warning";
+      statusEl.textContent = "Not Installed";
+      detailsEl.textContent = "Git LFS is not installed on this system";
+    }
+  } catch (error) {
+    statusEl.className = "health-status error";
+    statusEl.textContent = "Error";
+    detailsEl.textContent = "Failed to check LFS status";
+  }
+}
+
+async function checkPerformanceHealth() {
+  const statusEl = document.getElementById("performanceStatus");
+  const detailsEl = document.getElementById("performanceDetails");
+
+  try {
+    const startTime = performance.now();
+    const response = await fetch("/files");
+    const endTime = performance.now();
+    const loadTime = Math.round(endTime - startTime);
+
+    if (response.ok) {
+      const data = await response.json();
+      const fileCount = Object.values(data).flat().length;
+
+      if (loadTime < 500) {
+        statusEl.className = "health-status ok";
+        statusEl.textContent = "Excellent";
+      } else if (loadTime < 2000) {
+        statusEl.className = "health-status ok";
+        statusEl.textContent = "Good";
+      } else {
+        statusEl.className = "health-status warning";
+        statusEl.textContent = "Slow";
+      }
+
+      detailsEl.textContent = `${fileCount} files loaded in ${loadTime}ms`;
+    }
+  } catch (error) {
+    statusEl.className = "health-status error";
+    statusEl.textContent = "Error";
+    detailsEl.textContent = "Failed to measure performance";
+  }
+}
+
+// ===== REPOSITORY RESET =====
+async function resetRepository() {
+  const confirmed = await showConfirmDialog(
+    "Reset Repository",
+    `<div class="space-y-3">
+            <p class="text-red-600 dark:text-red-400 font-semibold">
+                <i class="fa-solid fa-exclamation-triangle mr-2"></i>WARNING: This will delete your local repository!
+            </p>
+            <p>This action will:</p>
+            <ul class="list-disc list-inside space-y-1 text-sm">
+                <li>Delete all local files and changes</li>
+                <li>Re-clone from GitLab</li>
+                <li>Sync to match GitLab exactly</li>
+            </ul>
+            <p class="text-sm text-gray-600 dark:text-gray-400">
+                Any uncommitted changes will be lost. Are you sure?
+            </p>
+        </div>`
+  );
+
+  if (!confirmed) return;
+
+  showNotification("Resetting repository... This may take a moment.", "info");
+
+  try {
+    const response = await fetch("/admin/reset_repository", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ admin_user: currentUser }),
+    });
+
+    const result = await response.json();
+
+    if (response.ok) {
+      showNotification("✅ Repository reset successfully!", "success");
+      setTimeout(() => window.location.reload(), 2000);
+    } else {
+      throw new Error(result.detail || "Reset failed");
+    }
+  } catch (error) {
+    showNotification(`❌ Reset failed: ${error.message}`, "error");
+  }
+}
+
+// ===== ADMIN MAINTENANCE FUNCTIONS =====
+async function createManualBackup() {
+  showNotification("Creating backup...", "info");
+
+  try {
+    const response = await fetch("/admin/create_backup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ admin_user: currentUser }),
+    });
+
+    const result = await response.json();
+
+    if (response.ok) {
+      showNotification(`✅ Backup created: ${result.backup_path}`, "success");
+    } else {
+      throw new Error(result.detail || "Backup failed");
+    }
+  } catch (error) {
+    showNotification(`❌ Backup failed: ${error.message}`, "error");
+  }
+}
+
+async function cleanupLfsFiles() {
+  const confirmed = await showConfirmDialog(
+    "Cleanup LFS Files",
+    "This will remove old LFS objects that are no longer referenced. Continue?"
+  );
+
+  if (!confirmed) return;
+
+  showNotification("Cleaning up LFS files...", "info");
+
+  try {
+    const response = await fetch("/admin/cleanup_lfs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ admin_user: currentUser }),
+    });
+
+    const result = await response.json();
+
+    if (response.ok) {
+      showNotification(
+        `✅ Cleanup complete. Freed ${result.space_freed}`,
+        "success"
+      );
+    } else {
+      throw new Error(result.detail || "Cleanup failed");
+    }
+  } catch (error) {
+    showNotification(`❌ Cleanup failed: ${error.message}`, "error");
+  }
+}
+
+async function exportRepository() {
+  showNotification("Exporting repository...", "info");
+
+  try {
+    const response = await fetch("/admin/export_repository", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ admin_user: currentUser }),
+    });
+
+    if (response.ok) {
+      // Trigger download
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `mastercam_repo_export_${
+        new Date().toISOString().split("T")[0]
+      }.zip`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      a.remove();
+
+      showNotification("✅ Repository exported successfully!", "success");
+    } else {
+      const result = await response.json();
+      throw new Error(result.detail || "Export failed");
+    }
+  } catch (error) {
+    showNotification(`❌ Export failed: ${error.message}`, "error");
+  }
+}
+
+// ===== ENHANCED CONFIRM DIALOG =====
+function showConfirmDialog(title, message) {
+  return new Promise((resolve) => {
+    const modal = document.createElement("div");
+    modal.className =
+      "fixed inset-0 bg-mc-dark-bg bg-opacity-80 flex items-center justify-center p-4 z-[100]";
+
+    modal.innerHTML = `
+            <div class="bg-white dark:bg-mc-dark-bg rounded-lg shadow-lg w-full max-w-md p-6">
+                <h3 class="text-xl font-semibold text-primary-900 dark:text-primary-100 mb-4">
+                    ${title}
+                </h3>
+                <div class="text-primary-700 dark:text-primary-300 mb-6">
+                    ${message}
+                </div>
+                <div class="flex justify-end space-x-3">
+                    <button id="cancelConfirmBtn" class="btn btn-secondary">Cancel</button>
+                    <button id="confirmConfirmBtn" class="btn bg-red-600 hover:bg-red-700 text-white">Confirm</button>
+                </div>
+            </div>
+        `;
+
+    document.body.appendChild(modal);
+
+    const cancelBtn = modal.querySelector("#cancelConfirmBtn");
+    const confirmBtn = modal.querySelector("#confirmConfirmBtn");
+
+    const cleanup = (result) => {
+      modal.remove();
+      resolve(result);
+    };
+
+    cancelBtn.addEventListener("click", () => cleanup(false));
+    confirmBtn.addEventListener("click", () => cleanup(true));
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) cleanup(false);
+    });
+  });
+}
+
 // -- DOM Content Loaded Event Handler --
 document.addEventListener("DOMContentLoaded", function () {
   if (!navigator.onLine) {
@@ -2836,9 +3317,19 @@ document.addEventListener("DOMContentLoaded", function () {
   applyThemePreference();
   loadConfig();
   loadFiles();
+  checkLFSStatus();
 
   // Initialize tooltip system
   initTooltipSystem();
+  checkLFSStatus();
+
+  // Call this periodically if config panel is open
+  setInterval(() => {
+    const configPanel = document.getElementById("configPanel");
+    if (configPanel && !configPanel.classList.contains("translate-x-full")) {
+      checkLFSStatus();
+    }
+  }, 30000); // Every 30 seconds
 
   // Revision type radio button handlers
   document.querySelectorAll('input[name="rev_type"]').forEach((radio) => {
@@ -3092,19 +3583,26 @@ document.addEventListener("DOMContentLoaded", function () {
       document.getElementById("sendMessageModal").classList.add("hidden")
     );
 
-  sendMessageForm.addEventListener("submit", (e) => {
+  sendMessageForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const recipient = document.getElementById("recipientUserSelect").value;
-    const message = document.getElementById("messageText").value;
-    if (recipient && message) {
-      sendMessage(recipient, message);
+    const message = document.getElementById("messageText").value.trim();
+
+    if (!recipient) {
+      debounceNotifications("Please select a recipient.", "error");
+      return;
+    }
+
+    if (!message) {
+      debounceNotifications("Please write a message.", "error");
+      return;
+    }
+
+    const success = await sendMessage(recipient, message);
+
+    if (success) {
       sendMessageForm.reset();
       document.getElementById("sendMessageModal").classList.add("hidden");
-    } else {
-      debounceNotifications(
-        "Please select a recipient and write a message.",
-        "error"
-      );
     }
   });
 
