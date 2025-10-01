@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Mastercam GitLab Interface - Final Integrated Application with Git Polling
-This script handles all application logic, from server startup to Git operations,
-with a focus on stability, modern practices, and user experience.
-"""
+    Mastercam GitLab Interface - Final Integrated Application with Git Polling
+    This script handles all application logic, from server startup to Git operations,
+    with a focus on stability, modern practices, and user experience.
+    """
 
 import psutil  # Add to imports at the top of mastercam_main.py
 from typing import Optional
@@ -37,6 +37,8 @@ import subprocess
 from datetime import datetime, timezone
 import shutil
 import psutil
+from functools import lru_cache
+from time import time
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Form, UploadFile, File, Response
@@ -50,13 +52,11 @@ from cryptography.fernet import Fernet
 import base64
 import time
 
-
 from pathlib import Path
 import os
 import sys
 import subprocess
 import logging
-
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,8 @@ def ensure_git_lfs_available() -> bool:
         logger.info(f"Using system Git LFS: {result.stdout.strip()}")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
-        logger.info("System 'git lfs' not found. Checking for bundled version.")
+        logger.info(
+            "System 'git lfs' not found. Checking for bundled version.")
 
     # 2. If system fails, try to use the bundled one.
     bundled_path = get_bundled_git_lfs_path()
@@ -160,7 +161,8 @@ def ensure_git_lfs_available() -> bool:
         try:
             result = subprocess.run(
                 ["git", "lfs", "version"], capture_output=True, check=True, text=True)
-            logger.info(f"Bundled Git LFS verified: {result.stdout.strip()}")
+            logger.info(
+                f"Bundled Git LFS verified: {result.stdout.strip()}")
             return True
         except (subprocess.CalledProcessError, FileNotFoundError):
             logger.error(
@@ -235,7 +237,8 @@ class FileLockManager:
         # Only create lock directory if needed
         if not self.lock_file_path.parent.exists():
             try:
-                self.lock_file_path.parent.mkdir(parents=True, exist_ok=True)
+                self.lock_file_path.parent.mkdir(
+                    parents=True, exist_ok=True)
             except Exception:
                 return self
 
@@ -420,7 +423,8 @@ class SendMessageRequest(BaseModel):
 class AckMessageRequest(BaseModel):
     message_id: str = Field(...,
                             description="Unique identifier of the message to acknowledge")
-    user: str = Field(..., description="Username acknowledging the message")
+    user: str = Field(...,
+                      description="Username acknowledging the message")
 
 
 class ConfigUpdateRequest(BaseModel):
@@ -444,7 +448,8 @@ class ActivityItem(BaseModel):
         ..., description="Type of activity: CHECK_IN, CHECK_OUT, CANCEL, OVERRIDE, NEW_FILE, NEW_LINK, DELETE_FILE, DELETE_LINK, REVERT, MESSAGE, REFRESH_LOCK")
     filename: str = Field(..., description="Name of the file involved")
     user: str = Field(..., description="Username who performed the action")
-    timestamp: str = Field(..., description="ISO timestamp of the activity")
+    timestamp: str = Field(...,
+                           description="ISO timestamp of the activity")
     commit_hash: str = Field(...,
                              description="Git commit hash associated with the activity")
     message: str = Field(...,
@@ -467,13 +472,14 @@ class AppConfig(BaseModel):
         "allow_insecure_ssl": False
     })
     polling: dict = Field(default_factory=lambda: {
-                          "enabled": True, "interval_seconds": 15, "check_on_activity": True})
+        "enabled": True, "interval_seconds": 15, "check_on_activity": True})
 
 
 class StandardResponse(BaseModel):
     status: str = Field(...,
                         description="Response status: 'success' or 'error'")
-    message: Optional[str] = Field(None, description="Human-readable message")
+    message: Optional[str] = Field(
+        None, description="Human-readable message")
 
 
 class ConfigSummary(BaseModel):
@@ -485,7 +491,8 @@ class ConfigSummary(BaseModel):
         None, description="Configured GitLab username")
     has_token: bool = Field(...,
                             description="Whether a GitLab token is configured")
-    repo_path: Optional[str] = Field(None, description="Local repository path")
+    repo_path: Optional[str] = Field(
+        None, description="Local repository path")
     is_admin: bool = Field(...,
                            description="Whether the current user has admin privileges")
 
@@ -727,7 +734,8 @@ class GitLabAPI:
 class GitRepository:
     def __init__(self, repo_path: Path, remote_url: str, token: str):
         self.repo_path = repo_path
-        self.lock_manager = FileLockManager(repo_path / ".git" / "repo.lock")
+        self.lock_manager = FileLockManager(
+            repo_path / ".git" / "repo.lock")
         self.remote_url_with_token = f"https://oauth2:{token}@{remote_url.split('://')[-1]}"
 
         # Get the bundled LFS path
@@ -886,42 +894,22 @@ class GitRepository:
                 f"Failed to clean up corrupted repository: {e}", exc_info=True)
 
     def _kill_git_processes(self):
-        """Terminate any Git processes that might be holding locks in this repository."""
-        try:
-            repo_path_str = str(self.repo_path).lower()
-            killed_count = 0
+        repo_path_str = str(self.repo_path.resolve()).lower()
 
-            for proc in psutil.process_iter(['name', 'exe', 'cwd']):
-                try:
-                    proc_info = proc.info
-                    proc_name = proc_info.get('name', '').lower()
-
-                    # Check if it's a Git process
-                    if proc_name in ['git.exe', 'git-lfs.exe', 'git']:
-                        # Check if it's working in our repository
-                        try:
-                            cwd = proc.cwd().lower() if proc.cwd() else ''
-                            if repo_path_str in cwd:
-                                logger.info(
-                                    f"Terminating Git process {proc.pid} ({proc_name})")
-                                proc.kill()  # Use kill() for immediate effect
-                                try:
-                                    proc.wait(timeout=2)
-                                except psutil.TimeoutExpired:
-                                    pass
-                                killed_count += 1
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            pass
-
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+        for proc in psutil.process_iter(['name', 'cwd']):
+            try:
+                if proc.info['name'] not in ['git.exe', 'git-lfs.exe', 'git']:
                     continue
 
-            if killed_count > 0:
-                logger.info(f"Killed {killed_count} Git process(es)")
-                time.sleep(0.5)  # Extra wait after killing processes
-
-        except Exception as e:
-            logger.warning(f"Could not kill Git processes: {e}")
+                # Only kill if working in OUR repository
+                cwd = proc.cwd().lower() if proc.cwd() else ''
+                if repo_path_str in cwd:
+                    logger.info(
+                        f"Terminating {proc.info['name']} (PID: {proc.pid})")
+                    proc.terminate()
+                    proc.wait(timeout=3)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
 
     def _remove_git_locks(self):
         """Remove all Git lock files from the repository."""
@@ -942,7 +930,8 @@ class GitRepository:
                         f"Removed Git lock file: {lock_file.relative_to(self.repo_path)}")
                     removed_count += 1
                 except Exception as e:
-                    logger.warning(f"Could not remove {lock_file.name}: {e}")
+                    logger.warning(
+                        f"Could not remove {lock_file.name}: {e}")
 
             if removed_count > 0:
                 logger.info(f"Removed {removed_count} lock file(s)")
@@ -1024,7 +1013,8 @@ class GitRepository:
         elapsed = 0
 
         while self.repo_path.exists() and elapsed < max_wait:
-            logger.info(f"Waiting for directory removal... ({elapsed:.1f}s)")
+            logger.info(
+                f"Waiting for directory removal... ({elapsed:.1f}s)")
             time.sleep(check_interval)
             elapsed += check_interval
 
@@ -1097,7 +1087,8 @@ class GitRepository:
             logger.info("LFS files will be downloaded on-demand only")
 
         except Exception as e:
-            logger.error(f"Failed to configure Git LFS: {e}", exc_info=True)
+            logger.error(
+                f"Failed to configure Git LFS: {e}", exc_info=True)
 
     def download_lfs_file(self, file_path: str) -> bool:
         """Download a specific LFS file on-demand"""
@@ -1270,7 +1261,8 @@ class MetadataManager:
         self.locks_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_lock_file_path(self, file_path_str: str) -> Path:
-        sanitized = file_path_str.replace(os.path.sep, '_').replace('.', '_')
+        sanitized = file_path_str.replace(
+            os.path.sep, '_').replace('.', '_')
         return self.locks_dir / f"{sanitized}.lock"
 
     # In MetadataManager.create_lock
@@ -1281,7 +1273,8 @@ class MetadataManager:
         lock_data = {
             "file": file_path,
             "user": user,
-            "timestamp": datetime.now(timezone.utc).isoformat()  # Updated line
+            # Updated line
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         lock_file.write_text(json.dumps(lock_data, indent=2))
         return lock_file
@@ -1453,7 +1446,6 @@ tags_metadata = [
     }
 ]
 
-
 app = FastAPI(
     title="Mastercam GitLab Interface",
     description="""
@@ -1510,7 +1502,7 @@ app = FastAPI(
 )
 
 app.add_middleware(CORSMiddleware, allow_origins=[
-                   "*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+    "*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
 def resource_path(relative_path):
@@ -1518,7 +1510,8 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
-app.mount("/static", StaticFiles(directory=resource_path("static")), name="static")
+app.mount(
+    "/static", StaticFiles(directory=resource_path("static")), name="static")
 templates = Jinja2Templates(directory=resource_path("templates"))
 
 # --- Initialization and Helper Functions ---
@@ -1548,7 +1541,8 @@ async def initialize_application():
                 headers = {"Private-Token": gitlab_cfg['token']}
 
                 security_cfg = cfg.security
-                verify_ssl = not security_cfg.get("allow_insecure_ssl", False)
+                verify_ssl = not security_cfg.get(
+                    "allow_insecure_ssl", False)
 
                 response = requests.get(
                     api_url, headers=headers, timeout=10, verify=verify_ssl)
@@ -1588,7 +1582,8 @@ async def initialize_application():
                     repo_path, gitlab_cfg['base_url'], gitlab_cfg['token'])
 
                 if app_state['git_repo'].repo:
-                    app_state['metadata_manager'] = MetadataManager(repo_path)
+                    app_state['metadata_manager'] = MetadataManager(
+                        repo_path)
                     git_monitor = GitStateMonitor(app_state['git_repo'])
                     app_state['initialized'] = True
                     logger.info(
@@ -1628,7 +1623,8 @@ async def git_polling_task():
                 await asyncio.sleep(poll_interval)
                 continue
             if git_monitor.check_for_changes():
-                logger.info("Git changes detected, broadcasting updates...")
+                logger.info(
+                    "Git changes detected, broadcasting updates...")
                 await broadcast_updates()  # Use the new comprehensive broadcast function
             await asyncio.sleep(poll_interval)
         except asyncio.CancelledError:
@@ -1694,7 +1690,8 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
 
             if master_filename and master_filename in master_files_map:
                 # DON'T copy from master - create a clean virtual file entry
-                virtual_file_name = link_file_data['name'].replace('.link', '')
+                virtual_file_name = link_file_data['name'].replace(
+                    '.link', '')
 
                 # Create a minimal virtual file entry with its own properties
                 virtual_file = {
@@ -1721,7 +1718,8 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
         # CRITICAL FIX: For linked files, use the LINK's metadata, not the master's
         if file_data.get('is_link'):
             # Use the link's own name for metadata lookup
-            path_for_meta = file_data['name']  # Use link name, not master file
+            # Use link name, not master file
+            path_for_meta = file_data['name']
         else:
             # Regular files use their actual path
             path_for_meta = file_data['path']
@@ -1734,7 +1732,8 @@ def _get_current_file_state() -> Dict[str, List[Dict]]:
                 description = meta_content.get('description')
                 revision = meta_content.get('revision')
             except json.JSONDecodeError:
-                logger.warning(f"Could not parse metadata for {path_for_meta}")
+                logger.warning(
+                    f"Could not parse metadata for {path_for_meta}")
 
         file_data['description'], file_data['revision'] = description, revision
 
@@ -1780,6 +1779,26 @@ def find_available_port(start_port=8000, max_attempts=100):
     raise IOError("Could not find an available port.")
 
 
+class FileStateCache:
+    def __init__(self):
+        self._cache = {}
+        self._cache_time = None
+        self._ttl = 5  # seconds
+
+    def get_state(self, force_refresh=False):
+        now = time.time()
+        if (force_refresh or
+            self._cache_time is None or
+                now - self._cache_time > self._ttl):
+            self._cache = _get_current_file_state()
+            self._cache_time = now
+        return self._cache
+
+
+# Initialize globally
+file_state_cache = FileStateCache()
+
+
 async def broadcast_updates():
     try:
         logger.info("Broadcasting all updates...")
@@ -1795,7 +1814,8 @@ async def broadcast_updates():
         })
 
         if not manager.active_connections:
-            logger.debug("No active WebSocket connections to broadcast to.")
+            logger.debug(
+                "No active WebSocket connections to broadcast to.")
             return
 
         # Iterate through a copy of connections to handle disconnections safely
@@ -1814,7 +1834,8 @@ async def broadcast_updates():
                     ".messages" / f"{user}.json"
                 if user_message_file.exists():
                     try:
-                        messages = json.loads(user_message_file.read_text())
+                        messages = json.loads(
+                            user_message_file.read_text())
                         if messages:
                             message_payload = json.dumps(
                                 {"type": "NEW_MESSAGES", "payload": messages})
@@ -1834,7 +1855,7 @@ async def handle_successful_git_operation():
     global git_monitor
     if git_monitor:
         git_monitor.initialize_state()
-    await broadcast_updates()  # Use the new comprehensive broadcast function
+    await broadcast_updates()
 
 # --- API Endpoints ---
 
@@ -1931,8 +1952,9 @@ async def manual_refresh():
 @app.get("/files", response_model=Dict[str, List[FileInfo]])
 async def get_files():
     try:
-        grouped_data = _get_current_file_state()
-        return {group: [FileInfo(**file_data) for file_data in files] for group, files in grouped_data.items()}
+        grouped_data = file_state_cache.get_state()
+        return {group: [FileInfo(**file_data) for file_data in files]
+                for group, files in grouped_data.items()}
     except Exception as e:
         logger.error(f"Error in get_files endpoint: {e}", exc_info=True)
         raise HTTPException(
@@ -1966,7 +1988,8 @@ async def send_message(request: SendMessageRequest):
 
         # Verify sender is admin
         if request.sender not in ADMIN_USERS:
-            raise HTTPException(status_code=403, detail="Permission denied.")
+            raise HTTPException(
+                status_code=403, detail="Permission denied.")
 
         # Verify recipient exists
         all_users = git_repo.get_all_users_from_history()
@@ -2000,7 +2023,8 @@ async def send_message(request: SendMessageRequest):
 
         # Attempt to commit and push
         commit_message = f"MSG: Send message to {request.recipient} by {request.sender}"
-        relative_path = str(user_message_file.relative_to(git_repo.repo_path))
+        relative_path = str(
+            user_message_file.relative_to(git_repo.repo_path))
 
         success = git_repo.commit_and_push(
             [relative_path],
@@ -2020,7 +2044,8 @@ async def send_message(request: SendMessageRequest):
             # Rollback on failure
             if len(messages) > 1:
                 messages.pop()
-                user_message_file.write_text(json.dumps(messages, indent=2))
+                user_message_file.write_text(
+                    json.dumps(messages, indent=2))
             else:
                 user_message_file.unlink(missing_ok=True)
             raise HTTPException(
@@ -2029,7 +2054,8 @@ async def send_message(request: SendMessageRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Unexpected error in send_message: {e}", exc_info=True)
+        logger.error(
+            f"Unexpected error in send_message: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"An internal error occurred: {e}")
 
@@ -2103,7 +2129,8 @@ async def acknowledge_message(request: AckMessageRequest):
             msg for msg in messages if msg.get("id") != request.message_id]
         if len(messages) == len(messages_after_ack):
             return JSONResponse({"status": "no_change"})
-        user_message_file.write_text(json.dumps(messages_after_ack, indent=2))
+        user_message_file.write_text(
+            json.dumps(messages_after_ack, indent=2))
         commit_message = f"MSG: Acknowledge message by {request.user}"
         success = git_repo.commit_and_push([str(user_message_file.relative_to(
             git_repo.repo_path))], commit_message, request.user, f"{request.user}@example.com")
@@ -2144,7 +2171,8 @@ async def new_upload(
 
     if is_link:
         # --- LINK CREATION LOGIC ---
-        logger.info(f"Creating link: {new_link_filename} -> {link_to_master}")
+        logger.info(
+            f"Creating link: {new_link_filename} -> {link_to_master}")
 
         if not new_link_filename or not link_to_master:
             raise HTTPException(
@@ -2221,7 +2249,8 @@ async def new_upload(
 
     else:
         # --- FILE UPLOAD LOGIC ---
-        logger.info(f"Uploading new file: {file.filename if file else 'None'}")
+        logger.info(
+            f"Uploading new file: {file.filename if file else 'None'}")
 
         if not file or not file.filename:
             raise HTTPException(
@@ -2291,7 +2320,7 @@ async def new_upload(
             # Clean up on error
             (git_repo.repo_path / file.filename).unlink(missing_ok=True)
             (git_repo.repo_path /
-             f"{file.filename}.meta.json").unlink(missing_ok=True)
+                f"{file.filename}.meta.json").unlink(missing_ok=True)
             raise HTTPException(
                 status_code=500, detail=f"Failed to upload file: {str(e)}"
             )
@@ -2357,7 +2386,8 @@ async def checkout_file(filename: str, request: CheckoutRequest):
                     status_code=409, detail="File is already locked by another user.")
 
         # 🆕 Create new lock
-        lock_file_path = metadata_manager.create_lock(file_path, request.user)
+        lock_file_path = metadata_manager.create_lock(
+            file_path, request.user)
         if not lock_file_path:
             raise HTTPException(
                 status_code=500, detail="Failed to create lock file.")
@@ -2427,7 +2457,8 @@ async def checkin_file(filename: str, user: str = Form(...), commit_message: str
         new_rev = _increment_revision(current_rev, rev_type, new_major_rev)
         meta_content["revision"] = new_rev
         meta_path.write_text(json.dumps(meta_content, indent=2))
-        absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
+        absolute_lock_path = metadata_manager._get_lock_file_path(
+            file_path)
         relative_lock_path_str = str(absolute_lock_path.relative_to(
             git_repo.repo_path)).replace(os.sep, '/')
         metadata_manager.release_lock(file_path)
@@ -2495,7 +2526,8 @@ async def admin_override(filename: str, request: AdminOverrideRequest):
         file_path = find_file_path(filename)
         if not file_path:
             raise HTTPException(status_code=404, detail="File not found")
-        absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
+        absolute_lock_path = metadata_manager._get_lock_file_path(
+            file_path)
         if not absolute_lock_path.exists():
             return JSONResponse({"status": "success", "message": "File was already unlocked."})
         relative_lock_path_str = str(absolute_lock_path.relative_to(
@@ -2539,7 +2571,8 @@ async def cancel_checkout(filename: str, request: CheckoutRequest):
             raise HTTPException(
                 status_code=403, detail="You do not have this file checked out.")
 
-        absolute_lock_path = metadata_manager._get_lock_file_path(file_path)
+        absolute_lock_path = metadata_manager._get_lock_file_path(
+            file_path)
         relative_lock_path_str = str(absolute_lock_path.relative_to(
             git_repo.repo_path)).replace(os.sep, '/')
 
@@ -2552,9 +2585,11 @@ async def cancel_checkout(filename: str, request: CheckoutRequest):
                 with git_repo.repo.git.custom_environment(**git_repo.git_env):
                     # Reset the file to its pointer state
                     git_repo.repo.git.checkout('HEAD', '--', file_path)
-                logger.info(f"Cleaned up LFS file after cancel: {file_path}")
+                logger.info(
+                    f"Cleaned up LFS file after cancel: {file_path}")
             except Exception as e:
-                logger.warning(f"Failed to clean up LFS file {file_path}: {e}")
+                logger.warning(
+                    f"Failed to clean up LFS file {file_path}: {e}")
 
         commit_message = f"USER CANCEL: Unlock {filename} by {request.user}"
 
@@ -2567,7 +2602,8 @@ async def cancel_checkout(filename: str, request: CheckoutRequest):
             return JSONResponse({"status": "success", "message": "Checkout cancelled and file cleaned up."})
         else:
             # Rollback: Restore the lock
-            metadata_manager.create_lock(file_path, request.user, force=True)
+            metadata_manager.create_lock(
+                file_path, request.user, force=True)
             raise HTTPException(
                 status_code=500,
                 detail="Failed to commit checkout cancellation. Lock has been restored."
@@ -2579,7 +2615,8 @@ async def cancel_checkout(filename: str, request: CheckoutRequest):
         logger.error(
             f"Unexpected error in cancel_checkout: {e}", exc_info=True)
         try:
-            metadata_manager.create_lock(file_path, request.user, force=True)
+            metadata_manager.create_lock(
+                file_path, request.user, force=True)
         except:
             logger.error("Failed to restore lock after error")
         raise HTTPException(
@@ -2687,7 +2724,8 @@ async def admin_delete_file(filename: str, request: AdminDeleteRequest):
             # REGULAR FILE DELETION LOGIC (existing code)
             file_path_str = find_file_path(filename)
             if not file_path_str:
-                raise HTTPException(status_code=404, detail="File not found")
+                raise HTTPException(
+                    status_code=404, detail="File not found")
 
             # Safety check for locked files
             lock_info = metadata_manager.get_lock_info(file_path_str)
@@ -2721,7 +2759,8 @@ async def admin_delete_file(filename: str, request: AdminDeleteRequest):
 
             # Remove the actual file and clean up
             absolute_file_path.unlink(missing_ok=True)
-            metadata_manager.release_lock(file_path_str)  # Clean up any lock
+            metadata_manager.release_lock(
+                file_path_str)  # Clean up any lock
 
             commit_message = f"ADMIN DELETE FILE: {filename} by {request.admin_user}"
             success = git_repo.commit_and_push(
@@ -2775,7 +2814,8 @@ async def admin_delete_file(filename: str, request: AdminDeleteRequest):
     tags=["File Management"]
 )
 async def download_file(filename: str):
-    git_repo, file_path = app_state.get('git_repo'), find_file_path(filename)
+    git_repo, file_path = app_state.get(
+        'git_repo'), find_file_path(filename)
     if not git_repo or not file_path:
         raise HTTPException(status_code=404)
 
@@ -2847,7 +2887,8 @@ async def get_file_history(filename: str):
             # Regular file logic
             file_path = find_file_path(filename)
             if not file_path:
-                raise HTTPException(status_code=404, detail="File not found")
+                raise HTTPException(
+                    status_code=404, detail="File not found")
             return {"filename": filename, "history": git_repo.get_file_history(file_path)}
 
     except Exception as e:
@@ -2895,7 +2936,8 @@ async def download_file_version(filename: str, commit_hash: str):
         if not file_path:
             raise HTTPException(
                 status_code=404, detail="File not found in current version.")
-        content = git_repo.get_file_content_at_commit(file_path, commit_hash)
+        content = git_repo.get_file_content_at_commit(
+            file_path, commit_hash)
         if content is None:
             raise HTTPException(
                 status_code=404, detail=f"File '{filename}' not found in commit '{commit_hash[:7]}'.")
@@ -2919,7 +2961,8 @@ async def websocket_endpoint(websocket: WebSocket, user: str = "anonymous"):
 
     # Send any pending messages immediately on connect
     if (git_repo := app_state.get('git_repo')):
-        user_message_file = git_repo.repo_path / ".messages" / f"{user}.json"
+        user_message_file = git_repo.repo_path / \
+            ".messages" / f"{user}.json"
         if user_message_file.exists():
             try:
                 messages = json.loads(user_message_file.read_text())
@@ -3025,7 +3068,8 @@ async def get_activity_feed(limit: int = 50, offset: int = 0):
 
             elif msg.startswith("LOCK:"):
                 event_type = "CHECK_OUT"
-                filename = msg.replace("LOCK:", "").split(" by ")[0].strip()
+                filename = msg.replace("LOCK:", "").split(" by ")[
+                    0].strip()
 
             elif msg.startswith("REFRESH LOCK:"):
                 event_type = "REFRESH_LOCK"
@@ -3108,7 +3152,8 @@ async def check_messages(user: str):
         if not git_repo:
             return JSONResponse({"messages": []})
 
-        user_message_file = git_repo.repo_path / ".messages" / f"{user}.json"
+        user_message_file = git_repo.repo_path / \
+            ".messages" / f"{user}.json"
         if user_message_file.exists():
             try:
                 messages = json.loads(user_message_file.read_text())
@@ -3351,7 +3396,8 @@ async def reset_repository(request: AdminRequest):
         for attempt in range(3):
             try:
                 if repo_path.exists():
-                    shutil.rmtree(repo_path, onerror=handle_remove_readonly)
+                    shutil.rmtree(
+                        repo_path, onerror=handle_remove_readonly)
                 break
             except Exception as delete_error:
                 last_error = delete_error
@@ -3364,7 +3410,8 @@ async def reset_repository(request: AdminRequest):
         # Reinitialize the repository
         git_repo.repo = None  # Clear existing repo object
         git_repo._init_repo()  # Use the correct method name from GitRepository class
-        logger.info("Repository synchronized and application fully initialized")
+        logger.info(
+            "Repository synchronized and application fully initialized")
 
         # Restart polling task
         if not any(isinstance(t, asyncio.Task) and t.get_name() == 'git_polling_task' for t in asyncio.all_tasks()):
@@ -3417,13 +3464,15 @@ async def create_backup(request: Request):
         logger.error(f"Backup creation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Add to mastercam_main.py - Enhanced cleanup endpoint
+
 
 @app.post("/admin/cleanup_lfs")
-@app.post("/admin/cleanup_lfs")
 async def cleanup_lfs(request: AdminRequest):
-    """Cleanup old LFS objects and stale metadata files"""
+    """Enhanced cleanup with better reporting"""
     if request.admin_user not in ADMIN_USERS:
-        raise HTTPException(status_code=403, detail="Admin access required")
+        raise HTTPException(
+            status_code=403, detail="Admin access required")
 
     git_repo = app_state.get('git_repo')
     metadata_manager = app_state.get('metadata_manager')
@@ -3434,11 +3483,21 @@ async def cleanup_lfs(request: AdminRequest):
     try:
         files_to_commit = []
         commit_message_lines = []
+        cleanup_stats = {
+            'locks_removed': 0,
+            'messages_removed': 0,
+            'lfs_pruned': False
+        }
 
         # Run LFS prune
-        with git_repo.repo.git.custom_environment(**git_repo.git_env):
-            result = git_repo.repo.git.lfs('prune')
-            commit_message_lines.append(f"LFS cleanup: {result}")
+        try:
+            with git_repo.repo.git.custom_environment(**git_repo.git_env):
+                result = git_repo.repo.git.lfs('prune')
+                commit_message_lines.append(f"LFS cleanup: {result}")
+                cleanup_stats['lfs_pruned'] = True
+        except Exception as e:
+            logger.warning(f"LFS prune failed (may be expected): {e}")
+            commit_message_lines.append("LFS prune: Skipped or not needed")
 
         # Clean stale lock files (older than 7 days)
         locks_dir = metadata_manager.locks_dir
@@ -3452,31 +3511,34 @@ async def cleanup_lfs(request: AdminRequest):
                         git_repo.repo_path)).replace(os.sep, '/')
                     lock_file.unlink()
                     files_to_commit.append(relative_path)
+                    cleanup_stats['locks_removed'] += 1
                     commit_message_lines.append(
                         f"Removed stale lock: {lock_file.name}")
             except Exception as e:
                 logger.warning(
                     f"Could not process lock file {lock_file.name}: {e}")
 
-        # Clean stale message files (empty or older than 7 days)
+        # Clean stale message files
         messages_dir = git_repo.repo_path / ".messages"
-        for message_file in messages_dir.glob("*.json"):
-            try:
-                messages = json.loads(message_file.read_text())
-                file_time = datetime.fromtimestamp(
-                    message_file.stat().st_mtime, tz=timezone.utc)
-                if not messages or (datetime.now(timezone.utc) - file_time).days > 7:
-                    relative_path = str(message_file.relative_to(
-                        git_repo.repo_path)).replace(os.sep, '/')
-                    message_file.unlink()
-                    files_to_commit.append(relative_path)
-                    commit_message_lines.append(
-                        f"Removed stale message file: {message_file.name}")
-            except Exception as e:
-                logger.warning(
-                    f"Could not process message file {message_file.name}: {e}")
+        if messages_dir.exists():
+            for message_file in messages_dir.glob("*.json"):
+                try:
+                    messages = json.loads(message_file.read_text())
+                    file_time = datetime.fromtimestamp(
+                        message_file.stat().st_mtime, tz=timezone.utc)
+                    if not messages or (datetime.now(timezone.utc) - file_time).days > 7:
+                        relative_path = str(message_file.relative_to(
+                            git_repo.repo_path)).replace(os.sep, '/')
+                        message_file.unlink()
+                        files_to_commit.append(relative_path)
+                        cleanup_stats['messages_removed'] += 1
+                        commit_message_lines.append(
+                            f"Removed stale message file: {message_file.name}")
+                except Exception as e:
+                    logger.warning(
+                        f"Could not process message file {message_file.name}: {e}")
 
-        # Commit cleanup changes
+        # Commit cleanup changes if any
         if files_to_commit:
             success = git_repo.commit_and_push(
                 files_to_commit,
@@ -3489,8 +3551,9 @@ async def cleanup_lfs(request: AdminRequest):
                 await handle_successful_git_operation()
                 return JSONResponse({
                     "status": "success",
-                    "message": "LFS cleanup and metadata cleanup complete",
-                    "details": commit_message_lines
+                    "message": f"Cleanup complete: {cleanup_stats['locks_removed']} locks, {cleanup_stats['messages_removed']} messages removed",
+                    "details": commit_message_lines,
+                    "stats": cleanup_stats
                 })
             else:
                 raise HTTPException(
@@ -3498,12 +3561,14 @@ async def cleanup_lfs(request: AdminRequest):
         else:
             return JSONResponse({
                 "status": "success",
-                "message": "LFS cleanup complete, no stale metadata files found",
-                "details": commit_message_lines
+                "message": "Cleanup complete - no stale files found",
+                "details": commit_message_lines,
+                "stats": cleanup_stats
             })
 
     except Exception as e:
-        logger.error(f"LFS and metadata cleanup failed: {e}", exc_info=True)
+        logger.error(
+            f"LFS and metadata cleanup failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Cleanup failed: {str(e)}")
 

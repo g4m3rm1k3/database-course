@@ -27,15 +27,11 @@ const domCache = {
   searchInput: document.getElementById("searchInput"),
   clearSearchBtn: document.getElementById("clearSearchBtn"),
   dashboardModal: document.getElementById("dashboardModal"),
-  messagesModal: document.getElementById("messagesModal"), // Messages modal
-  configModal: document.getElementById("configModal"), // Configuration modal
-  mainContent: document.getElementById("mainContent"), // Replace with your main container ID
   tooltipToggle: document.getElementById("tooltip-toggle"),
   repoStatus: document.getElementById("repo-status"),
   connectionStatus: document.getElementById("connection-status"),
 };
 
-// -- Enhanced Tooltip System with HTML Element Support --
 const tooltips = {
   // Main interface tooltips
   searchInput: {
@@ -72,11 +68,25 @@ const tooltips = {
     position: "bottom",
   },
 
+  // Header elements
+  currentUser: {
+    title: "Current User",
+    content:
+      "The username you're logged in as. This will be used for all file operations and commits.",
+    position: "bottom",
+  },
+  connectionStatus: {
+    title: "Connection Status",
+    content:
+      "Shows if WebSocket connection to server is active. Green = connected, Red = disconnected.",
+    position: "bottom",
+  },
+
   // Settings and configuration
   gitlabUrl: {
     title: "GitLab URL",
     content:
-      "Enter your GitLab project URL (e.g., https://gitlab.com/<project>.git)",
+      "Enter your GitLab project URL (e.g., https://gitlab.com/project.git)",
     position: "top",
   },
   projectId: {
@@ -96,6 +106,41 @@ const tooltips = {
     content:
       'Generate a personal access token in GitLab with "api" scope. Keep this secure!',
     position: "top",
+  },
+  allowInsecureSsl: {
+    title: "Allow Insecure SSL",
+    content:
+      "Disables SSL certificate verification. Only use this for internal/development GitLab servers. Never use with public internet.",
+    position: "top",
+  },
+  configStatusText: {
+    title: "Configuration Status",
+    content: "Shows whether GitLab credentials have been configured.",
+    position: "top",
+  },
+  configRepoText: {
+    title: "Repository Location",
+    content: "Local file system path where the repository is stored.",
+    position: "top",
+  },
+
+  // Config tabs
+  configTab: {
+    title: "GitLab Configuration",
+    content: "Configure your GitLab connection and repository settings.",
+    position: "bottom",
+  },
+  adminTab: {
+    title: "Admin Settings",
+    content:
+      "Administrative functions for backup, cleanup, and repository management.",
+    position: "bottom",
+  },
+  healthTab: {
+    title: "System Health",
+    content:
+      "View system status including repository, network, and LFS health.",
+    position: "bottom",
   },
 
   // Form elements
@@ -134,6 +179,18 @@ const tooltips = {
       "Choose your Mastercam file. Follow naming convention: 1234567_MACHINE.mcx",
     position: "top",
   },
+  newLinkFilename: {
+    title: "Link Filename",
+    content:
+      "Enter the name for this link (e.g., 1234567_M80). Do not include a file extension.",
+    position: "top",
+  },
+  linkToMaster: {
+    title: "Master File",
+    content:
+      "Select which existing file this link should point to. Start typing to see available files.",
+    position: "top",
+  },
   recipientUserSelect: {
     title: "Message Recipient",
     content:
@@ -167,6 +224,29 @@ const tooltips = {
   configBtn: {
     title: "Settings Panel",
     content: "Configure GitLab connection and user preferences.",
+    position: "left",
+  },
+
+  // Modal buttons
+  cancelCheckin: {
+    title: "Cancel Check-in",
+    content:
+      "Close this dialog without checking in the file. Your lock will remain active.",
+    position: "top",
+  },
+  cancelNewUpload: {
+    title: "Cancel Upload",
+    content: "Close this dialog without uploading. No changes will be made.",
+    position: "top",
+  },
+  cancelSendMessage: {
+    title: "Cancel",
+    content: "Close this dialog without sending the message.",
+    position: "top",
+  },
+  closeDashboardBtn: {
+    title: "Close Dashboard",
+    content: "Return to the main file list view.",
     position: "left",
   },
 
@@ -295,6 +375,27 @@ const tooltips = {
       "Minor: Small changes (1.1→1.2). Major: Significant changes (1.2→2.0).",
     position: "right",
   },
+  revisionMinor: {
+    title: "Minor Revision",
+    content: "Small changes like tool path adjustments (e.g., 1.1 → 1.2)",
+    position: "right",
+  },
+  revisionMajor: {
+    title: "Major Revision",
+    content: "Significant changes like complete redesign (e.g., 1.2 → 2.0)",
+    position: "right",
+  },
+  uploadTypeFile: {
+    title: "Upload File",
+    content: "Upload a new physical Mastercam file to the repository.",
+    position: "bottom",
+  },
+  uploadTypeLink: {
+    title: "Create Link",
+    content:
+      "Create a virtual link that points to an existing file. Links share content but have separate revision histories.",
+    position: "bottom",
+  },
 
   // Submit button tooltips
   checkinSubmit: {
@@ -333,218 +434,306 @@ const tooltips = {
   },
 };
 
-function initTooltipSystem() {
-  // Add tooltip CSS if not already present
+// ===== LAZY-LOADED TOOLTIP SYSTEM =====
+const MAX_CACHED_TOOLTIPS = 50;
+let activeTooltip = null;
+const tooltipCache = new Map();
+let tooltipObserver = null;
+
+function initLazyTooltipSystem() {
+  // Create stylesheet only once
   if (!document.getElementById("tooltip-styles")) {
     const style = document.createElement("style");
     style.id = "tooltip-styles";
     style.textContent = `
-      .tooltip {
-        position: absolute;
-        background: linear-gradient(135deg, #1f2937, #374151);
-        color: white;
-        padding: 8px 12px;
-        border-radius: 8px;
-        font-size: 13px;
-        font-weight: 500;
-        line-height: 1.4;
-        z-index: 9999;
-        opacity: 0;
-        visibility: hidden;
-        transform: scale(0.8);
-        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-        box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        max-width: 280px;
-        word-wrap: break-word;
-        pointer-events: none;
-      }
-      
-      .tooltip.show {
-        opacity: 1;
-        visibility: visible;
-        transform: scale(1);
-      }
-      
-      .tooltip .tooltip-title {
-        font-weight: 600;
-        font-size: 14px;
-        margin-bottom: 4px;
-        color: #fbbf24;
-      }
-      
-      .tooltip .tooltip-content {
-        font-weight: 400;
-      }
-      
-      .tooltip::after {
-        content: '';
-        position: absolute;
-        width: 0;
-        height: 0;
-        border: 6px solid transparent;
-      }
-      
-      .tooltip.position-top::after {
-        top: 100%;
-        left: 50%;
-        transform: translateX(-50%);
-        border-top-color: #1f2937;
-      }
-      
-      .tooltip.position-bottom::after {
-        bottom: 100%;
-        left: 50%;
-        transform: translateX(-50%);
-        border-bottom-color: #1f2937;
-      }
-      
-      .tooltip.position-left::after {
-        left: 100%;
-        top: 50%;
-        transform: translateY(-50%);
-        border-left-color: #1f2937;
-      }
-      
-      .tooltip.position-right::after {
-        right: 100%;
-        top: 50%;
-        transform: translateY(-50%);
-        border-right-color: #1f2937;
-      }
-
-      .tooltip-enabled {
-        position: relative;
-      }
-
-      .tooltip-enabled::before {
-        content: '?';
-        position: absolute;
-        top: -2px;
-        right: -2px;
-        background: #fbbf24;
-        color: #1f2937;
-        border-radius: 50%;
-        width: 16px;
-        height: 16px;
-        font-size: 10px;
-        font-weight: bold;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 10;
-        pointer-events: none;
-        opacity: 0.8;
-      }
-
-      .tooltip-toggle-btn {
-        position: fixed;
-        top: 50px;
-        left: 20px;
-        z-index: 1000;
-        background: linear-gradient(135deg, #fbbf24, #f59e0b);
-        color: #1f2937;
-        border: none;
-        border-radius: 50%;
-        width: 50px;
-        height: 50px;
-        font-size: 18px;
-        font-weight: bold;
-        cursor: pointer;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-        transition: all 0.2s ease;
-      }
-
-      .tooltip-toggle-btn:hover {
-        transform: scale(1.1);
-        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
-      }
-
-      .tooltip-toggle-btn.disabled {
-        background: linear-gradient(135deg, #6b7280, #4b5563);
-        color: #9ca3af;
-      }
-    `;
+  .tooltip {
+    position: absolute;
+    background: linear-gradient(135deg, #1f2937, #374151);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.4;
+    z-index: 9999;
+    opacity: 0;
+    visibility: hidden;
+    transform: scale(0.8);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    max-width: 280px;
+    word-wrap: break-word;
+    pointer-events: none;
+  }
+  
+  .tooltip.show {
+    opacity: 1;
+    visibility: visible;
+    transform: scale(1);
+  }
+  
+  .tooltip .tooltip-title {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 4px;
+    color: #fbbf24;
+  }
+  
+  /* Only show question mark on input fields and static elements */
+  input.tooltip-enabled::before,
+  textarea.tooltip-enabled::before,
+  select.tooltip-enabled::before,
+  div.tooltip-enabled:not([class*="flex"])::before {
+    content: '?';
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    background: #fbbf24;
+    color: #1f2937;
+    border-radius: 50%;
+    width: 16px;
+    height: 16px;
+    font-size: 10px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    pointer-events: none;
+    opacity: 0.8;
+  }
+`;
     document.head.appendChild(style);
   }
 
-  // Create tooltip toggle button
-  if (!document.getElementById("tooltip-toggle")) {
-    const toggleBtn = document.createElement("button");
-    toggleBtn.id = "tooltip-toggle";
-    toggleBtn.className = `tooltip-toggle-btn ${
-      tooltipsEnabled ? "" : "disabled"
-    }`;
-    toggleBtn.innerHTML = "?";
-    toggleBtn.title = "Toggle Help Tooltips";
-    toggleBtn.addEventListener("click", toggleTooltips);
-    document.body.appendChild(toggleBtn);
+  // Create or ensure toggle button exists
+  ensureTooltipToggleExists();
+
+  // Set up Intersection Observer for lazy loading
+  if (!tooltipObserver && tooltipsEnabled) {
+    tooltipObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && entry.target.dataset.tooltipKey) {
+            attachTooltipHandlers(entry.target);
+          }
+        });
+      },
+      { rootMargin: "50px" }
+    );
   }
 
-  // Initialize tooltips
   updateTooltipVisibility();
 }
 
 function toggleTooltips() {
   tooltipsEnabled = !tooltipsEnabled;
-  localStorage.setItem("tooltipsEnabled", tooltipsEnabled.toString());
+  localStorage.setItem("tooltipsEnabled", tooltipsEnabled);
 
   const toggleBtn = document.getElementById("tooltip-toggle");
   if (toggleBtn) {
-    toggleBtn.classList.toggle("disabled", !tooltipsEnabled);
+    toggleBtn.style.background = tooltipsEnabled ? "#f59e0b" : "#9ca3af";
+    toggleBtn.style.borderColor = tooltipsEnabled ? "#d97706" : "#6b7280";
+    toggleBtn.style.opacity = tooltipsEnabled ? "1" : "0.7";
   }
 
   updateTooltipVisibility();
+
   showNotification(
     tooltipsEnabled ? "Help tooltips enabled" : "Help tooltips disabled",
-    "info"
+    tooltipsEnabled ? "success" : "info"
   );
 }
 
+function attachTooltipHandlers(element) {
+  if (element.dataset.tooltipAttached === "true") return;
+
+  const tooltipKey = element.dataset.tooltipKey || element.id;
+
+  // Don't attach if no valid key or tooltip data
+  if (!tooltipKey || !tooltipKey.trim() || !tooltips[tooltipKey]) {
+    return;
+  }
+
+  element.dataset.tooltipKey = tooltipKey;
+  element.addEventListener("mouseenter", showTooltip);
+  element.addEventListener("mouseleave", hideTooltip);
+  element.classList.add("tooltip-enabled");
+  element.dataset.tooltipAttached = "true";
+}
 function updateTooltipVisibility() {
-  // Remove existing tooltips and event listeners
-  document.querySelectorAll(".tooltip").forEach((tooltip) => tooltip.remove());
-  document.querySelectorAll("[data-tooltip]").forEach((el) => {
-    el.removeEventListener("mouseenter", showTooltip);
-    el.removeEventListener("mouseleave", hideTooltip);
-    el.removeAttribute("data-tooltip");
+  if (tooltipObserver) {
+    tooltipObserver.disconnect();
+  }
+
+  document.querySelectorAll(".tooltip-enabled").forEach((el) => {
     el.classList.remove("tooltip-enabled");
+    el.removeAttribute("data-tooltip-attached");
   });
 
   if (!tooltipsEnabled) return;
 
-  // Add tooltips to elements by ID
+  // Add tooltips to all defined elements by ID
   Object.keys(tooltips).forEach((elementId) => {
     const element = document.getElementById(elementId);
     if (element) {
-      addTooltipToElement(element, elementId);
+      element.dataset.tooltipKey = elementId;
+      if (tooltipObserver) {
+        tooltipObserver.observe(element);
+      } else {
+        attachTooltipHandlers(element);
+      }
     }
   });
 
-  // Add tooltips to floating action buttons
-  const elementMappings = [
-    {
-      selector: 'button[onclick="showNewFileDialog()"]',
-      tooltip: "newFileBtn",
-    },
-    { selector: 'button[onclick="manualRefresh()"]', tooltip: "refreshBtn" },
-    { selector: 'button[onclick="toggleDarkMode()"]', tooltip: "darkModeBtn" },
-    { selector: 'button[onclick="toggleConfigPanel()"]', tooltip: "configBtn" },
-  ];
-
-  elementMappings.forEach((mapping) => {
-    document.querySelectorAll(mapping.selector).forEach((element) => {
-      if (!element.dataset.tooltip) {
-        addTooltipToElement(element, mapping.tooltip);
-      }
-    });
+  // Add tooltips to radio buttons by name attribute
+  document.querySelectorAll('input[type="radio"]').forEach((radio) => {
+    if (radio.name === "rev_type" && radio.value === "minor") {
+      radio.dataset.tooltipKey = "revisionMinor";
+      attachTooltipHandlers(radio);
+    } else if (radio.name === "rev_type" && radio.value === "major") {
+      radio.dataset.tooltipKey = "revisionMajor";
+      attachTooltipHandlers(radio);
+    } else if (radio.name === "uploadType" && radio.value === "file") {
+      radio.dataset.tooltipKey = "uploadTypeFile";
+      attachTooltipHandlers(radio);
+    } else if (radio.name === "uploadType" && radio.value === "link") {
+      radio.dataset.tooltipKey = "uploadTypeLink";
+      attachTooltipHandlers(radio);
+    }
   });
 
-  // Add data element tooltips
-  addDataElementTooltips();
+  // Add tooltips to labels for radio buttons
+  document
+    .querySelectorAll(
+      'label[for="uploadTypeFile"], label[for="uploadTypeLink"]'
+    )
+    .forEach((label) => {
+      const forAttr = label.getAttribute("for");
+      if (forAttr === "uploadTypeFile") {
+        label.dataset.tooltipKey = "uploadTypeFile";
+        attachTooltipHandlers(label);
+      } else if (forAttr === "uploadTypeLink") {
+        label.dataset.tooltipKey = "uploadTypeLink";
+        attachTooltipHandlers(label);
+      }
+    });
 
-  // Add dynamic tooltips for action buttons
   addDynamicTooltips();
+}
+function debugTooltips() {
+  console.log("Tooltips enabled:", tooltipsEnabled);
+  console.log(
+    "Elements with tooltips:",
+    document.querySelectorAll("[data-tooltip-key]").length
+  );
+  console.log("Tooltip cache size:", tooltipCache.size);
+}
+
+// Replace tooltip management with this
+
+function showTooltip(event) {
+  if (!tooltipsEnabled) return;
+
+  const element = event.currentTarget;
+  const tooltipKey = element.dataset.tooltipKey || element.id;
+
+  // Ignore if no valid key
+  if (!tooltipKey || tooltipKey.trim() === "") {
+    return;
+  }
+
+  const tooltipData = tooltips[tooltipKey];
+
+  if (!tooltipData) {
+    return; // Silently ignore missing tooltips
+  }
+
+  // Hide current tooltip
+  if (activeTooltip) {
+    hideTooltip();
+  }
+
+  // Get or create tooltip
+  let tooltip = tooltipCache.get(tooltipKey);
+
+  if (!tooltip) {
+    // Manage cache size
+    if (tooltipCache.size >= MAX_CACHED_TOOLTIPS) {
+      const firstKey = tooltipCache.keys().next().value;
+      const oldTooltip = tooltipCache.get(firstKey);
+      if (oldTooltip && oldTooltip !== activeTooltip) {
+        oldTooltip.remove();
+        tooltipCache.delete(firstKey);
+      }
+    }
+
+    tooltip = document.createElement("div");
+    tooltip.className = `tooltip position-${tooltipData.position || "top"}`;
+
+    const titleHtml = tooltipData.title
+      ? `<div class="tooltip-title">${tooltipData.title}</div>`
+      : "";
+    const contentHtml = tooltipData.content;
+    tooltip.innerHTML = `${titleHtml}<div class="tooltip-content">${contentHtml}</div>`;
+
+    document.body.appendChild(tooltip);
+    tooltipCache.set(tooltipKey, tooltip);
+  }
+
+  activeTooltip = tooltip;
+  tooltip.targetElement = element;
+  tooltip.preferredPosition = tooltipData.position || "top";
+  positionTooltip(tooltip, element, tooltip.preferredPosition);
+
+  setTimeout(() => tooltip.classList.add("show"), 10);
+
+  // Throttled scroll handler
+  let scrollTimeout;
+  const repositionOnScroll = () => {
+    if (scrollTimeout) return;
+    scrollTimeout = setTimeout(() => {
+      if (tooltip.classList.contains("show") && tooltip.targetElement) {
+        positionTooltip(
+          tooltip,
+          tooltip.targetElement,
+          tooltip.preferredPosition
+        );
+      }
+      scrollTimeout = null;
+    }, 16); // ~60fps
+  };
+
+  window.addEventListener("scroll", repositionOnScroll, { passive: true });
+  window.addEventListener("resize", repositionOnScroll);
+
+  tooltip.cleanup = () => {
+    window.removeEventListener("scroll", repositionOnScroll);
+    window.removeEventListener("resize", repositionOnScroll);
+    if (scrollTimeout) {
+      clearTimeout(scrollTimeout);
+    }
+  };
+}
+function hideTooltip() {
+  if (activeTooltip) {
+    activeTooltip.classList.remove("show");
+    if (activeTooltip.cleanup) {
+      activeTooltip.cleanup();
+    }
+    activeTooltip = null;
+  }
+}
+
+function hideTooltip() {
+  const tooltip = document.querySelector(".tooltip.show");
+  if (tooltip) {
+    tooltip.classList.remove("show");
+    if (tooltip.cleanup) {
+      tooltip.cleanup();
+    }
+  }
 }
 
 function addDataElementTooltips() {
@@ -603,137 +792,42 @@ function addDataElementTooltips() {
 
 function addTooltipToElement(element, tooltipKey) {
   if (!tooltipsEnabled) return;
+  if (!element || !tooltipKey) return;
 
-  element.dataset.tooltip = tooltipKey;
+  element.dataset.tooltipKey = tooltipKey; // Changed from dataset.tooltip
   element.classList.add("tooltip-enabled");
-  element.addEventListener("mouseenter", showTooltip);
-  element.addEventListener("mouseleave", hideTooltip);
+
+  if (element.dataset.tooltipAttached !== "true") {
+    element.addEventListener("mouseenter", showTooltip);
+    element.addEventListener("mouseleave", hideTooltip);
+    element.dataset.tooltipAttached = "true";
+  }
 }
 
 function addDynamicTooltips() {
   if (!tooltipsEnabled) return;
 
-  // Regular file action tooltips
-  document.querySelectorAll(".js-checkout-btn").forEach((btn) => {
-    addTooltipToElement(btn, "checkout");
-  });
+  // Map of CSS selectors to tooltip keys
+  const buttonMappings = [
+    { selector: ".js-checkout-btn", key: "checkout" },
+    { selector: ".js-checkin-btn", key: "checkin" },
+    { selector: ".js-cancel-checkout-btn", key: "cancel-checkout" },
+    { selector: ".js-download-btn", key: "download" },
+    { selector: 'a[href*="/download"]', key: "download" },
+    { selector: ".js-history-btn", key: "history" },
+    { selector: ".js-override-btn", key: "override" },
+    { selector: ".js-view-master-btn", key: "view-master" },
+    { selector: ".js-delete-btn", key: "delete" },
+  ];
 
-  document.querySelectorAll(".js-checkin-btn").forEach((btn) => {
-    addTooltipToElement(btn, "checkin");
-  });
-
-  document.querySelectorAll(".js-cancel-checkout-btn").forEach((btn) => {
-    addTooltipToElement(btn, "cancel-checkout");
-  });
-
-  document
-    .querySelectorAll('a[href*="/download"], .js-download-btn')
-    .forEach((btn) => {
-      addTooltipToElement(btn, "download");
+  buttonMappings.forEach(({ selector, key }) => {
+    document.querySelectorAll(selector).forEach((btn) => {
+      if (btn.dataset.tooltipAttached !== "true") {
+        btn.dataset.tooltipKey = key;
+        attachTooltipHandlers(btn);
+      }
     });
-
-  document.querySelectorAll(".js-history-btn").forEach((btn) => {
-    addTooltipToElement(btn, "history");
   });
-
-  document.querySelectorAll(".js-override-btn").forEach((btn) => {
-    addTooltipToElement(btn, "override");
-  });
-
-  document.querySelectorAll(".js-view-master-btn").forEach((btn) => {
-    addTooltipToElement(btn, "view-master");
-  });
-
-  // Admin delete buttons - check if it's a link or regular file for different tooltip
-  document.querySelectorAll(".js-delete-btn").forEach((btn) => {
-    const filename = btn.dataset.filename;
-    const safeId = `file-${filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
-    const fileElement = document.getElementById(safeId);
-    const isLink = fileElement && fileElement.querySelector(".fa-link");
-
-    if (isLink) {
-      addTooltipToElement(btn, "remove-link");
-    } else {
-      addTooltipToElement(btn, "delete");
-    }
-  });
-}
-
-function showTooltip(event) {
-  if (!tooltipsEnabled) return;
-
-  const tooltipKey = event.currentTarget.dataset.tooltip;
-  const tooltipData = tooltips[tooltipKey];
-  if (!tooltipData) return;
-
-  // Hide any other tooltips that might be visible
-  document.querySelectorAll(".tooltip.show").forEach((t) => {
-    if (t.cleanup) t.cleanup();
-    t.classList.remove("show");
-  });
-
-  // ✅ Check the cache for an existing tooltip element
-  let tooltip = tooltipCache.get(tooltipKey);
-
-  // If the tooltip is NOT in the cache, create it ONCE and store it
-  if (!tooltip) {
-    console.log(`Creating new tooltip for: ${tooltipKey}`); // Log for debugging
-    tooltip = document.createElement("div");
-    tooltip.className = `tooltip position-${tooltipData.position || "top"}`;
-
-    const titleHtml = tooltipData.title
-      ? `<div class="tooltip-title">${tooltipData.title}</div>`
-      : "";
-    const contentHtml = tooltipData.multiline
-      ? tooltipData.content.replace(/\n/g, "<br>")
-      : tooltipData.content;
-    tooltip.innerHTML = `${titleHtml}<div class="tooltip-content">${contentHtml}</div>`;
-
-    document.body.appendChild(tooltip);
-    tooltipCache.set(tooltipKey, tooltip); // Add the new element to our cache
-  }
-
-  // --- Position and show the tooltip (whether new or from cache) ---
-  tooltip.targetElement = event.currentTarget;
-  tooltip.preferredPosition = tooltipData.position || "top";
-  positionTooltip(tooltip, tooltip.targetElement, tooltip.preferredPosition);
-
-  // Show with animation
-  setTimeout(() => tooltip.classList.add("show"), 10);
-
-  // Add scroll listener for repositioning
-  const repositionOnScroll = () => {
-    if (tooltip.classList.contains("show") && tooltip.targetElement) {
-      positionTooltip(
-        tooltip,
-        tooltip.targetElement,
-        tooltip.preferredPosition
-      );
-    }
-  };
-
-  window.addEventListener("scroll", repositionOnScroll, { passive: true });
-  window.addEventListener("resize", repositionOnScroll);
-
-  // Store a cleanup function on the tooltip element itself
-  tooltip.cleanup = () => {
-    window.removeEventListener("scroll", repositionOnScroll);
-    window.removeEventListener("resize", repositionOnScroll);
-  };
-}
-
-function hideTooltip() {
-  const tooltip = document.querySelector(".tooltip.show");
-  if (tooltip) {
-    tooltip.classList.remove("show");
-    // Clean up the event listeners
-    if (tooltip.cleanup) {
-      tooltip.cleanup();
-    }
-    // ✅ IMPORTANT: We no longer remove the element from the DOM.
-    // This keeps it in our cache for the next time it's needed.
-    // The line "setTimeout(() => tooltip.remove(), 200);" is now gone.
-  }
 }
 
 function positionTooltip(tooltip, targetElement, position) {
@@ -782,8 +876,6 @@ function positionTooltip(tooltip, targetElement, position) {
   tooltip.style.top = top + "px";
 }
 
-const tooltipCache = new Map();
-
 // -- Notification Debounce --
 function debounceNotifications(message, type, delay = 5000) {
   const now = Date.now();
@@ -799,7 +891,6 @@ function debounceNotifications(message, type, delay = 5000) {
   showNotification(message, type);
 }
 
-// -- WebSocket Management --
 async function checkForMessages() {
   try {
     const response = await fetch(
@@ -813,9 +904,9 @@ async function checkForMessages() {
     }
   } catch (error) {
     console.error("Failed to check messages:", error);
+    // Don't show notification for this - it's a background check
   }
 }
-
 // Update the WebSocket connection handler
 function connectWebSocket() {
   if (reconnectTimeout) {
@@ -866,33 +957,7 @@ function connectWebSocket() {
   };
 }
 
-// Update handleWebSocketMessage
-function handleWebSocketMessage(message) {
-  try {
-    const data = JSON.parse(message);
-
-    if (data.type === "FILE_LIST_UPDATED") {
-      const newHash = JSON.stringify(data.payload);
-      if (newHash === lastFileListHash) {
-        return;
-      }
-      lastFileListHash = newHash;
-      groupedFiles = data.payload || {};
-      renderFiles();
-    } else if (data.type === "NEW_MESSAGES") {
-      if (data.payload && data.payload.length > 0) {
-        console.log(`Received ${data.payload.length} new messages.`);
-        populateAndShowMessagesModal(data.payload);
-      }
-    }
-  } catch (error) {
-    console.error("Error handling WebSocket message:", error);
-    if (!navigator.onLine) {
-      handleOfflineStatus();
-    }
-  }
-}
-
+handleWebSocketMessage;
 function disconnectWebSocket() {
   if (ws) {
     isManualDisconnect = true;
@@ -1013,264 +1078,222 @@ function viewMasterFile(masterFilename) {
   }
 }
 
-// Keep a reference to the previous state to compare against
-let previousGroupedFiles = {};
-
 function renderFiles() {
   const fileListEl = document.getElementById("fileList");
   const searchTerm = document.getElementById("searchInput").value.toLowerCase();
+
+  if (!groupedFiles || Object.keys(groupedFiles).length === 0) {
+    fileListEl.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-gray-600 dark:text-gray-400"><i class="fa-solid fa-exclamation-triangle text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No Connection</h3><p class="mt-2 text-center">Unable to load files. Check your configuration.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-md hover:bg-opacity-80">Try Again</button></div>`;
+    return;
+  }
+
   const expandedGroups =
     JSON.parse(localStorage.getItem("expandedGroups")) || [];
   const expandedSubGroups =
     JSON.parse(localStorage.getItem("expandedSubGroups")) || [];
 
-  // Create a temporary, in-memory container to build the new UI
-  const newFileListContainer = fileListEl.cloneNode(false);
   let totalFilesFound = 0;
+  let htmlContent = "";
 
-  if (!groupedFiles || Object.keys(groupedFiles).length === 0) {
-    newFileListContainer.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-gray-600 dark:text-gray-400"><i class="fa-solid fa-exclamation-triangle text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No Connection</h3><p class="mt-2 text-center">Unable to load files. Check your configuration.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-md hover:bg-opacity-80">Try Again</button></div>`;
-    morphdom(fileListEl, newFileListContainer);
-    return;
-  }
+  const sortedGroups = Object.keys(groupedFiles).sort();
 
-  const sortedGroupNames = Object.keys(groupedFiles).sort((a, b) => {
-    const isAMisc = a === "Miscellaneous";
-    const isBMisc = b === "Miscellaneous";
-    if (isAMisc) return 1;
-    if (isBMisc) return -1;
-    return a.localeCompare(b);
-  });
+  for (const groupName of sortedGroups) {
+    const groupFiles = groupedFiles[groupName];
 
-  sortedGroupNames.forEach((groupName) => {
-    const filesInGroup = groupedFiles[groupName];
-    if (!Array.isArray(filesInGroup)) return;
-
-    const subGroupedFiles = {};
-    filesInGroup.forEach((file) => {
-      const sevenDigitPrefix =
-        file.filename.match(/^\d{7}/)?.[0] || "Miscellaneous";
-      if (!subGroupedFiles[sevenDigitPrefix]) {
-        subGroupedFiles[sevenDigitPrefix] = [];
-      }
-      subGroupedFiles[sevenDigitPrefix].push(file);
-    });
-
-    let groupFileCount = 0;
-    const filteredSubGroups = {};
-    Object.keys(subGroupedFiles).forEach((subGroupName) => {
-      const filteredFiles = subGroupedFiles[subGroupName].filter(
+    // Filter files based on search
+    let filteredFiles = groupFiles;
+    if (searchTerm) {
+      filteredFiles = groupFiles.filter(
         (file) =>
           file.filename.toLowerCase().includes(searchTerm) ||
-          file.path.toLowerCase().includes(searchTerm) ||
-          (file.master_file &&
-            file.master_file.toLowerCase().includes(searchTerm))
+          (file.description &&
+            file.description.toLowerCase().includes(searchTerm))
       );
-      if (filteredFiles.length > 0) {
-        filteredSubGroups[subGroupName] = filteredFiles.sort((a, b) =>
-          a.filename.localeCompare(b.filename)
-        );
-        groupFileCount += filteredFiles.length;
-      }
+    }
+
+    if (filteredFiles.length === 0) continue;
+
+    totalFilesFound += filteredFiles.length;
+    const isGroupOpen = expandedGroups.includes(groupName) || searchTerm;
+
+    // Create machine-based sub-groups
+    const subGroups = {};
+    filteredFiles.forEach((file) => {
+      const match = file.filename.match(/^(\d{7})/);
+      const subGroupKey = match ? match[1] : "Other";
+      if (!subGroups[subGroupKey]) subGroups[subGroupKey] = [];
+      subGroups[subGroupKey].push(file);
     });
 
-    if (groupFileCount === 0) return;
-    totalFilesFound += groupFileCount;
+    const sortedSubGroupKeys = Object.keys(subGroups).sort();
 
-    const detailsEl = document.createElement("details");
-    detailsEl.className =
-      "file-group group border-t border-gray-300 dark:border-gray-600";
-    detailsEl.dataset.groupName = groupName;
-    if (expandedGroups.includes(groupName) || searchTerm) {
-      detailsEl.open = true;
-    }
-    detailsEl.addEventListener("toggle", saveExpandedState);
+    htmlContent += `
+      <details class="bg-white dark:bg-gray-800 rounded-lg shadow-md file-group" 
+               data-group-name="${groupName}" ${isGroupOpen ? "open" : ""}>
+        <summary class="cursor-pointer p-4 font-semibold text-lg text-gray-900 dark:text-white hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors flex items-center justify-between">
+          <span><i class="fa-solid fa-folder mr-2 text-amber-500"></i>${groupName}</span>
+          <span class="text-sm font-normal text-gray-500 dark:text-gray-400">${
+            filteredFiles.length
+          } file(s)</span>
+        </summary>
+        <div class="p-4 space-y-4">`;
 
-    const summaryEl = document.createElement("summary");
-    summaryEl.className =
-      "list-none py-3 px-4 bg-gradient-to-r from-gray-100 to-white dark:from-gray-700 dark:to-gray-800 cursor-pointer hover:bg-opacity-80 flex justify-between items-center transition-colors";
-    summaryEl.innerHTML = `<div class="flex items-center space-x-3"><i class="fa-solid fa-chevron-right text-xs text-gray-600 dark:text-gray-400 transform transition-transform duration-200 group-open:rotate-90"></i><span class="font-semibold text-gray-800 dark:text-gray-200">${
-      groupName.endsWith("XXXXX") ? `${groupName} SERIES` : groupName
-    }</span></div><span class="text-sm font-medium text-gray-600 dark:text-gray-400">(${groupFileCount} files)</span>`;
-    detailsEl.appendChild(summaryEl);
+    for (const subGroupKey of sortedSubGroupKeys) {
+      const subGroupFiles = subGroups[subGroupKey];
+      const subGroupName = `${groupName}-${subGroupKey}`;
+      const isSubGroupOpen =
+        expandedSubGroups.includes(subGroupName) || searchTerm;
 
-    const subGroupsContainer = document.createElement("div");
-    subGroupsContainer.className = "pl-4";
+      // Determine if this sub-group contains links
+      const hasLinks = subGroupFiles.some((f) => f.is_link);
+      const iconClass = hasLinks
+        ? "fa-link text-purple-500"
+        : "fa-file text-blue-500";
 
-    Object.keys(filteredSubGroups)
-      .sort()
-      .forEach((subGroupName) => {
-        const filesInSubGroup = filteredSubGroups[subGroupName];
-        const subDetailsEl = document.createElement("details");
-        subDetailsEl.className =
-          "sub-file-group group border-t border-gray-200 dark:border-gray-600";
-        subDetailsEl.dataset.subGroupName = `${groupName}/${subGroupName}`;
-        if (
-          expandedSubGroups.includes(`${groupName}/${subGroupName}`) ||
-          searchTerm
-        ) {
-          subDetailsEl.open = true;
-        }
-        subDetailsEl.addEventListener("toggle", saveExpandedSubState);
+      htmlContent += `
+    <details class="bg-gray-50 dark:bg-gray-700 rounded-lg sub-file-group" 
+             data-sub-group-name="${subGroupName}" ${
+        isSubGroupOpen ? "open" : ""
+      }>
+      <summary class="cursor-pointer p-3 font-medium text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors flex items-center justify-between">
+        <span><i class="fa-solid ${iconClass} mr-2"></i>${subGroupKey}</span>
+        <span class="text-xs text-gray-500 dark:text-gray-400">${
+          subGroupFiles.length
+        } file(s)</span>
+      </summary>
+      <div class="p-3 space-y-3">`;
 
-        const subSummaryEl = document.createElement("summary");
-        subSummaryEl.className =
-          "list-none py-2 px-3 bg-gradient-to-r from-gray-50 to-gray-100 dark:from-gray-600 dark:to-gray-700 cursor-pointer hover:bg-opacity-80 flex justify-between items-center transition-colors";
-        subSummaryEl.innerHTML = `<div class="flex items-center space-x-3"><i class="fa-solid fa-chevron-right text-xs text-gray-600 dark:text-gray-400 transform transition-transform duration-200 group-open:rotate-90"></i><span class="font-medium text-gray-800 dark:text-gray-200">${subGroupName}</span></div><span class="text-sm font-medium text-gray-600 dark:text-gray-400">(${filesInSubGroup.length} files)</span>`;
-        subDetailsEl.appendChild(subSummaryEl);
-
-        const filesContainer = document.createElement("div");
-        filesContainer.className = "pl-4";
-
-        filesInSubGroup.forEach((file) => {
-          const fileEl = document.createElement("div");
-          fileEl.id = `file-${file.filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
-
-          let statusClass = "",
-            statusBadgeText = "";
-
-          if (file.is_link) {
-            statusClass =
-              "bg-purple-100 text-purple-900 dark:bg-purple-900 dark:text-purple-200";
-            statusBadgeText = `Links to ${file.master_file}`;
-          } else {
-            switch (file.status) {
-              case "unlocked":
-                statusClass =
-                  "bg-green-100 text-green-900 dark:bg-green-900 dark:text-green-200";
-                statusBadgeText = "Available";
-                break;
-              case "locked":
-                statusClass =
-                  "bg-red-100 text-red-900 dark:bg-red-900 dark:text-red-200";
-                statusBadgeText = `Locked by ${file.locked_by}`;
-                break;
-              case "checked_out_by_user":
-                statusClass =
-                  "bg-blue-100 text-blue-900 dark:bg-blue-900 dark:text-blue-200";
-                statusBadgeText = "Checked out by you";
-                break;
-              default:
-                statusClass =
-                  "bg-gray-100 text-gray-900 dark:bg-gray-600 dark:text-gray-200";
-                statusBadgeText = "Unknown";
-            }
-          }
-
-          const actionsHtml = getActionButtons(file);
-          fileEl.className =
-            "py-6 px-4 bg-white dark:bg-gray-800 hover:bg-opacity-80 transition-colors duration-200 border-b border-gray-300 dark:border-gray-600";
-
-          const linkBadge = file.is_link
-            ? `<span class="text-xs font-bold px-2.5 py-1 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" title="Linked to: ${file.master_file}"><i class="fa-solid fa-link"></i> Linked</span>`
-            : "";
-          const revisionBadge = file.revision
-            ? `<span class="text-xs font-semibold px-2.5 py-1 rounded-full bg-gray-200 text-gray-800 dark:bg-gray-700 dark:text-gray-200">REV ${file.revision}</span>`
-            : "";
-          const attachmentBadge =
-            file.attachments && file.attachments.length > 0
-              ? `<span class="text-xs font-semibold px-2.5 py-1 rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" title="${file.attachments.length} attachments"><i class="fa-solid fa-paperclip"></i> ${file.attachments.length}</span>`
-              : "";
-
-          fileEl.innerHTML = `
-                      <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-4 sm:space-y-0">
-                          <div class="flex items-center space-x-4 flex-wrap">
-                              <div class="flex items-center space-x-2">
-                                  ${
-                                    file.is_link
-                                      ? '<i class="fa-solid fa-link text-purple-600 dark:text-purple-400"></i>'
-                                      : '<i class="fa-solid fa-file text-blue-600 dark:text-blue-400"></i>'
-                                  }
-                                  <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">${
-                                    file.filename
-                                  }</h3>
-                              </div>
-                              <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
-                              ${revisionBadge}
-                              ${linkBadge}
-                          </div>
-                          <div class="flex items-center space-x-2 flex-wrap">${actionsHtml}</div>
-                      </div>
-                      ${
-                        file.description
-                          ? `<div class="mt-2 text-sm text-gray-700 dark:text-gray-300 italic">${file.description}</div>`
-                          : ""
-                      }
-                      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-4 text-gray-700 dark:text-gray-300 text-sm">
-                          ${
-                            file.is_link
-                              ? `
-                            <div class="flex items-center space-x-2">
-                              <i class="fa-solid fa-link text-purple-600 dark:text-purple-400"></i>
-                              <span>Points to: ${file.master_file}</span>
-                            </div>
-                            <div class="flex items-center space-x-2">
-                              <i class="fa-solid fa-info-circle text-gray-600 dark:text-gray-400"></i>
-                              <span>Type: Virtual Link</span>
-                            </div>`
-                              : `
-                            <div class="flex items-center space-x-2">
-                              <i class="fa-solid fa-file text-gray-600 dark:text-gray-400"></i>
-                              <span>Path: ${file.path}</span>
-                            </div>
-                            <div class="flex items-center space-x-2">
-                              <i class="fa-solid fa-hard-drive text-gray-600 dark:text-gray-400"></i>
-                              <span>Size: ${formatBytes(file.size)}</span>
-                            </div>`
-                          }
-                          <div class="flex items-center space-x-2">
-                            <i class="fa-solid fa-clock text-gray-600 dark:text-gray-400"></i>
-                            <span>Modified: ${formatDate(
-                              file.modified_at
-                            )}</span>
-                          </div>
-                          ${
-                            file.locked_by &&
-                            file.status !== "checked_out_by_user"
-                              ? `
-                            <div class="flex items-center space-x-2 sm:col-span-2 lg:col-span-1">
-                              <i class="fa-solid fa-lock text-gray-600 dark:text-gray-400"></i>
-                              <span>Locked by: ${
-                                file.locked_by
-                              } at ${formatDate(file.locked_at)}</span>
-                            </div>`
-                              : ""
-                          }
-                      </div>`;
-          filesContainer.appendChild(fileEl);
-        });
-        subDetailsEl.appendChild(filesContainer);
-        subGroupsContainer.appendChild(subDetailsEl);
+      subGroupFiles.forEach((file) => {
+        htmlContent += buildFileCard(file);
       });
-    detailsEl.appendChild(subGroupsContainer);
-    // *** IMPORTANT: Append to the temporary container, not the live one ***
-    newFileListContainer.appendChild(detailsEl);
-  });
 
-  if (totalFilesFound === 0) {
-    newFileListContainer.innerHTML = `<div class="flex flex-col items-center justify-center py-12 text-gray-600 dark:text-gray-400"><i class="fa-solid fa-folder-open text-6xl mb-4"></i><h3 class="text-2xl font-semibold">No files found</h3><p class="mt-2 text-center">No Mastercam files match your search criteria.</p><button onclick="manualRefresh()" class="mt-4 px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 text-white rounded-md hover:bg-opacity-80">Refresh</button></div>`;
+      htmlContent += `</div></details>`;
+    }
+
+    htmlContent += `</div></details>`;
   }
 
-  // This is the magic line that intelligently updates the page
-  morphdom(fileListEl, newFileListContainer);
+  if (searchTerm && totalFilesFound === 0) {
+    htmlContent = `<div class="text-center py-12 text-gray-600 dark:text-gray-400">
+      <i class="fa-solid fa-search text-6xl mb-4"></i>
+      <h3 class="text-2xl font-semibold">No Results Found</h3>
+      <p class="mt-2">No files match "${searchTerm}"</p>
+    </div>`;
+  }
 
-  // Re-apply tooltips to any new elements that were created
-  setTimeout(() => {
+  fileListEl.innerHTML = htmlContent;
+
+  // Save state on toggle
+  fileListEl.addEventListener(
+    "toggle",
+    (e) => {
+      if (e.target.classList.contains("file-group")) {
+        saveExpandedState();
+      } else if (e.target.classList.contains("sub-file-group")) {
+        saveExpandedSubState();
+      }
+    },
+    true
+  );
+
+  // Re-add tooltips after render
+  requestAnimationFrame(() => {
     addDynamicTooltips();
     addDataElementTooltips();
-  }, 100);
+  });
 }
 
-function createFileElement(file) {
-  const fileEl = document.createElement("div");
-  fileEl.id = `file-${file.filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
-  fileEl.className = "py-6 px-4 bg-white dark:bg-gray-800 ..."; // Your classes
+function buildFileCard(file) {
+  const safeId = `file-${file.filename.replace(/[^a-zA-Z0-9]/g, "-")}`;
 
-  // Build the inner HTML using your existing logic
-  const innerHTML = getFileHTML(file); // Another helper to generate the string
-  fileEl.innerHTML = innerHTML;
+  let statusClass = "";
+  let statusBadgeText = "";
 
-  return fileEl;
+  if (file.is_link) {
+    statusClass =
+      "bg-purple-100 text-purple-900 dark:bg-purple-900 dark:text-purple-200";
+    statusBadgeText = `<i class="fa-solid fa-link mr-1"></i>Links to ${file.master_file}`;
+  } else {
+    switch (file.status) {
+      case "unlocked":
+        statusClass =
+          "bg-green-100 text-green-900 dark:bg-green-900 dark:text-green-200";
+        statusBadgeText = "Available";
+        break;
+      case "locked":
+        statusClass =
+          "bg-red-100 text-red-900 dark:bg-red-900 dark:text-red-200";
+        statusBadgeText = `Locked by ${file.locked_by}`;
+        break;
+      case "checked_out_by_user":
+        statusClass =
+          "bg-blue-100 text-blue-900 dark:bg-blue-900 dark:text-blue-200";
+        statusBadgeText = "Checked out by you";
+        break;
+      default:
+        statusClass =
+          "bg-gray-100 text-gray-900 dark:bg-gray-600 dark:text-gray-200";
+        statusBadgeText = "Unknown";
+    }
+  }
+
+  let lockInfo = "";
+  if (file.locked_by && !file.is_link) {
+    lockInfo = `<div class="flex items-center space-x-2 text-sm text-gray-700 dark:text-gray-300">
+      <i class="fa-solid fa-lock text-red-500"></i>
+      <span>Locked by: <strong>${file.locked_by}</strong> at ${formatDate(
+      file.locked_at
+    )}</span>
+    </div>`;
+  }
+
+  return `
+    <div id="${safeId}" class="py-6 px-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-300 dark:border-gray-600 hover:shadow-lg transition-shadow" 
+         data-file-status="${file.status}" data-file-revision="${
+    file.revision || ""
+  }">
+      <div class="flex flex-col md:flex-row md:items-start md:justify-between space-y-4 md:space-y-0">
+        <div class="flex-grow">
+          <div class="flex items-center space-x-3 mb-2 flex-wrap">
+            <h4 class="text-lg font-semibold text-gray-900 dark:text-white">${
+              file.filename
+            }</h4>
+            ${
+              file.revision
+                ? `<span class="text-xs font-semibold px-2.5 py-1 rounded-full bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-100">REV ${file.revision}</span>`
+                : ""
+            }
+            <span class="text-xs font-semibold px-2.5 py-1 rounded-full ${statusClass}">${statusBadgeText}</span>
+          </div>
+          ${
+            file.description
+              ? `<p class="italic text-gray-700 dark:text-gray-300 text-sm mb-3">${file.description}</p>`
+              : ""
+          }
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-gray-600 dark:text-gray-400">
+            ${
+              !file.is_link
+                ? `<div class="flex items-center space-x-2">
+              <i class="fa-solid fa-hard-drive"></i><span>Size: ${formatBytes(
+                file.size
+              )}</span>
+            </div>`
+                : ""
+            }
+            <div class="flex items-center space-x-2">
+              <i class="fa-solid fa-clock"></i><span>Modified: ${formatDate(
+                file.modified_at
+              )}</span>
+            </div>
+          </div>
+          ${lockInfo}
+        </div>
+        <div class="flex items-center space-x-2 flex-wrap">
+          ${getActionButtons(file)}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function updateFileElement(fileEl, file) {
@@ -1334,43 +1357,21 @@ function updateFileElement(fileEl, file) {
   }
 }
 
-// Helper function to find a file in the previous data state
-function findFileInPreviousState(filename) {
-  for (const groupName in previousGroupedFiles) {
-    const file = previousGroupedFiles[groupName].find(
-      (f) => f.filename === filename
-    );
-    if (file) return file;
-  }
-  return null;
-}
-
-// Helper function to check for changes
-function hasFileChanged(oldFile, newFile) {
-  if (!oldFile) return true; // It's new
-  // Compare key properties
-  return (
-    oldFile.status !== newFile.status ||
-    oldFile.revision !== newFile.revision ||
-    oldFile.locked_by !== newFile.locked_by ||
-    (oldFile.attachments?.length || 0) !== (newFile.attachments?.length || 0)
-  );
-}
 function getActionButtons(file) {
   const btnClass =
-    "flex items-center space-x-2 px-4 py-2 rounded-md transition-colors text-sm font-semibold";
+    "flex items-center space-x-2 px-4 py-2 rounded-md transition-all duration-200 text-sm font-semibold border-2 transform active:scale-95";
   let buttons = "";
 
   // Handle linked files differently - they should only have limited actions
   if (file.is_link) {
     // Linked files only get "View Master" and "History" buttons
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-purple-600 to-purple-700 text-white hover:bg-opacity-80 js-view-master-btn" data-filename="${file.filename}" data-master-file="${file.master_file}"><i class="fa-solid fa-link"></i><span>View Master</span></button>`;
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-purple-600 to-purple-700 border-purple-800 text-white hover:from-purple-700 hover:to-purple-800 hover:shadow-lg js-view-master-btn" data-filename="${file.filename}" data-master-file="${file.master_file}"><i class="fa-solid fa-link"></i><span>View Master</span></button>`;
 
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 border-primary-500 dark:from-mc-dark-accent dark:to-primary-700 dark:border-primary-600 text-primary-900 dark:text-primary-200 hover:shadow-lg js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
 
     // Admin delete button for links (removes the link, not the master file)
     if (currentConfig && currentConfig.is_admin && isAdminModeEnabled) {
-      buttons += `<button class="${btnClass} bg-gradient-to-r from-red-600 to-red-700 text-white hover:bg-opacity-80 js-delete-btn" data-filename="${file.filename}"><i class="fa-solid fa-trash-can"></i><span>Remove Link</span></button>`;
+      buttons += `<button class="${btnClass} bg-gradient-to-r from-red-600 to-red-700 border-red-800 text-white hover:from-red-700 hover:to-red-800 hover:shadow-lg js-delete-btn" data-filename="${file.filename}"><i class="fa-solid fa-trash-can"></i><span>Remove Link</span></button>`;
     }
 
     return buttons;
@@ -1380,34 +1381,30 @@ function getActionButtons(file) {
 
   if (file.status === "checked_out_by_user") {
     // Direct download for checked out files
-    viewBtnHtml = `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80"><i class="fa-solid fa-file-arrow-down"></i><span>Download</span></a>`;
+    viewBtnHtml = `<a href="/files/${file.filename}/download" class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 border-primary-500 dark:from-mc-dark-accent dark:to-primary-700 dark:border-primary-600 text-primary-900 dark:text-primary-200 hover:shadow-lg"><i class="fa-solid fa-file-arrow-down"></i><span>Download</span></a>`;
   } else {
     // Show modal for view-only files
-    viewBtnHtml = `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-download-btn" data-filename="${file.filename}"><i class="fa-solid fa-file-arrow-down"></i><span>Download</span></button>`;
+    viewBtnHtml = `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 border-primary-500 dark:from-mc-dark-accent dark:to-primary-700 dark:border-primary-600 text-primary-900 dark:text-primary-200 hover:shadow-lg js-download-btn" data-filename="${file.filename}"><i class="fa-solid fa-file-arrow-down"></i><span>Download</span></button>`;
   }
 
   if (file.status === "unlocked") {
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-green-600 to-green-700 text-white hover:bg-opacity-80 js-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-green-600 to-green-700 border-green-800 text-white hover:from-green-700 hover:to-green-800 hover:shadow-lg js-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-download"></i><span>Checkout</span></button>`;
   } else if (file.status === "checked_out_by_user") {
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:bg-opacity-80 js-checkin-btn" data-filename="${file.filename}"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
-    buttons += `<button class="${btnClass} bg-gradient-to-r from-yellow-600 to-yellow-700 text-white hover:bg-opacity-80 js-cancel-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-times"></i><span>Cancel Checkout</span></button>`;
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-blue-600 to-blue-700 border-blue-800 text-white hover:from-blue-700 hover:to-blue-800 hover:shadow-lg js-checkin-btn" data-filename="${file.filename}"><i class="fa-solid fa-upload"></i><span>Check In</span></button>`;
+    buttons += `<button class="${btnClass} bg-gradient-to-r from-yellow-600 to-yellow-700 border-yellow-800 text-white hover:from-yellow-700 hover:to-yellow-800 hover:shadow-lg js-cancel-checkout-btn" data-filename="${file.filename}"><i class="fa-solid fa-times"></i><span>Cancel Checkout</span></button>`;
   }
 
   buttons = viewBtnHtml + buttons;
-  buttons += `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 hover:bg-opacity-80 js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
+  buttons += `<button class="${btnClass} bg-gradient-to-r from-primary-300 to-primary-400 border-primary-500 dark:from-mc-dark-accent dark:to-primary-700 dark:border-primary-600 text-primary-900 dark:text-primary-200 hover:shadow-lg js-history-btn" data-filename="${file.filename}"><i class="fa-solid fa-history"></i><span>History</span></button>`;
 
   if (currentConfig && currentConfig.is_admin) {
     const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
 
     if (file.status === "locked" && file.locked_by !== currentUser) {
-      const overrideBtnClasses =
-        "bg-gradient-to-r from-yellow-400 to-yellow-500 text-yellow-900";
-      buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${overrideBtnClasses} hover:bg-opacity-80 js-override-btn" data-filename="${file.filename}"><i class="fa-solid fa-unlock"></i><span>Override</span></button>`;
+      buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn bg-gradient-to-r from-yellow-400 to-yellow-500 border-yellow-600 text-yellow-900 hover:from-yellow-500 hover:to-yellow-600 hover:shadow-lg js-override-btn" data-filename="${file.filename}"><i class="fa-solid fa-unlock"></i><span>Override</span></button>`;
     }
 
-    const deleteBtnClasses =
-      "bg-gradient-to-r from-red-600 to-red-700 text-white";
-    buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn ${deleteBtnClasses} hover:bg-opacity-80 js-delete-btn" data-filename="${file.filename}"><i class="fa-solid fa-trash-can"></i><span>Delete</span></button>`;
+    buttons += `<button class="${btnClass} ${adminBtnVisibility} admin-action-btn bg-gradient-to-r from-red-600 to-red-700 border-red-800 text-white hover:from-red-700 hover:to-red-800 hover:shadow-lg js-delete-btn" data-filename="${file.filename}"><i class="fa-solid fa-trash-can"></i><span>Delete</span></button>`;
   }
 
   return buttons;
@@ -1520,6 +1517,12 @@ function setupAdminUI() {
     if (!adminToggle.dataset.listenerAttached) {
       adminToggle.addEventListener("click", () => {
         isAdminModeEnabled = !isAdminModeEnabled;
+
+        // Update button appearance with animation
+        adminToggle.classList.add("scale-95");
+        setTimeout(() => adminToggle.classList.remove("scale-95"), 100);
+
+        // Toggle styles
         adminToggle.classList.toggle("from-gray-200", !isAdminModeEnabled);
         adminToggle.classList.toggle("to-gray-300", !isAdminModeEnabled);
         adminToggle.classList.toggle("text-gray-800", !isAdminModeEnabled);
@@ -1530,6 +1533,15 @@ function setupAdminUI() {
         adminToggle.classList.toggle("to-accent-hover", isAdminModeEnabled);
         adminToggle.classList.toggle("text-white", isAdminModeEnabled);
         adminToggle.classList.toggle("dark:text-white", isAdminModeEnabled);
+        adminToggle.classList.toggle("ring-2", isAdminModeEnabled);
+        adminToggle.classList.toggle("ring-amber-400", isAdminModeEnabled);
+        adminToggle.classList.toggle("shadow-lg", isAdminModeEnabled);
+
+        // Show notification
+        showNotification(
+          isAdminModeEnabled ? "Admin mode enabled" : "Admin mode disabled",
+          isAdminModeEnabled ? "warning" : "info"
+        );
         renderFiles(); // Re-render to show/hide admin buttons
       });
       adminToggle.dataset.listenerAttached = "true";
@@ -1745,47 +1757,54 @@ function showFileHistoryModal(historyData) {
       let adminActions = "";
       const adminBtnVisibility = isAdminModeEnabled ? "" : "hidden";
 
+      // Check if this is a link by looking at the filename
+      const isLink = historyData.filename.includes("(Link)");
+
       if (
         currentConfig &&
         currentConfig.is_admin &&
         index === 0 &&
-        historyData.history.length > 1
+        historyData.history.length > 1 &&
+        !isLink // Can't revert links
       ) {
-        adminActions = `<button class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold admin-action-btn js-revert-btn ${adminBtnVisibility}" data-filename="${historyData.filename}" data-commit-hash="${commit.commit_hash}"><i class="fa-solid fa-undo"></i><span>Revert</span></button>`;
+        adminActions = `<button class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-red-500 to-red-600 border-2 border-red-700 text-white rounded-md hover:bg-opacity-80 transition-all text-sm font-semibold admin-action-btn js-revert-btn ${adminBtnVisibility}" data-filename="${historyData.filename}" data-commit-hash="${commit.commit_hash}"><i class="fa-solid fa-undo"></i><span>Revert</span></button>`;
       }
+
+      // Don't show download button for links
+      const downloadButton = isLink
+        ? ""
+        : `<a href="/files/${historyData.filename}/versions/${commit.commit_hash}" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 border-2 border-primary-500 dark:from-mc-dark-accent dark:to-primary-700 dark:border-primary-600 text-primary-900 dark:text-primary-200 rounded-md hover:shadow-lg transition-all text-sm font-semibold">
+    <i class="fa-solid fa-file-arrow-down"></i><span>Download</span>
+  </a>`;
 
       historyListHtml += `<div class="p-4 bg-gradient-to-r from-primary-100 to-primary-200 dark:from-mc-dark-accent dark:to-primary-700 rounded-lg border border-primary-300 dark:border-mc-dark-accent bg-opacity-95 history-item" data-revision="${
         commit.revision || ""
       }">
-        <div class="flex justify-between items-start">
-            <div>
-                <div class="flex items-center space-x-3 text-sm mb-2 flex-wrap gap-y-1">
-                    <span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
-                      0,
-                      8
-                    )}</span>
-                    ${revisionBadge}
-                    <span class="text-primary-600 dark:text-primary-300">${formatDate(
-                      commit.date
-                    )}</span>
-                </div>
-                <div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
-                  commit.message
-                }</div>
-                <div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
-                  commit.author_name
-                }</div>
+    <div class="flex justify-between items-start">
+        <div>
+            <div class="flex items-center space-x-3 text-sm mb-2 flex-wrap gap-y-1">
+                <span class="font-mono font-bold text-accent dark:text-accent">${commit.commit_hash.substring(
+                  0,
+                  8
+                )}</span>
+                ${revisionBadge}
+                <span class="text-primary-600 dark:text-primary-300">${formatDate(
+                  commit.date
+                )}</span>
             </div>
-            <div class="flex-shrink-0 ml-4 flex items-center space-x-2">
-                ${adminActions}
-                <a href="/files/${historyData.filename}/versions/${
-        commit.commit_hash
-      }" class="flex items-center space-x-2 px-3 py-1.5 bg-gradient-to-r from-primary-300 to-primary-400 dark:from-mc-dark-accent dark:to-primary-700 text-primary-900 dark:text-primary-200 rounded-md hover:bg-opacity-80 transition-colors text-sm font-semibold">
-                    <i class="fa-solid fa-file-arrow-down"></i><span>Download</span>
-                </a>
-            </div>
+            <div class="text-primary-900 dark:text-primary-200 text-sm mb-1">${
+              commit.message
+            }</div>
+            <div class="text-xs text-primary-600 dark:text-primary-300">Author: ${
+              commit.author_name
+            }</div>
         </div>
-      </div>`;
+        <div class="flex-shrink-0 ml-4 flex items-center space-x-2">
+            ${adminActions}
+            ${downloadButton}
+        </div>
+    </div>
+  </div>`;
     });
   } else {
     historyListHtml = `<p class="text-center text-primary-600 dark:text-primary-300">No version history available.</p>`;
@@ -2052,8 +2071,14 @@ async function sendMessage(recipient, message) {
 }
 
 function populateAndShowMessagesModal(messages) {
-  const modal = domCache.messagesModal; //document.getElementById("viewMessagesModal");
+  const modal = document.getElementById("viewMessagesModal");
   const container = document.getElementById("messageListContainer");
+
+  if (!modal || !container) {
+    console.error("Messages modal elements not found in DOM");
+    return;
+  }
+
   container.innerHTML = "";
   messages.forEach((msg) => {
     const msgEl = document.createElement("div");
@@ -2151,74 +2176,115 @@ function applyThemePreference() {
   }
 }
 
-function showNotification(message, type = "info") {
-  const container = document.getElementById("notification-container");
-  if (!container) {
-    console.error("Notification container not found!");
-    return;
+// ===== ENHANCED NOTIFICATION SYSTEM =====
+class NotificationManager {
+  constructor() {
+    this.queue = [];
+    this.currentNotification = null;
+    this.container = document.getElementById("notification-container");
   }
 
-  if (currentNotification) {
-    currentNotification.remove();
+  show(message, type = "info", duration = 4000) {
+    // Prevent duplicate notifications within 5 seconds
+    const now = Date.now();
+    if (
+      lastNotification.message === message &&
+      now - lastNotification.timestamp < 5000
+    ) {
+      return;
+    }
+    lastNotification = { message, timestamp: now };
+
+    // If there's a current notification, queue this one
+    if (this.currentNotification) {
+      this.queue.push({ message, type, duration });
+      return;
+    }
+
+    this._display(message, type, duration);
   }
 
-  const notification = document.createElement("div");
-  notification.className = `p-4 rounded-lg shadow-lg transform transition-all duration-300 translate-x-full bg-opacity-95`;
+  _display(message, type, duration) {
+    if (!this.container) return;
 
-  switch (type) {
-    case "success":
-      notification.classList.add(
-        "bg-green-600",
-        "text-white",
-        "dark:bg-green-800",
-        "dark:text-white"
-      );
-      break;
-    case "error":
-      notification.classList.add(
-        "bg-red-600",
-        "text-white",
-        "dark:bg-red-800",
-        "dark:text-white"
-      );
-      break;
-    // ✅ NEW: A dedicated case for the gold/amber notification
-    case "warning":
-      notification.classList.add(
-        "bg-amber-400",
-        "text-gray-900",
-        "dark:bg-amber-500",
-        "dark:text-gray-900"
-      );
-      break;
-    // ✅ RESTORED: "info" and the default case now use the original blue accent color
-    case "info":
-    default:
-      notification.classList.add(
-        "bg-accent",
-        "text-white",
-        "dark:bg-accent-hover"
-      );
-      break;
+    const notification = document.createElement("div");
+    notification.className = `p-4 rounded-lg shadow-lg transform transition-all duration-300 translate-x-full bg-opacity-95 flex items-start space-x-3`;
+
+    // Icon mapping
+    const iconMap = {
+      success: "fa-check-circle",
+      error: "fa-exclamation-circle",
+      warning: "fa-exclamation-triangle",
+      info: "fa-info-circle",
+    };
+
+    const icon = iconMap[type] || iconMap.info;
+
+    // Color mapping
+    switch (type) {
+      case "success":
+        notification.classList.add("bg-green-600", "text-white");
+        break;
+      case "error":
+        notification.classList.add("bg-red-600", "text-white");
+        break;
+      case "warning":
+        notification.classList.add("bg-amber-400", "text-gray-900");
+        break;
+      default:
+        notification.classList.add("bg-accent", "text-white");
+    }
+
+    notification.innerHTML = `
+      <div class="flex-shrink-0 pt-0.5">
+        <i class="fa-solid ${icon}"></i>
+      </div>
+      <div class="flex-1 text-sm font-medium">${message}</div>
+      <button class="flex-shrink-0 ml-2 text-current opacity-70 hover:opacity-100" onclick="this.closest('div').remove()">
+        <i class="fa-solid fa-times"></i>
+      </button>
+    `;
+
+    this.currentNotification = notification;
+    this.container.appendChild(notification);
+
+    // Animate in
+    setTimeout(() => notification.classList.remove("translate-x-full"), 50);
+
+    // Auto-dismiss
+    const dismissTimer = setTimeout(() => {
+      this._dismiss(notification);
+    }, duration);
+
+    // Manual dismiss
+    notification.querySelector("button").addEventListener("click", () => {
+      clearTimeout(dismissTimer);
+      this._dismiss(notification);
+    });
   }
 
-  notification.textContent = message;
-  currentNotification = notification;
-
-  const notificationTimer = setTimeout(() => {
+  _dismiss(notification) {
     notification.classList.add("translate-x-full");
     notification.addEventListener("transitionend", () => {
       notification.remove();
-      if (currentNotification === notification) {
-        currentNotification = null;
+      this.currentNotification = null;
+
+      // Show next notification in queue
+      if (this.queue.length > 0) {
+        const next = this.queue.shift();
+        this._display(next.message, next.type, next.duration);
       }
     });
-  }, 4000);
-
-  container.appendChild(notification);
-  setTimeout(() => notification.classList.remove("translate-x-full"), 50);
+  }
 }
 
+// Initialize global notification manager
+const notificationManager = new NotificationManager();
+
+// Replace the old showNotification function
+function showNotification(message, type = "info", duration = 4000) {
+  notificationManager.show(message, type, duration);
+}
 function formatBytes(bytes) {
   if (!bytes || bytes === 0) return "0 Bytes";
   const k = 1024;
@@ -3190,9 +3256,8 @@ async function resetRepository() {
   }
 }
 
-// ===== ADMIN MAINTENANCE FUNCTIONS =====
 async function createManualBackup() {
-  showNotification("Creating backup...", "info");
+  showNotification("Creating backup... This may take a minute.", "info");
 
   try {
     const response = await fetch("/admin/create_backup", {
@@ -3204,24 +3269,39 @@ async function createManualBackup() {
     const result = await response.json();
 
     if (response.ok) {
-      showNotification(`✅ Backup created: ${result.backup_path}`, "success");
+      showNotification(
+        `Backup created successfully at: ${result.backup_path}`,
+        "success"
+      );
     } else {
       throw new Error(result.detail || "Backup failed");
     }
   } catch (error) {
-    showNotification(`❌ Backup failed: ${error.message}`, "error");
+    showNotification(`Backup failed: ${error.message}`, "error");
   }
 }
 
+// ===== ADMIN CLEANUP WITH PROPER NOTIFICATIONS =====
 async function cleanupLfsFiles() {
   const confirmed = await showConfirmDialog(
     "Cleanup LFS Files",
-    "This will remove old LFS objects that are no longer referenced. Continue?"
+    `<div class="space-y-2">
+      <p>This will:</p>
+      <ul class="list-disc list-inside text-sm space-y-1">
+        <li>Remove unreferenced LFS objects</li>
+        <li>Delete stale lock files (older than 7 days)</li>
+        <li>Remove old message files</li>
+      </ul>
+      <p class="text-sm text-gray-600 dark:text-gray-400 mt-2">This is safe and helps free up storage space.</p>
+    </div>`
   );
 
   if (!confirmed) return;
 
-  showNotification("Cleaning up LFS files...", "info");
+  const loadingNotification = showNotification(
+    "Running cleanup... This may take a moment.",
+    "info"
+  );
 
   try {
     const response = await fetch("/admin/cleanup_lfs", {
@@ -3233,20 +3313,23 @@ async function cleanupLfsFiles() {
     const result = await response.json();
 
     if (response.ok) {
-      showNotification(
-        `✅ Cleanup complete. Freed ${result.space_freed}`,
-        "success"
-      );
+      // Build a detailed success message
+      let message = "Cleanup complete!";
+      if (result.details && result.details.length > 0) {
+        const cleanedItems = result.details.length;
+        message = `Cleanup complete! Processed ${cleanedItems} item(s).`;
+      }
+      showNotification(message, "success");
     } else {
       throw new Error(result.detail || "Cleanup failed");
     }
   } catch (error) {
-    showNotification(`❌ Cleanup failed: ${error.message}`, "error");
+    showNotification(`Cleanup failed: ${error.message}`, "error");
   }
 }
 
 async function exportRepository() {
-  showNotification("Exporting repository...", "info");
+  showNotification("Preparing export... Please wait.", "info");
 
   try {
     const response = await fetch("/admin/export_repository", {
@@ -3256,7 +3339,6 @@ async function exportRepository() {
     });
 
     if (response.ok) {
-      // Trigger download
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -3269,13 +3351,13 @@ async function exportRepository() {
       window.URL.revokeObjectURL(url);
       a.remove();
 
-      showNotification("✅ Repository exported successfully!", "success");
+      showNotification("Repository exported successfully!", "success");
     } else {
       const result = await response.json();
       throw new Error(result.detail || "Export failed");
     }
   } catch (error) {
-    showNotification(`❌ Export failed: ${error.message}`, "error");
+    showNotification(`Export failed: ${error.message}`, "error");
   }
 }
 
@@ -3319,8 +3401,131 @@ function showConfirmDialog(title, message) {
   });
 }
 
+function handleWebSocketMessage(message) {
+  try {
+    const data = JSON.parse(message);
+
+    if (data.type === "FILE_LIST_UPDATED") {
+      const newHash = JSON.stringify(data.payload);
+      if (newHash === lastFileListHash) {
+        return;
+      }
+      lastFileListHash = newHash;
+      groupedFiles = data.payload || {};
+      renderFiles();
+    } else if (data.type === "NEW_MESSAGES") {
+      if (data.payload && data.payload.length > 0) {
+        console.log(`Received ${data.payload.length} new messages.`);
+        populateAndShowMessagesModal(data.payload);
+      }
+    }
+  } catch (error) {
+    console.error("Error handling WebSocket message:", error);
+    if (!navigator.onLine) {
+      handleOfflineStatus();
+    }
+  }
+}
+
+function ensureTooltipToggleExists() {
+  const oldBtn = document.getElementById("tooltip-toggle");
+  if (oldBtn) oldBtn.remove();
+
+  if (!document.body) {
+    setTimeout(ensureTooltipToggleExists, 100);
+    return;
+  }
+
+  const toggleBtn = document.createElement("button");
+  toggleBtn.id = "tooltip-toggle";
+  toggleBtn.innerHTML = '<i class="fa-solid fa-question"></i>';
+  toggleBtn.title = "Toggle Help Tooltips (Alt+Shift+H)";
+
+  toggleBtn.style.cssText = `
+    position: fixed !important;
+    top: 70px !important;
+    left: 24px !important;
+    z-index: 99999 !important;
+    width: 40px !important;
+    height: 40px !important;
+    border-radius: 50% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+    border: 3px solid ${tooltipsEnabled ? "#d97706" : "#6b7280"} !important;
+    background: ${tooltipsEnabled ? "#f59e0b" : "#9ca3af"} !important;
+    color: white !important;
+    font-size: 18px !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2) !important;
+    transition: all 0.2s ease !important;
+    visibility: visible !important;
+    opacity: ${tooltipsEnabled ? "1" : "0.7"} !important;
+  `;
+
+  toggleBtn.addEventListener("click", toggleTooltips);
+
+  toggleBtn.addEventListener("mouseenter", () => {
+    toggleBtn.style.transform = "scale(1.1)";
+  });
+  toggleBtn.addEventListener("mouseleave", () => {
+    toggleBtn.style.transform = "scale(1)";
+  });
+
+  document.body.appendChild(toggleBtn);
+}
+// Debug helper - call from console if button is missing
+window.fixTooltipButton = function () {
+  ensureTooltipToggleExists();
+  console.log("Tooltip button recreation attempted");
+};
+
+// Add this as a global function
+window.forceShowTooltipButton = function () {
+  // Remove any existing button
+  const existing = document.getElementById("tooltip-toggle");
+  if (existing) existing.remove();
+
+  // Create new button with brute force styling
+  const btn = document.createElement("button");
+  btn.id = "tooltip-toggle";
+  btn.innerHTML = '<i class="fa-solid fa-question"></i>';
+  btn.title = "Toggle Tooltips";
+
+  // Absolute brute force styling
+  btn.style.cssText = `
+    position: fixed !important;
+    bottom: 100px !important;
+    right: 30px !important;
+    z-index: 999999 !important;
+    width: 56px !important;
+    height: 56px !important;
+    border-radius: 50% !important;
+    background: #f59e0b !important;
+    border: 4px solid #d97706 !important;
+    color: white !important;
+    font-size: 24px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.3) !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+  `;
+
+  btn.onclick = toggleTooltips;
+  document.body.appendChild(btn);
+
+  console.log("✓ Tooltip button force-created");
+  return btn;
+};
+
+console.log("💡 Run forceShowTooltipButton() in console to show the button");
+
 // -- DOM Content Loaded Event Handler --
 document.addEventListener("DOMContentLoaded", function () {
+  // Check online status first
   if (!navigator.onLine) {
     handleOfflineStatus();
   } else {
@@ -3334,25 +3539,36 @@ document.addEventListener("DOMContentLoaded", function () {
   // Poll for messages every 30 seconds as backup
   setInterval(checkForMessages, 30000);
 
+  // Initialize tooltip system
   if (domCache.tooltipToggle) {
     domCache.tooltipToggle.addEventListener("change", updateTooltipVisibility);
   }
+
   applyThemePreference();
   loadConfig();
   loadFiles();
   checkLFSStatus();
+  if (document.readyState === "complete") {
+    setTimeout(() => {
+      initLazyTooltipSystem();
+      console.log("Tooltips initialized (complete)");
+    }, 100);
+  } else {
+    window.addEventListener("load", () => {
+      setTimeout(() => {
+        initLazyTooltipSystem();
+        console.log("Tooltips initialized (load)");
+      }, 100);
+    });
+  }
 
-  // Initialize tooltip system
-  initTooltipSystem();
-  checkLFSStatus();
-
-  // Call this periodically if config panel is open
+  // Periodic LFS check (only if config panel is open)
   setInterval(() => {
     const configPanel = document.getElementById("configPanel");
     if (configPanel && !configPanel.classList.contains("translate-x-full")) {
       checkLFSStatus();
     }
-  }, 30000); // Every 30 seconds
+  }, 30000);
 
   // Revision type radio button handlers
   document.querySelectorAll('input[name="rev_type"]').forEach((radio) => {
@@ -3361,6 +3577,7 @@ document.addEventListener("DOMContentLoaded", function () {
       const majorRevLabel = document.querySelector(
         'label[for="newMajorRevInput"]'
       );
+
       if (e.target.value === "major") {
         majorRevField.disabled = false;
         majorRevField.classList.remove("opacity-50", "cursor-not-allowed");
@@ -3382,12 +3599,14 @@ document.addEventListener("DOMContentLoaded", function () {
     radio.addEventListener("change", updateUploadTypeView);
   });
 
+  // Visibility change handler
   document.addEventListener("visibilitychange", function () {
     if (!document.hidden && ws && ws.readyState !== WebSocket.OPEN) {
       if (reconnectAttempts < maxReconnectAttempts) connectWebSocket();
     }
   });
 
+  // Cleanup on page unload
   window.addEventListener("beforeunload", () => disconnectWebSocket());
   window.manualRefresh = manualRefresh;
 
@@ -3398,8 +3617,9 @@ document.addEventListener("DOMContentLoaded", function () {
         const response = await fetch("/refresh");
         if (response.ok) {
           const result = await response.json();
-          if (result.message && result.message !== "No changes detected")
+          if (result.message && result.message !== "No changes detected") {
             loadFiles();
+          }
         }
       } catch (error) {
         console.error("Fallback refresh failed:", error);
@@ -3407,18 +3627,18 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   }, 30000);
 
-  // Search field logic with clear button
-
+  // ===== OPTIMIZED SEARCH FIELD LOGIC =====
   const searchInput = document.getElementById("searchInput");
-  const debouncedRender = debounce(renderFiles, 300); // Create a debounced version of renderFiles
+  const clearSearchBtn = document.getElementById("clearSearchBtn");
+
+  // Faster debounce for better responsiveness
+  const debouncedRender = debounce(() => {
+    renderFiles();
+  }, 150);
 
   searchInput.addEventListener("input", () => {
-    debouncedRender(); // Only runs after 300ms of inactivity
-    if (searchInput.value.length > 0) {
-      clearSearchBtn.classList.remove("hidden");
-    } else {
-      clearSearchBtn.classList.add("hidden");
-    }
+    debouncedRender();
+    clearSearchBtn.classList.toggle("hidden", searchInput.value.length === 0);
   });
 
   clearSearchBtn.addEventListener("click", () => {
@@ -3428,6 +3648,7 @@ document.addEventListener("DOMContentLoaded", function () {
     searchInput.focus();
   });
 
+  // Collapse all button
   document.getElementById("collapseAllBtn")?.addEventListener("click", () => {
     document
       .querySelectorAll("#fileList details[open]")
@@ -3437,11 +3658,13 @@ document.addEventListener("DOMContentLoaded", function () {
     saveExpandedState();
   });
 
+  // Dashboard button
   const dashboardBtn = document.getElementById("dashboardBtn");
   if (dashboardBtn) {
     dashboardBtn.addEventListener("click", openDashboardModal);
   }
 
+  // Dashboard modal close handlers
   const dashboardModal = document.getElementById("dashboardModal");
   const closeDashboardBtn = document.getElementById("closeDashboardBtn");
   if (dashboardModal && closeDashboardBtn) {
@@ -3453,13 +3676,15 @@ document.addEventListener("DOMContentLoaded", function () {
     });
   }
 
+  // ===== OPTIMIZED EVENT DELEGATION FOR FILE ACTIONS =====
+  // Single listener for all file actions (better performance)
   domCache.fileList.addEventListener("click", (e) => {
-    // We can simplify the selector since we know we're inside the file list
     const actionButton = e.target.closest("button, a");
 
     if (actionButton && actionButton.dataset.filename) {
       const filename = actionButton.dataset.filename;
 
+      // Check which action was clicked
       if (actionButton.classList.contains("js-checkout-btn")) {
         checkoutFile(filename);
       } else if (actionButton.classList.contains("js-checkin-btn")) {
@@ -3483,8 +3708,7 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   });
 
-  // ✅ Listener 2: Handles clicks for elements OUTSIDE the file list (like modal buttons).
-  // This correctly remains on the 'document'.
+  // Handle revert buttons in modals (outside file list)
   document.addEventListener("click", (e) => {
     const revertButton = e.target.closest(".js-revert-btn");
     if (revertButton) {
@@ -3493,10 +3717,11 @@ document.addEventListener("DOMContentLoaded", function () {
     }
   });
 
-  // Check-in form submission
+  // ===== CHECK-IN FORM =====
   const checkinForm = document.getElementById("checkinForm");
   checkinForm.addEventListener("submit", function (e) {
     e.preventDefault();
+
     const filename = e.target.dataset.filename;
     const fileInput = document.getElementById("checkinFileUpload");
     const messageInput = document.getElementById("commitMessage");
@@ -3505,6 +3730,7 @@ document.addEventListener("DOMContentLoaded", function () {
     );
     const newMajorRevInput = document.getElementById("newMajorRevInput");
 
+    // Validate filename matches
     if (fileInput.files.length > 0 && fileInput.files[0].name !== filename) {
       debounceNotifications(
         `Error: Uploaded file name "${fileInput.files[0].name}" must match the original file name "${filename}".`,
@@ -3537,10 +3763,11 @@ document.addEventListener("DOMContentLoaded", function () {
       document.getElementById("checkinModal").classList.add("hidden")
     );
 
-  // New upload form submission
+  // ===== NEW UPLOAD FORM =====
   const newUploadForm = document.getElementById("newUploadForm");
   newUploadForm.addEventListener("submit", function (e) {
     e.preventDefault();
+
     const formData = new FormData();
     formData.append("user", currentUser);
 
@@ -3552,6 +3779,7 @@ document.addEventListener("DOMContentLoaded", function () {
       'input[name="uploadType"]:checked'
     ).value;
 
+    // Validation
     if (!description || !rev) {
       debounceNotifications(
         "Please fill out the Description and Revision fields.",
@@ -3573,6 +3801,7 @@ document.addEventListener("DOMContentLoaded", function () {
         );
         return;
       }
+
       formData.append("is_link_creation", true);
       formData.append("new_link_filename", newLinkFilename);
       formData.append("link_to_master", linkToMaster);
@@ -3598,17 +3827,18 @@ document.addEventListener("DOMContentLoaded", function () {
       document.getElementById("newUploadModal").classList.add("hidden")
     );
 
-  // Send message form
+  // ===== SEND MESSAGE FORM =====
   const sendMessageForm = document.getElementById("sendMessageForm");
+
   document
     .getElementById("cancelSendMessage")
     .addEventListener("click", () =>
       document.getElementById("sendMessageModal").classList.add("hidden")
     );
 
-  // In your DOMContentLoaded event listener
   sendMessageForm.addEventListener("submit", async (e) => {
     e.preventDefault();
+
     const recipient = document.getElementById("recipientUserSelect").value;
     const message = document.getElementById("messageText").value.trim();
 
@@ -3623,14 +3853,14 @@ document.addEventListener("DOMContentLoaded", function () {
 
     const success = await sendMessage(recipient, message);
 
-    // Only close the modal and reset if the send was successful
+    // Only close modal if send was successful
     if (success) {
       sendMessageForm.reset();
       document.getElementById("sendMessageModal").classList.add("hidden");
     }
   });
 
-  // Message acknowledgment
+  // ===== MESSAGE ACKNOWLEDGMENT =====
   const messageListContainer = document.getElementById("messageListContainer");
   messageListContainer.addEventListener("click", (e) => {
     const ackButton = e.target.closest(".js-ack-btn");
@@ -3639,13 +3869,14 @@ document.addEventListener("DOMContentLoaded", function () {
       acknowledgeMessage(messageId);
     }
   });
+
+  // ===== CONFIG FORM =====
   document
     .getElementById("configForm")
     .addEventListener("submit", async function (e) {
       e.preventDefault();
-      const tokenInput = document.getElementById("token");
 
-      // ✅ This object now correctly reads the checkbox's true/false state
+      const tokenInput = document.getElementById("token");
       const formData = {
         gitlab_url: document.getElementById("gitlabUrl").value,
         project_id: document.getElementById("projectId").value,
@@ -3656,20 +3887,27 @@ document.addEventListener("DOMContentLoaded", function () {
 
       try {
         debounceNotifications("Saving configuration...", "info");
+
         const response = await fetch("/config/gitlab", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(formData),
         });
+
         const result = await response.json();
+
         if (!response.ok) throw new Error(result.detail);
+
         debounceNotifications("Configuration saved! Refreshing...", "success");
         toggleConfigPanel();
         await loadConfig();
-        // Disconnect and reconnect WebSocket to apply new user/config if changed
+
+        // Reconnect WebSocket with new config
         disconnectWebSocket();
         connectWebSocket();
-        tokenInput.value = ""; // Clear token field for security
+
+        // Clear token field for security
+        tokenInput.value = "";
       } catch (error) {
         debounceNotifications(`Config Error: ${error.message}`, "error");
       }
