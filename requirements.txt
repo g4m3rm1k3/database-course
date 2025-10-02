@@ -2,6 +2,7 @@ aiofiles==24.1.0
 altgraph==0.17.4
 annotated-types==0.7.0
 anyio==3.7.1
+bcrypt==5.0.0
 bottle==0.13.4
 certifi==2025.8.3
 cffi==2.0.0
@@ -17,8 +18,10 @@ h11==0.16.0
 httptools==0.6.4
 idna==3.10
 Jinja2==3.1.6
+jwt==1.4.0
 MarkupSafe==3.0.2
 packaging==25.0
+passlib==1.7.4
 pefile==2024.8.26
 proxy_tools==0.1.0
 psutil==7.1.0
@@ -27,6 +30,7 @@ pydantic==2.5.0
 pydantic_core==2.14.1
 pyinstaller==6.2.0
 pyinstaller-hooks-contrib==2025.8
+PyJWT==2.10.1
 python-dotenv==1.1.1
 python-multipart==0.0.6
 pythonnet==3.0.5

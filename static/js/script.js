@@ -21,6 +21,7 @@ let currentActivityOffset = 0;
 const ACTIVITY_LIMIT = 50;
 let isLoadingMoreActivity = false;
 let currentConfigTab = "config";
+let currentToken = null;
 
 const domCache = {
   fileList: document.getElementById("fileList"),
@@ -31,6 +32,106 @@ const domCache = {
   repoStatus: document.getElementById("repo-status"),
   connectionStatus: document.getElementById("connection-status"),
 };
+
+// ========== AUTHENTICATION SYSTEM ==========
+let authToken = localStorage.getItem("auth_token");
+let isAuthenticated = false;
+
+async function checkAuthentication() {
+  const loginModal = document.getElementById("loginModal");
+
+  if (!authToken) {
+    const config = await fetch("/config")
+      .then((r) => r.json())
+      .catch(() => null);
+
+    if (!config || !config.has_token) {
+      // Not configured yet - allow access to configure
+      isAuthenticated = false;
+      return false;
+    }
+
+    // Check if password exists
+    try {
+      const formData = new FormData();
+      formData.append("username", config.username);
+      const hasPassResponse = await fetch("/auth/check_password", {
+        method: "POST",
+        body: formData,
+      });
+      const hasPassData = await hasPassResponse.json();
+
+      if (!hasPassData.has_password) {
+        showPasswordSetup(config.username);
+        return false;
+      }
+
+      showLoginForm(config.username);
+      return false;
+    } catch (error) {
+      console.error("Auth check failed:", error);
+      return false;
+    }
+  }
+
+  // Validate token
+  try {
+    const response = await fetch("/auth/validate", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+
+    if (response.ok) {
+      isAuthenticated = true;
+      return true;
+    } else {
+      localStorage.removeItem("auth_token");
+      authToken = null;
+      return checkAuthentication();
+    }
+  } catch {
+    isAuthenticated = false;
+    return false;
+  }
+}
+
+function showLoginForm(username) {
+  const modal = document.getElementById("loginModal");
+  const loginForm = document.getElementById("loginForm");
+  const setupForm = document.getElementById("setupPasswordForm");
+  const resetForm = document.getElementById("passwordResetForm");
+
+  document.getElementById("loginUsername").value = username;
+
+  loginForm.classList.remove("hidden");
+  setupForm.classList.add("hidden");
+  resetForm.classList.add("hidden");
+  modal.classList.remove("hidden");
+}
+
+function showPasswordSetup(username) {
+  const modal = document.getElementById("loginModal");
+  const loginForm = document.getElementById("loginForm");
+  const setupForm = document.getElementById("setupPasswordForm");
+
+  window.setupUsername = username;
+
+  loginForm.classList.add("hidden");
+  setupForm.classList.remove("hidden");
+  modal.classList.remove("hidden");
+}
+
+async function handleLogout() {
+  localStorage.removeItem("auth_token");
+  localStorage.removeItem("is_admin");
+  authToken = null;
+  isAuthenticated = false;
+  window.location.reload();
+}
+
+// ========== END AUTHENTICATION ==========
+
+// ... rest of your existing script.js code continues below ...
 
 const tooltips = {
   // Main interface tooltips
@@ -3427,6 +3528,149 @@ function handleWebSocketMessage(message) {
   }
 }
 
+// Check if already configured
+async function checkConfiguration() {
+  try {
+    const response = await fetch("/config");
+    const config = await response.json();
+
+    if (config.has_token && config.gitlab_url) {
+      // Already configured - show login
+      document.getElementById("loginUsername").value = config.username;
+      document.getElementById("configForm").classList.add("hidden");
+      document.getElementById("loginForm").classList.remove("hidden");
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error("Config check failed:", error);
+    return false;
+  }
+}
+
+// Configure GitLab connection
+document.getElementById("configForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const formData = {
+    gitlab_url: document.getElementById("gitlabUrl").value,
+    project_id: document.getElementById("projectId").value,
+    username: document.getElementById("username").value,
+    token: document.getElementById("token").value,
+    allow_insecure_ssl: document.getElementById("allowInsecureSsl").checked,
+  };
+
+  try {
+    const response = await fetch("/config/gitlab", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(formData),
+    });
+
+    const result = await response.json();
+
+    if (response.ok) {
+      // Check if password exists
+      const loginResponse = await fetch("/auth/check_password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: formData.username }),
+      });
+
+      const loginData = await loginResponse.json();
+
+      if (loginData.has_password) {
+        // Show login form
+        document.getElementById("loginUsername").value = formData.username;
+        document.getElementById("configForm").classList.add("hidden");
+        document.getElementById("loginForm").classList.remove("hidden");
+      } else {
+        // Show password setup
+        document.getElementById("configForm").classList.add("hidden");
+        document.getElementById("setupPasswordForm").classList.remove("hidden");
+      }
+    } else {
+      alert("Configuration failed: " + result.detail);
+    }
+  } catch (error) {
+    alert("Connection error: " + error.message);
+  }
+});
+
+// Setup password
+document
+  .getElementById("setupPasswordForm")
+  .addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const password = document.getElementById("setupPassword").value;
+    const confirm = document.getElementById("confirmPassword").value;
+
+    if (password !== confirm) {
+      alert("Passwords do not match");
+      return;
+    }
+
+    const username = document.getElementById("username").value;
+
+    try {
+      const formData = new FormData();
+      formData.append("username", username);
+      formData.append("password", password);
+
+      const response = await fetch("/auth/setup_password", {
+        method: "POST",
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (response.ok) {
+        currentToken = result.token;
+        localStorage.setItem("auth_token", result.token);
+        window.location.href = "/";
+      } else {
+        alert("Setup failed: " + result.detail);
+      }
+    } catch (error) {
+      alert("Setup error: " + error.message);
+    }
+  });
+
+// Login
+document.getElementById("loginForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+
+  const username = document.getElementById("loginUsername").value;
+  const password = document.getElementById("loginPassword").value;
+
+  try {
+    const formData = new FormData();
+    formData.append("username", username);
+    formData.append("password", password);
+
+    const response = await fetch("/auth/login", {
+      method: "POST",
+      body: formData,
+    });
+
+    const result = await response.json();
+
+    if (response.ok) {
+      localStorage.setItem("auth_token", result.token);
+      localStorage.setItem("is_admin", result.is_admin);
+      window.location.href = "/";
+    } else {
+      alert("Login failed: " + result.detail);
+    }
+  } catch (error) {
+    alert("Login error: " + error.message);
+  }
+});
+
+// Initialize
+checkConfiguration();
+
 function ensureTooltipToggleExists() {
   const oldBtn = document.getElementById("tooltip-toggle");
   if (oldBtn) oldBtn.remove();
@@ -3521,11 +3765,186 @@ window.forceShowTooltipButton = function () {
   return btn;
 };
 
+// ========== REPOSITORY MANAGEMENT - ADD BEFORE CLOSING ==========
+
+async function loadRepositories() {
+  try {
+    const response = await fetch("/repos/list", {
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const selector = document.getElementById("repoSelector");
+
+      if (data.repos && data.repos.length > 0) {
+        selector.innerHTML = data.repos
+          .map(
+            (repo) =>
+              `<option value="${repo.project_id}">${repo.project_id} - ${repo.gitlab_url}</option>`
+          )
+          .join("");
+      } else {
+        selector.innerHTML =
+          '<option value="">No repositories configured</option>';
+      }
+    }
+  } catch (error) {
+    console.error("Failed to load repositories:", error);
+  }
+}
+
+async function switchRepository() {
+  const selector = document.getElementById("repoSelector");
+  const projectId = selector.value;
+
+  if (!projectId) {
+    alert("Please select a repository");
+    return;
+  }
+
+  try {
+    const formData = new FormData();
+    formData.append("project_id", projectId);
+
+    const response = await fetch("/repos/switch", {
+      method: "POST",
+      headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+      body: formData,
+    });
+
+    if (response.ok) {
+      showNotification("Repository switched successfully", "success");
+      setTimeout(() => window.location.reload(), 1000);
+    } else {
+      const error = await response.json();
+      alert("Switch failed: " + error.detail);
+    }
+  } catch (error) {
+    alert("Error switching repository: " + error.message);
+  }
+}
+
+// Load repositories when config panel opens
+document.addEventListener("DOMContentLoaded", function () {
+  const configPanel = document.getElementById("configPanel");
+  const observer = new MutationObserver(() => {
+    if (!configPanel.classList.contains("translate-x-full")) {
+      loadRepositories();
+    }
+  });
+  observer.observe(configPanel, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+});
+
+// ========== END REPOSITORY MANAGEMENT ==========
+
 console.log("💡 Run forceShowTooltipButton() in console to show the button");
 
 // -- DOM Content Loaded Event Handler --
 document.addEventListener("DOMContentLoaded", function () {
   // Check online status first
+  // ========== AUTHENTICATION SYSTEM ==========
+  let authToken = localStorage.getItem("auth_token");
+  let isAuthenticated = false;
+
+  async function checkAuthentication() {
+    const loginModal = document.getElementById("loginModal");
+
+    if (!authToken) {
+      const config = await fetch("/config")
+        .then((r) => r.json())
+        .catch(() => null);
+
+      if (!config || !config.has_token) {
+        // Not configured yet - allow access to configure
+        isAuthenticated = false;
+        return false;
+      }
+
+      // Check if password exists
+      try {
+        const formData = new FormData();
+        formData.append("username", config.username);
+        const hasPassResponse = await fetch("/auth/check_password", {
+          method: "POST",
+          body: formData,
+        });
+        const hasPassData = await hasPassResponse.json();
+
+        if (!hasPassData.has_password) {
+          showPasswordSetup(config.username);
+          return false;
+        }
+
+        showLoginForm(config.username);
+        return false;
+      } catch (error) {
+        console.error("Auth check failed:", error);
+        return false;
+      }
+    }
+
+    // Validate token
+    try {
+      const response = await fetch("/auth/validate", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+
+      if (response.ok) {
+        isAuthenticated = true;
+        return true;
+      } else {
+        localStorage.removeItem("auth_token");
+        authToken = null;
+        return checkAuthentication();
+      }
+    } catch {
+      isAuthenticated = false;
+      return false;
+    }
+  }
+
+  function showLoginForm(username) {
+    const modal = document.getElementById("loginModal");
+    const loginForm = document.getElementById("loginForm");
+    const setupForm = document.getElementById("setupPasswordForm");
+    const resetForm = document.getElementById("passwordResetForm");
+
+    document.getElementById("loginUsername").value = username;
+
+    loginForm.classList.remove("hidden");
+    setupForm.classList.add("hidden");
+    resetForm.classList.add("hidden");
+    modal.classList.remove("hidden");
+  }
+
+  function showPasswordSetup(username) {
+    const modal = document.getElementById("loginModal");
+    const loginForm = document.getElementById("loginForm");
+    const setupForm = document.getElementById("setupPasswordForm");
+
+    window.setupUsername = username;
+
+    loginForm.classList.add("hidden");
+    setupForm.classList.remove("hidden");
+    modal.classList.remove("hidden");
+  }
+
+  async function handleLogout() {
+    localStorage.removeItem("auth_token");
+    localStorage.removeItem("is_admin");
+    authToken = null;
+    isAuthenticated = false;
+    window.location.reload();
+  }
+
+  // ========== END AUTHENTICATION ==========
+
+  // ... rest of your existing script.js code continues below ...
   if (!navigator.onLine) {
     handleOfflineStatus();
   } else {
